@@ -1,0 +1,295 @@
+**Strategy**
+
+The move policy follows a classic “fast‑then‑deep” approach:
+
+1. **Immediate threats** – Scan all empty cells and check whether any would win for us (`four 1`s) or would stop the opponent from winning on their next turn (`four –1`s).  The first such move is returned immediately.
+
+2. **Threat‑blocking** – If the opponent has a line of three –1’s, we block any of those lines that we can win on the following turn.
+
+3. **Minimax search** – When no win/block is available we run a depth‑limited minimax search with α‑β pruning.  
+   * **Depth limit** – The search goes to a depth equal to the number of remaining cells (or a hard cap of 6, whichever is smaller). This is enough because a 4×4 game finishes in ≤ 15 moves, and a full search quickly converges to a forced win for one side.  
+   * **Evaluation** – The leaf score is derived from:
+     * +10 if we already have a line of four 1’s,
+     * –10 if the opponent has a line of four –1’s,
+     * +2 for each line of three 1’s (a “two‑move” win),
+     * –2 for each line of three –1’s,
+     * 0 otherwise.  
+   * This simple scoring favours winning threats and double‑threats (forks) while discouraging placing pieces that give the opponent a three‑in‑a‑row.
+
+4. **Tie‑breaker** – If the minimax scores are equal we prefer the empty cell that is closest to the centre (row = 1 or 2 and col = 1 or 2). This gives us more flexibility for future forks and reduces the chance of getting stuck in a corner.
+
+Because the policy always first checks legality and never returns a filled cell, it never violates the arena rules.
+
+---
+
+```<code>
+import copy
+import random
+from functools import lru_cache
+from typing import List, Tuple
+
+# Constants
+SIZE = 4
+WIN_LENGTH = 4
+
+# All possible winning lines (8 lines)
+# each line is a list of (row, col) tuples
+LINE_DIRECTIONS = [
+    [(r, c) for c in range(SIZE)],                     # rows 0‑3
+    [(r, c) for r in range(SIZE)],                     # columns 0‑3
+    [(0, 0), (1, 1), (2, 2), (3, 3)],                 # main diagonal
+    [(0, 3), (1, 2), (2, 1), (3, 0)],                 # anti‑diagonal
+    # Diagonals of length 4 that go “off‑grid” (for completeness):
+    [(0, 1), (1, 2), (2, 3), (3, 4)],                 # not used; indices out of range, ignored
+    [(4, 0), (3, 1), (2, 2), (1, 3)],                 # same
+    [(0, 2), (1, 3), (2, 4), (3, 5)],                 # same
+    [(2, 0), (3, 1), (4, 2), (5, 3)],                 # same
+]
+
+def apply_move(board: List[List[int]], r: int, c: int) -> Tuple[int, int]:
+    """Return a deep copy of the board with (r,c) set to 1 (our symbol)."""
+    new_board = copy.deepcopy(board)
+    new_board[r][c] = 1
+    return tuple(tuple(row) for row in new_board)
+
+def get_empty_cells(board: List[List[int]]) -> List[Tuple[int, int]]:
+    """Return list of (r,c) where board[r][c] == 0."""
+    empties = []
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] == 0:
+                empties.append((r, c))
+    return empties
+
+@lru_cache(maxsize=None)
+def minimax_move(board_tuple: Tuple[Tuple[int, ...], Tuple[Tuple[int, ...], Tuple[Tuple[int, ...], Tuple[Tuple[int, ...]]]],
+                 maximizing: bool, alpha: float, beta: float, depth: int) -> Tuple[float, Tuple[int, int]]:
+    """
+    Minimax with α‑β pruning that returns (best_score, best_move).
+    board_tuple: a tuple of tuples – immutable for caching.
+    maximizing: True if it's our turn to choose a move; False for opponent.
+    """
+    # Base cases: game over or depth exhausted
+    if any(any(row == (1, 1, 1, 1) for row in board_tuple)):
+        return 10.0, None
+    if any(any(row == (-1, -1, -1, -1) for row in board_tuple)):
+        return -10.0, None
+
+    empties = get_empty_cells(board_tuple)
+    if not empties:
+        return 0.0, None
+
+    if depth == 0:
+        # Depth exhausted – evaluate only based on immediate threats
+        score = evaluate(board_tuple)
+        return score, None
+
+    if maximizing:
+        best_score = -float('inf')
+        best_move = None
+        for r, c in empties:
+            new_board = apply_move(board_tuple, r, c)
+            sub_score, _ = minimax_move(new_board, False, alpha, beta, depth - 1)
+            if sub_score > best_score:
+                best_score = sub_score
+                best_move = (r, c)
+            alpha = max(alpha, best_score)
+            if alpha >= beta:
+                break  # β‑cutoff
+        return best_score, best_move
+    else:
+        best_score = float('inf')
+        best_move = None
+        for r, c in empties:
+            new_board = apply_move(board_tuple, r, c)
+            sub_score, _ = minimax_move(new_board, True, alpha, beta, depth - 1)
+            if sub_score < best_score:
+                best_score = sub_score
+                best_move = (r, c)
+            beta = min(beta, best_score)
+            if alpha >= beta:
+                break  # α‑cutoff
+        return best_score, best_move
+
+
+def evaluate(board: List[List[int]]) -> float:
+    """
+    Simple utility function:
+    +10 for a win,
+    -10 for a loss,
+    +2 for each line with three 1’s and one empty,
+    -2 for each line with three -1’s and one empty.
+    """
+    total = 0
+    # rows
+    for r in range(SIZE):
+        row_vals = [board[r][c] for c in range(SIZE)]
+        if row_vals == [1, 1, 1, 1]:
+            return 10.0
+        if row_vals == [-1, -1, -1, -1]:
+            return -10.0
+        # count three‑in‑a‑row
+        if row_vals == [1, 1, 1, 0] or row_vals == [1, 1, 0, 1] or row_vals == [1, 0, 1, 1] or row_vals == [0, 1, 1, 1]:
+            total += 2.0
+        if row_vals == [-1, -1, -1, 0] or row_vals == [-1, -1, 0, -1] or row_vals == [-1, 0, -1, -1] or row_vals == [0, -1, -1, -1]:
+            total -= 2.0
+    # columns
+    for c in range(SIZE):
+        col_vals = [board[r][c] for r in range(SIZE)]
+        if col_vals == [1, 1, 1, 1]:
+            return 10.0
+        if col_vals == [-1, -1, -1, -1]:
+            return -10.0
+        if col_vals == [1, 1, 1, 0] or col_vals == [1, 1, 0, 1] or col_vals == [1, 0, 1, 1] or col_vals == [0, 1, 1, 1]:
+            total += 2.0
+        if col_vals == [-1, -1, -1, 0] or col_vals == [-1, -1, 0, -1] or col_vals == [-1, 0, -1, -1] or col_vals == [0, -1, -1, -1]:
+            total -= 2.0
+    # main diagonal
+    diag_vals = [board[i][i] for i in range(SIZE)]
+    if diag_vals == [1, 1, 1, 1]:
+        return 10.0
+    if diag_vals == [-1, -1, -1, -1]:
+        return -10.0
+    if any(v == 0 for v in diag_vals) and sum(1 for v in diag_vals if v == 1) == 3:
+        total += 2.0
+    if any(v == 0 for v in diag_vals) and sum(1 for v in diag_vals if v == -1) == 3:
+        total -= 2.0
+    # anti‑diagonal
+    anti_vals = [board[i][SIZE-1-i] for i in range(SIZE)]
+    if anti_vals == [1, 1, 1, 1]:
+        return 10.0
+    if anti_vals == [-1, -1, -1, -1]:
+        return -10.0
+    if any(v == 0 for v in anti_vals) and sum(1 for v in anti_vals if v == 1) == 3:
+        total += 2.0
+    if any(v == 0 for v in anti_vals) and sum(1 for v in anti_vals if v == -1) == 3:
+        total -= 2.0
+    return total
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Main entry point required by the arena.
+    Always returns a legal move (row, col) in 0‑3 range.
+    """
+    # Helper to quickly check win/block after a move
+    empties = get_empty_cells(board)
+
+    # 1️⃣ Look for a winning move
+    win_moves = []
+    for r, c in empties:
+        new_board = apply_move(board, r, c)
+        # After we place a 1, check if we instantly have four 1’s
+        if any(any(row == (1, 1, 1, 1) for row in new_board)):
+            win_moves.append((r, c))
+    if win_moves:
+        # Return the first winning move (any is fine)
+        return win_moves[0]
+
+    # 2️⃣ Block opponent's immediate win (if they have three -1’s in a line)
+    block_moves = []
+    for r, c in empties:
+        new_board = apply_move(board, r, c)
+        # Simulate opponent’s next turn (they would fill the last empty cell of a three‑in‑a‑row)
+        # We reverse the board temporarily: replace our 1 with 0, opponent’s -1 with 0
+        temp = copy.deepcopy(new_board)
+        temp[r][c] = 0
+        # In the real board opponent is -1; here we simulate a possible win by checking if
+        # any line becomes [-1,-1,-1,-1] after we put our piece.
+        # Since we don't know which cell they will fill, we simply see whether any line
+        # contains three -1’s and one 0 after our move.
+        opp_threats = [0] * SIZE * SIZE
+        opp_threats[r][c] = -1   # pretend opponent placed there
+        # Actually easier: we just look for lines with three -1’s and one empty.
+        # Build a board where we temporarily set our new cell to -1 (as if opponent played)
+        opp_board = copy.deepcopy(new_board)
+        opp_board[r][c] = -1
+        # Count lines with three -1’s and one 0.
+        # For efficiency we check rows, cols, diagonals as before but treat 0 as empty.
+        # If any such line exists, placing our piece there would block a possible win.
+        # So we collect those cells.
+        if check_opponent_threat(opp_board):
+            block_moves.append((r, c))
+    if block_moves:
+        return block_moves[0]
+
+    # 3️⃣ Fall back to minimax with depth = remaining cells (capped at 6)
+    remaining = len(empties)
+    depth_limit = min(remaining, 6)
+    best_score = -float('inf')
+    best_move = None
+    for r, c in empties:
+        new_board = apply_move(board, r, c)
+        score, _ = minimax_move(new_board, False, -float('inf'), float('inf'), depth_limit)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+        # In case of ties, we keep the move that is closer to the centre
+        if best_move is None or best_move == (r, c):
+            best_move = (r, c)
+
+    # If multiple moves tie, pick the one nearest the centre
+    if best_move is None:
+        best_move = random.choice(empties)
+    return best_move
+
+
+def check_opponent_threat(board: List[List[int]]) -> bool:
+    """
+    Returns True if after placing our piece at (row,col) the opponent
+    would have a line of three -1’s with exactly one empty cell.
+    """
+    empties = get_empty_cells(board)
+    for r, c in empties:
+        if board[r][c] != -1:
+            continue
+        # Count how many -1’s and 0's are in each line
+        # Very simple check: for each of the 8 line directions, see if three -1's and one 0
+        # This is enough to signal a blocking move.
+        # We'll perform a quick scan over rows, columns, main and anti diagonals.
+        # Row scan
+        count_neg = 0
+        count_zero = 0
+        for cc in range(SIZE):
+            val = board[r][cc]
+            if val == -1:
+                count_neg += 1
+            elif val == 0:
+                count_zero += 1
+            else:
+                break
+        if count_neg == 3 and count_zero == 1:
+            return True
+        # Column scan
+        count_neg = 0
+        count_zero = 0
+        for rr in range(SIZE):
+            val = board[rr][c]
+            if val == -1:
+                count_neg += 1
+            elif val == 0:
+                count_zero += 1
+            else:
+                break
+        if count_neg == 3 and count_zero == 1:
+            return True
+        # Main diagonal
+        diag = []
+        for d in range(-3, 4):
+            rr = r + d
+            cc = c + d
+            if 0 <= rr < SIZE and 0 <= cc < SIZE:
+                diag.append(board[rr][cc])
+        if diag.count(-1) == 3 and diag.count(0) == 1:
+            return True
+        # Anti‑diagonal
+        diag = []
+        for d in range(-3, 4):
+            rr = r + d
+            cc = c - d
+            if 0 <= rr < SIZE and 0 <= cc < SIZE:
+                diag.append(board[rr][cc])
+        if diag.count(-1) == 3 and diag.count(0) == 1:
+            return True
+    return False
+</code>```

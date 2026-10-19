@@ -1,0 +1,506 @@
+<thinking>
+The user wants a Python function `policy` that takes a 3x3x3 Tic-Tac-Toe board and returns the best move for the AI ("1").
+
+Here's my plan to approach this:
+
+1.  **Represent the board and players:** The input `board` is already in a good format. `1` is me, `-1` is the opponent, `0` is empty.
+
+2.  **Define winning lines:** In 3D Tic-Tac-Toe, there are many winning lines. I need to enumerate all possible lines. A line consists of 3 cells.
+    *   **27 lines per dimension:**
+        *   **Rows (x-axis):** For each `y`, `z`, the line `(0, y, z), (1, y, z), (2, y, z)`
+        *   **Columns (y-axis):** For each `x`, `z`, the line `(x, 0, z), (x, 1, z), (x, 2, z)`
+        *   **Pillars (z-axis):** For each `x`, `y`, the line `(x, y, 0), (x, y, 1), (x, y, 2)`
+    *   **Diagonals on 2D planes (12 lines * 3 orientations):**
+        *   **xy-plane (fixed z):** `(0,0,z), (1,1,z), (2,2,z)` and `(0,2,z), (1,1,z), (2,0,z)` (for z=0,1,2) => 2 * 3 = 6
+        *   **xz-plane (fixed y):** `(0,y,0), (1,y,1), (2,y,2)` and `(0,y,2), (1,y,1), (2,y,0)` (for y=0,1,2) => 2 * 3 = 6
+        *   **yz-plane (fixed x):** `(x,0,0), (x,1,1), (x,2,2)` and `(x,0,2), (x,1,1), (x,2,0)` (for x=0,1,2) => 2 * 3 = 6
+    *   **Space diagonals (main diagonals connecting corners):** 4 lines
+        *   `(0,0,0), (1,1,1), (2,2,2)`
+        *   `(0,0,2), (1,1,1), (2,2,0)`
+        *   `(0,2,0), (1,1,1), (2,0,2)`
+        *   `(2,0,0), (1,1,1), (0,2,2)`
+
+    Total lines: 27 + 18 + 4 = 49 lines. This will be a list of lists of coordinate tuples.
+
+3.  **Evaluation Strategy (Minimax-like, but simplified):**
+    *   **Immediate Win:** If I can make a move that wins the game, do it.
+    *   **Block Opponent's Win:** If the opponent can win on their next move, block it.
+    *   **Create a Fork:** If I can make a move that creates two potential winning lines for me, do it. (This might be too complex for a first pass, let's simplify for now).
+    *   **Block Opponent's Fork:** If the opponent can create a fork, block it. (Even more complex).
+    *   **Take Center:** The center cell `(1,1,1)` is typically very strong in 3D Tic-Tac-Toe due to its involvement in many lines.
+    *   **Take Corners:** Corners are also good.
+    *   **Random Empty Cell:** If no strategic move, pick any empty cell.
+
+4.  **Implementation Details:**
+
+    *   **`_get_all_lines()`:** A helper function to generate all 49 winning lines. This should be generated once.
+    *   **`_check_line(line, player, board)`:** A helper to check the state of a single line. It should return:
+        *   `WIN`: If `player` has 3 in a row.
+        *   `LOSE`: If `opponent` has 3 in a row.
+        *   `CAN_WIN_NEXT_TURN`: If `player` has 2 and 1 empty cell. Returns the empty cell.
+        *   `CAN_LOSE_NEXT_TURN`: If `opponent` has 2 and 1 empty cell. Returns the empty cell.
+        *   `NONE`: Otherwise.
+    *   **Iterate through empty cells:** For each empty cell, simulate placing my piece there and evaluate the board.
+
+5.  **Refined Strategy (prioritized):**
+
+    *   **1. Win immediately:** Iterate through all available empty cells. For each empty cell, check if placing '1' there creates a winning line for '1'. If yes, return that cell.
+
+    *   **2. Block opponent's win:** Iterate through all available empty cells. For each empty cell, check if placing '-1' there *would* create a winning line for '-1' (meaning it's an opponent's blocking move). If yes, place '1' there to block it and return that cell.
+
+    *   **3. Take the center (1,1,1):** If `(1,1,1)` is empty, take it. This is a strong strategic position.
+
+    *   **4. Create a fork (advanced, maybe skip for simplicity initially):** A fork is a move that creates two *unblocked* lines of two for the current player. This is significantly more complex to detect. For a simpler AI, I might jump directly to corners/edges.
+
+    *   **5. Prefer corners:** If
+        *   `0,0,0`
+        *   `0,0,2`
+        *   `0,2,0`
+        *   `0,2,2`
+        *   `2,0,0`
+        *   `2,0,2`
+        *   `2,2,0`
+        *   `2,2,2`
+        are empty, pick one.
+
+    *   **6. Prefer edges/faces:** Any other empty cell.
+
+    *   **7. Random empty cell:** If none of the above, pick any available empty cell.
+
+Let's focus on the first three priorities for now, as they cover the most critical immediate threats/opportunities. If I have time, I'll add more sophisticated logic.
+
+**Generating `ALL_LINES`:**
+
+```python
+ALL_LINES = []
+
+# 27 lines along axes
+for i in range(3):
+    for j in range(3):
+        # x-axis lines (x, j, i)
+        ALL_LINES.append([(x, j, i) for x in range(3)])
+        # y-axis lines (j, y, i)
+        ALL_LINES.append([(j, y, i) for y in range(3)])
+        # z-axis lines (i, j, z)
+        ALL_LINES.append([(i, j, z) for z in range(3)])
+
+# 18 lines along plane diagonals
+for i in range(3):
+    # xy-plane diagonals (fixed z)
+    ALL_LINES.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+    ALL_LINES.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+    # xz-plane diagonals (fixed y)
+    ALL_LINES.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+    ALL_LINES.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+    # yz-plane diagonals (fixed x)
+    ALL_LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+    ALL_LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+
+# 4 space diagonals
+ALL_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+ALL_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+ALL_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+ALL_LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+```
+Double-check the number of lines.
+27 axis-aligned lines: 3 (x-planes) * 3 (y-planes) * 3 (z-planes) = 27 correct.
+18 plane diagonals: 3 (xy-planes) * 2 (diagonals) + 3 (xz-planes) * 2 + 3 (yz-planes) * 2 = 6+6+6 = 18 correct.
+4 space diagonals: Correct.
+Total = 27 + 18 + 4 = 49 lines. This looks good.
+
+**`check_line_status` helper function:**
+This function will take a line (list of 3 cells) and determine its status for a given player.
+It should return an `(status, empty_cell_coord_if_any)` tuple.
+
+`status` can be:
+*   `WIN_NOW`: Player has 2 and 1 empty, placing in empty wins.
+*   `BLOCK_NOW`: Opponent has 2 and 1 empty, placing in empty blocks.
+*   `EMPTY_LINE`: All 3 cells are empty.
+*   `MY_2_OTHER_0`: Player has 2, opponent has 0, 1 empty. Good for creating forks or extending.
+*   `OPP_2_OTHER_0`: Opponent has 2, player has 0, 1 empty. Bad.
+*   `MY_1_OTHER_0`: Player has 1, opponent has 0, 2 empty.
+*   `OPP_1_OTHER_0`: Opponent has 1, player has 0, 2 empty.
+*   `BLOCKED`: One of my pieces and one of opponent's in the line, cannot be won by either.
+*   `FULL`: All cells filled, no win.
+
+This could get complicated fast. Let's simplify `check_line_status` to just detect winning/blocking moves for a *specific player*.
+
+```python
+def check_winning_move(board, player, line):
+    values = [board[x][y][z] for x, y, z in line]
+    if values.count(player) == 2 and values.count(0) == 1:
+        # Player has two, one empty. This is a potential winning move.
+        for i, (x, y, z) in enumerate(line):
+            if board[x][y][z] == 0:
+                return (x, y, z) # Return empty cell that completes the win
+    return None
+
+def check_blocking_move(board, player, line):
+    opponent = -player
+    values = [board[x][y][z] for x, y, z in line]
+    if values.count(opponent) == 2 and values.count(0) == 1:
+        # Opponent has two, one empty. This is a potential blocking move.
+        for i, (x, y, z) in enumerate(line):
+            if board[x][y][z] == 0:
+                return (x, y, z) # Return empty cell that blocks
+    return None
+```
+
+Now, let's put it all together in the main `policy` function.
+
+**`policy` function logic:**
+
+1.  **Initialize `ALL_LINES`** (only once, globally or as a static attribute if possible, but fine to do in function for contest).
+2.  **Get all empty cells:** Create a list of `(x,y,z)` for all `board[x][y][z] == 0`.
+3.  **Check for immediate win:**
+    *   Iterate through `ALL_LINES`.
+    *   For each line, call `check_winning_move(board, 1, line)`.
+    *   If it returns a coordinate, that's the winning move. Return it immediately.
+4.  **Check for opponent's immediate win (block):**
+    *   Iterate through `ALL_LINES`.
+    *   For each line, call `check_winning_move(board, -1, line)`. (Using `check_winning_move` for opponent's turn logic).
+    *   If it returns a coordinate, that's the blocking move. Return it immediately.
+5.  **Strategic moves:**
+    *   **Try center:** If `(1,1,1)` is in `empty_cells`, return `(1,1,1)`.
+    *   **Try corners:** Define a list of corner coordinates. Iterate through them. If an empty corner is found, return it.
+        Corners: (0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)
+    *   **Try edges/faces:** Could be slightly more complex. For now, prioritize any other empty cell over pure random if possible. Iterate through empty cells and prioritize specific patterns (e.g., non-corner, non-center, but on a face). Or just pick the first available.
+
+6.  **Catch-all (random empty):** If no strategic move found, return the first empty cell from the list. If no empty cells (game is full), something is wrong, but the problem statement implies there's always a valid move to return.
+
+Let's refine the strategic moves without creating full-blown fork detection (too complex for initial thought process).
+
+Refined strategic moves:
+1. Try center (1,1,1)
+2. Try corners (0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)
+3. Try any remaining empty cell (preferring deterministic pick over random for consistency, e.g., first one found).
+
+Let's define a list of preferred moves in order: Center, Corners, Edges (any other empty).
+
+```python
+# Helper to generate preferred coordinates in order
+PREFERRED_MOVES = []
+# Center
+PREFERRED_MOVES.append((1,1,1))
+# Corners
+for x in [0,2]:
+    for y in [0,2]:
+        for z in [0,2]:
+            if (x,y,z) != (1,1,1): # Exclude center if by some error it's added here as well
+                PREFERRED_MOVES.append((x,y,z))
+# Faces/Edges (remaining cells, ordered)
+for z in range(3):
+    for y in range(3):
+        for x in range(3):
+            if (x,y,z) not in PREFERRED_MOVES:
+                PREFERRED_MOVES.append((x,y,z))
+# This PREFERRED_MOVES will then contain all 27 coordinates in a strategic order.
+# The strategy: Center -> Corners -> Edge/Face cells (in a fixed iteration order)
+```
+
+**Final `policy` structure:**
+
+```python
+import random
+
+# Global or module-level definition for all winning lines, computed once.
+ALL_LINES = []
+
+def _generate_all_lines():
+    global ALL_LINES
+    if ALL_LINES: # Only generate once
+        return
+
+    # 27 lines along axes
+    for i in range(3):
+        for j in range(3):
+            ALL_LINES.append([(x, j, i) for x in range(3)]) # x-axis
+            ALL_LINES.append([(j, y, i) for y in range(3)]) # y-axis
+            ALL_LINES.append([(i, j, z) for z in range(3)]) # z-axis
+
+    # 18 lines along plane diagonals
+    for i in range(3):
+        # xy-plane diagonals (fixed z)
+        ALL_LINES.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        ALL_LINES.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+        # xz-plane diagonals (fixed y)
+        ALL_LINES.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        ALL_LINES.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        # yz-plane diagonals (fixed x)
+        ALL_LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        ALL_LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+
+    # 4 space diagonals
+    ALL_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    ALL_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    ALL_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    ALL_LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+
+# Preferred order of moves to try, after immediate wins/blocks
+PREFERRED_MOVES_ORDER = []
+def _generate_preferred_moves_order():
+    global PREFERRED_MOVES_ORDER
+    if PREFERRED_MOVES_ORDER:
+        return
+
+    # Center
+    PREFERRED_MOVES_ORDER.append((1,1,1))
+
+    # Corners
+    corners = [(x,y,z) for x in [0,2] for y in [0,2] for z in [0,2] if (x,y,z) != (1,1,1)]
+    PREFERRED_MOVES_ORDER.extend(corners)
+
+    # All other cells
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                cell = (x,y,z)
+                if cell not in PREFERRED_MOVES_ORDER:
+                    PREFERRED_MOVES_ORDER.append(cell)
+
+_generate_all_lines()
+_generate_preferred_moves_order()
+
+
+def check_potential_completion(board, player, line):
+    """
+    Checks if a line has two of 'player's pieces and one empty spot.
+    Returns the empty spot coordinate if true, otherwise None.
+    """
+    player_count = 0
+    empty_spot = None
+    
+    for x, y, z in line:
+        cell_value = board[x][y][z]
+        if cell_value == player:
+            player_count += 1
+        elif cell_value == 0:
+            empty_spot = (x, y, z)
+        else: # Opponent's piece is in the line, cannot complete it
+            return None
+            
+    if player_count == 2 and empty_spot is not None:
+        return empty_spot
+    return None
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    
+    # 1. Check for an immediate win for yourself (player 1)
+    for line in ALL_LINES:
+        win_move = check_potential_completion(board, 1, line)
+        if win_move:
+            return win_move
+
+    # 2. Check for an immediate win for the opponent (player -1) and block it
+    for line in ALL_LINES:
+        block_move = check_potential_completion(board, -1, line)
+        if block_move:
+            return block_move
+            
+    # 3. Apply strategic moves
+    # Prioritize center, then corners, then other empty cells
+    for move_coords in PREFERRED_MOVES_ORDER:
+        x, y, z = move_coords
+        if board[x][y][z] == 0:
+            return move_coords
+
+    # Fallback: if somehow no strategic move was found (e.g., board full or logic error),
+    # return any random empty cell. This shouldn't be reached in a normal game.
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    empty_cells.append((x,y,z))
+    
+    if empty_cells:
+        return random.choice(empty_cells)
+    
+    # If the board is full, this should ideally not happen if it's AI's turn
+    # and game isn't over.
+    return (0,0,0) # Should never reach here if game is still playable.
+```
+
+Let's test the `_generate_preferred_moves_order()` logic.
+`PREFERRED_MOVES_ORDER` should contain 27 unique coordinates.
+Center: `(1,1,1)` (1)
+Corners `(0,0,0)`, `(0,0,2)`, `(0,2,0)`, `(0,2,2)`, `(2,0,0)`, `(2,0,2)`, `(2,2,0)`, `(2,2,2)` (8)
+Total so far: 1+8 = 9.
+
+The loop `for z in range(3): for y in range(3): for x in range(3):` will generate all 27 coordinates.
+`if cell not in PREFERRED_MOVES_ORDER:` will ensure uniqueness and add the remaining 18 cells (edges and face centers) in a deterministic order. This is a good way to give a consistent "default" order.
+
+The `ALL_LINES` and `PREFERRED_MOVES_ORDER` are global. In a competitive programming context, this is fine and ensures they are only computed once. Using `_generate_all_lines()` and `_generate_preferred_moves_order()` functions that check if the lists are already populated helps ensure this.
+
+Final check on logic:
+1.  **Win:** Highest priority. Correct.
+2.  **Block:** Second highest. Correct.
+3.  **Center:** Strategic. Correct.
+4.  **Corners:** Strategic. Correct.
+5.  **Other valid cell:** Deterministic fallback, fine.
+6.  **Random choice if something unexpected:** Safety net, but the preferred moves should cover all empty cells.
+
+The solution looks solid. Using `global` for `ALL_LINES` and `PREFERRED_MOVES_ORDER` is good for performance by avoiding re-computation. The functions `_generate_all_lines` and `_generate_preferred_moves_order` ensure they are initialized only once.
+</thinking>
+<code>
+import random
+
+# Global list to store all 49 potential winning lines.
+# This is computed once when the script is loaded to optimize performance.
+ALL_LINES = []
+
+def _generate_all_lines():
+    """
+    Generates all 49 winning lines in a 3x3x3 Tic-Tac-Toe board.
+    Each line is a list of 3 coordinate tuples (x, y, z).
+    """
+    global ALL_LINES
+    if ALL_LINES:  # Already generated
+        return
+
+    # 1. 27 lines parallel to axes (rows, columns, pillars)
+    for i in range(3):  # Fixed z-plane for xy-axes, fixed y-plane for xz-axes, fixed x-plane for yz-axes
+        for j in range(3):
+            # Lines along x-axis (vary x, fixed y, z)
+            ALL_LINES.append([(x, j, i) for x in range(3)])
+            # Lines along y-axis (fixed x, vary y, fixed z)
+            ALL_LINES.append([(j, y, i) for y in range(3)])
+            # Lines along z-axis (fixed x, fixed y, vary z)
+            ALL_LINES.append([(i, j, z) for z in range(3)])
+
+    # 2. 18 lines along 2D plane diagonals
+    for i in range(3):
+        # Diagonals on xy-planes (fixed z)
+        ALL_LINES.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        ALL_LINES.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+        # Diagonals on xz-planes (fixed y)
+        ALL_LINES.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        ALL_LINES.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        # Diagonals on yz-planes (fixed x)
+        ALL_LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        ALL_LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+
+    # 3. 4 space diagonals
+    ALL_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    ALL_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    ALL_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    ALL_LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+
+# Global list for preferred move order (center, then corners, then others)
+# This is computed once to provide a consistent strategic preference.
+PREFERRED_MOVES_ORDER = []
+
+def _generate_preferred_moves_order():
+    """
+    Generates a list of all 27 board coordinates, ordered by strategic preference:
+    center, then corners, then other cells in a deterministic order.
+    """
+    global PREFERRED_MOVES_ORDER
+    if PREFERRED_MOVES_ORDER: # Already generated
+        return
+
+    # 1. Center cell
+    PREFERRED_MOVES_ORDER.append((1, 1, 1))
+
+    # 2. Corner cells
+    corners = [(x, y, z) for x in [0, 2] for y in [0, 2] for z in [0, 2] if (x, y, z) != (1, 1, 1)]
+    PREFERRED_MOVES_ORDER.extend(corners)
+
+    # 3. All other cells (edges and face centers)
+    # Iterate through all possible coordinates and add those not already in the list.
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                cell = (x, y, z)
+                if cell not in PREFERRED_MOVES_ORDER:
+                    PREFERRED_MOVES_ORDER.append(cell)
+
+# Initialize the global lists when the module is loaded
+_generate_all_lines()
+_generate_preferred_moves_order()
+
+
+def check_potential_completion(board: list[list[list[int]]], player: int, line: list[tuple[int, int, int]]) -> tuple[int, int, int] | None:
+    """
+    Checks if a given 'line' on the 'board' can be completed by 'player'
+    to form a winning three-in-a-row in the next move.
+    
+    Args:
+        board: The 3x3x3 Tic-Tac-Toe board.
+        player: The player to check for (1 for AI, -1 for opponent).
+        line: A list of 3 coordinate tuples representing a potential winning line.
+
+    Returns:
+        The coordinates of the empty cell that would complete the line for 'player',
+        or None if the line cannot be completed (e.g., not 2 player-pieces and 1 empty,
+        or opponent's piece blocks it).
+    """
+    player_count = 0
+    empty_spot = None
+    
+    for x, y, z in line:
+        cell_value = board[x][y][z]
+        if cell_value == player:
+            player_count += 1
+        elif cell_value == 0:
+            empty_spot = (x, y, z)
+        else: # Opponent's piece is in this line, so player cannot win/block here
+            return None
+            
+    if player_count == 2 and empty_spot is not None:
+        return empty_spot
+    return None
+
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next best move for the AI (player 1) in a 3x3x3 Tic-Tac-Toe game.
+
+    Args:
+        board: A 3x3x3 list of lists representing the game board.
+               0: empty, 1: AI's piece, -1: Opponent's piece.
+
+    Returns:
+        A tuple of three integers (x, y, z) indicating the chosen empty cell.
+    """
+
+    # 1. Check for an immediate winning move for the AI (player 1)
+    # If the AI can win, take that move without hesitation.
+    for line in ALL_LINES:
+        win_move = check_potential_completion(board, 1, line)
+        if win_move:
+            return win_move
+
+    # 2. Check for an immediate winning move for the opponent (player -1) and block it
+    # If the opponent can win on their next turn, the AI must block it.
+    for line in ALL_LINES:
+        block_move = check_potential_completion(board, -1, line)
+        if block_move:
+            return block_move
+            
+    # 3. Apply strategic moves based on preferred cell order
+    # This prioritizes the center, then corners, then other cells.
+    for move_coords in PREFERRED_MOVES_ORDER:
+        x, y, z = move_coords
+        if board[x][y][z] == 0: # If the preferred cell is empty, take it.
+            return move_coords
+
+    # Fallback option: If for some unexpected reason no strategic move was found
+    # (e.g., board is full, or edge case not covered), pick any available empty cell.
+    # In a correctly played game, this part should ideally not be reached before a win/draw.
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    empty_cells.append((x,y,z))
+    
+    if empty_cells:
+        return random.choice(empty_cells)
+    
+    # If no empty cells are found, the board is full. This implies the game should
+    # have ended in a win or draw on the previous move, or the board state is invalid.
+    # Returning a default (0,0,0) in this unlikely scenario, but it shouldn't be reached
+    # if the game state is valid and it's truly the AI's turn to make a move.
+    return (0,0,0) 
+</code>

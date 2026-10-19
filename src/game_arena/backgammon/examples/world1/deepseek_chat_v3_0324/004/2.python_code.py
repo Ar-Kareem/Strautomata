@@ -1,0 +1,236 @@
+
+import numpy as np
+
+def policy(state: dict) -> str:
+    # Extract game state
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'], reverse=True)
+    
+    # Check if we have checkers on the bar
+    if my_bar > 0:
+        return handle_bar_entries(my_pts, opp_pts, my_bar, dice)
+    
+    # Generate all possible moves
+    possible_moves = generate_possible_moves(my_pts, opp_pts, dice)
+    
+    if not possible_moves:
+        return "H:P,P"
+    
+    # Score each possible move
+    scored_moves = []
+    for move in possible_moves:
+        score = evaluate_move(move, my_pts, opp_pts, dice)
+        scored_moves.append((score, move))
+    
+    # Select the best move
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    best_move = scored_moves[0][1]
+    
+    # Format the move string
+    return format_move(best_move, dice)
+
+def handle_bar_entries(my_pts, opp_pts, my_bar, dice):
+    """Handle moves when we have checkers on the bar."""
+    possible_entries = []
+    for die in dice:
+        entry_point = 24 - die  # Convert die to our entry point
+        if entry_point < 0 or entry_point >= 24:
+            continue  # Invalid die for entry
+        if opp_pts[entry_point] <= 1:  # Can enter here
+            possible_entries.append(entry_point)
+    
+    if not possible_entries:
+        return "H:P,P"
+    
+    # Try to enter with both dice if possible
+    if len(possible_entries) >= 2 and len(dice) == 2:
+        # Prefer to enter on higher point first (more aggressive)
+        possible_entries.sort(reverse=True)
+        return f"H:B,B" if possible_entries[0] > possible_entries[1] else f"L:B,B"
+    else:
+        # Enter with one die (higher die if possible)
+        if len(dice) == 2:
+            higher_entry = 24 - dice[0]
+            if higher_entry in possible_entries:
+                return f"H:B,P"
+            lower_entry = 24 - dice[1]
+            if lower_entry in possible_entries:
+                return f"L:B,P"
+        else:
+            entry_point = 24 - dice[0]
+            if entry_point in possible_entries:
+                return f"H:B,P"
+    
+    # If we get here, can't enter with any die
+    return "H:P,P"
+
+def generate_possible_moves(my_pts, opp_pts, dice):
+    """Generate all possible legal moves from the current state."""
+    moves = []
+    
+    if len(dice) == 0:
+        return []
+    
+    # Generate all possible single moves
+    single_moves = []
+    for die in dice:
+        for from_point in range(24):
+            if my_pts[from_point] == 0:
+                continue  # No checker here
+            
+            to_point = from_point - die
+            if to_point < 0:  # Bearing off
+                if can_bear_off(my_pts):
+                    single_moves.append((from_point, None))
+            else:
+                if opp_pts[to_point] <= 1:  # Legal move
+                    single_moves.append((from_point, None))
+    
+    # If only one die or no combinations possible
+    if len(dice) == 1 or not single_moves:
+        return [((m[0], None),) for m in single_moves]
+    
+    # Generate possible two-move combinations
+    for first_move in single_moves:
+        first_from, _ = first_move
+        remaining_die = dice[1] if first_move[0] == dice[0] else dice[0]
+        
+        # Create temporary state after first move
+        temp_pts = my_pts.copy()
+        temp_pts[first_from] -= 1
+        
+        # Find possible second moves
+        for second_from in range(24):
+            if temp_pts[second_from] == 0:
+                continue
+            
+            second_to = second_from - remaining_die
+            if second_to < 0:  # Bearing off
+                if can_bear_off(temp_pts):
+                    moves.append((first_from, second_from))
+            else:
+                if opp_pts[second_to] <= 1:  # Legal move
+                    moves.append((first_from, second_from))
+    
+    # Also consider moves where only one die can be used
+    for move in single_moves:
+        moves.append((move[0], None))
+    
+    # Remove duplicates and invalid moves
+    unique_moves = list(set(moves))
+    valid_moves = []
+    for move in unique_moves:
+        if move[1] is None:
+            valid_moves.append((move[0],))
+        else:
+            valid_moves.append((move[0], move[1]))
+    
+    return valid_moves
+
+def can_bear_off(my_pts):
+    """Check if all checkers are in home board (points 0-5)."""
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+def evaluate_move(move, my_pts, opp_pts, dice):
+    """Evaluate and score a potential move."""
+    score = 0
+    temp_my_pts = my_pts.copy()
+    temp_opp_pts = opp_pts.copy()
+    
+    # Apply the first part of the move
+    from1 = move[0]
+    die1 = dice[0] if len(move) > 1 else dice[0] if len(dice) == 1 else None
+    
+    if from1 is not None:
+        to1 = from1 - die1 if die1 is not None else None
+        if to1 is not None and to1 >= 0:
+            # Check if we're hitting an opponent blot
+            if temp_opp_pts[to1] == 1:
+                score += 5  # Bonus for hitting
+            # Check if we're leaving a blot
+            if temp_my_pts[from1] == 1:
+                score -= 3  # Penalty for leaving a blot
+            # Progress toward bearing off
+            if from1 >= 12:
+                score += from1 * 0.1  # Bonus for moving from outer board
+            else:
+                score += from1 * 0.2  # Higher bonus for moving in home board
+        temp_my_pts[from1] -= 1
+    
+    # Apply the second part of the move if exists
+    if len(move) > 1 and move[1] is not None:
+        from2 = move[1]
+        die2 = dice[1] if len(dice) > 1 else None
+        if die2 is not None:
+            to2 = from2 - die2
+            if to2 >= 0:
+                # Check if we're hitting an opponent blot
+                if temp_opp_pts[to2] == 1:
+                    score += 5  # Bonus for hitting
+                # Check if we're leaving a blot
+                if temp_my_pts[from2] == 1:
+                    score -= 3  # Penalty for leaving a blot
+                # Progress toward bearing off
+                if from2 >= 12:
+                    score += from2 * 0.1  # Bonus for moving from outer board
+                else:
+                    score += from2 * 0.2  # Higher bonus for moving in home board
+            temp_my_pts[from2] -= 1
+    
+    # Additional scoring factors
+    # Bonus for bearing off
+    if len(move) > 0 and move[0] is not None and (move[0] - dice[0] < 0):
+        score += 10
+    if len(move) > 1 and move[1] is not None and (move[1] - dice[1] < 0):
+        score += 10
+    
+    # Bonus for making points in home board
+    for i in range(6):
+        if temp_my_pts[i] >= 2 and my_pts[i] < 2:
+            score += 2
+    
+    # Bonus for blocking opponent's progress
+    for i in range(18, 24):
+        if temp_my_pts[i] >= 2 and my_pts[i] < 2:
+            score += 1
+    
+    return score
+
+def format_move(move, dice):
+    """Format the move into the required string format."""
+    if not move or move[0] is None:
+        return "H:P,P"
+    
+    if len(move) == 1:
+        from1 = move[0]
+        # Determine if we should use H or L (use higher die if possible)
+        if len(dice) == 2:
+            higher_die = dice[0]
+            to_point = from1 - higher_die
+            if to_point >= 0 and (from1 - higher_die >= 0) and (state['opp_pts'][to_point] <= 1):
+                return f"H:{point_to_str(from1)},P"
+            else:
+                return f"L:{point_to_str(from1)},P"
+        else:
+            return f"H:{point_to_str(from1)},P"
+    else:
+        from1, from2 = move
+        # Determine order based on which die moves the checker further
+        if (from1 - dice[0]) > (from2 - dice[1]):
+            return f"H:{point_to_str(from1)},{point_to_str(from2)}"
+        else:
+            return f"L:{point_to_str(from2)},{point_to_str(from1)}"
+
+def point_to_str(point):
+    """Convert point index to string representation."""
+    if point is None:
+        return "P"
+    return f"A{point}"

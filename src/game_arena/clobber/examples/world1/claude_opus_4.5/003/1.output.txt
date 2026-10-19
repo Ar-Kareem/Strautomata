@@ -1,0 +1,136 @@
+My strategy for this Clobber policy is based on a minimax search with alpha-beta pruning, combined with a heuristic evaluation function. The key ideas are:
+
+1. **Mobility-based evaluation**: The primary heuristic counts the difference in legal moves available to each player. Having more moves means more flexibility and less risk of being forced into a losing position.
+
+2. **Piece count consideration**: Having more pieces generally correlates with having more potential moves, so this is a secondary factor.
+
+3. **Iterative deepening**: To make best use of the time limit, I use iterative deepening to search as deep as possible while staying within time constraints.
+
+4. **Alpha-beta pruning**: This significantly reduces the search space, allowing deeper searches.
+
+5. **Move ordering**: Moves are ordered by a quick heuristic (preferring captures that reduce opponent mobility) to improve alpha-beta pruning efficiency.
+
+6. **Terminal state detection**: The game ends when a player has no moves - that player loses.
+
+<code>
+import numpy as np
+import time
+
+DIRECTIONS = {'U': (-1, 0), 'D': (1, 0), 'L': (0, -1), 'R': (0, 1)}
+DIR_NAMES = ['U', 'D', 'L', 'R']
+ROWS, COLS = 5, 6
+
+def get_legal_moves(you, opponent):
+    moves = []
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r, c] == 1:
+                for dir_name, (dr, dc) in DIRECTIONS.items():
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < ROWS and 0 <= nc < COLS and opponent[nr, nc] == 1:
+                        moves.append((r, c, dir_name))
+    return moves
+
+def apply_move(you, opponent, move):
+    r, c, dir_name = move
+    dr, dc = DIRECTIONS[dir_name]
+    nr, nc = r + dr, c + dc
+    new_you = you.copy()
+    new_opp = opponent.copy()
+    new_you[r, c] = 0
+    new_you[nr, nc] = 1
+    new_opp[nr, nc] = 0
+    return new_you, new_opp
+
+def count_moves(you, opponent):
+    count = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            if you[r, c] == 1:
+                for dr, dc in DIRECTIONS.values():
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < ROWS and 0 <= nc < COLS and opponent[nr, nc] == 1:
+                        count += 1
+    return count
+
+def evaluate(you, opponent):
+    my_moves = count_moves(you, opponent)
+    opp_moves = count_moves(opponent, you)
+    my_pieces = np.sum(you)
+    opp_pieces = np.sum(opponent)
+    return (my_moves - opp_moves) * 10 + (my_pieces - opp_pieces)
+
+def minimax(you, opponent, depth, alpha, beta, maximizing, start_time, time_limit):
+    if time.time() - start_time > time_limit:
+        return evaluate(you, opponent), None
+    
+    if maximizing:
+        moves = get_legal_moves(you, opponent)
+        if not moves:
+            return -10000, None
+        if depth == 0:
+            return evaluate(you, opponent), None
+        
+        best_val = -float('inf')
+        best_move = moves[0]
+        for move in moves:
+            new_you, new_opp = apply_move(you, opponent, move)
+            val, _ = minimax(new_opp, new_you, depth - 1, -beta, -alpha, False, start_time, time_limit)
+            val = -val
+            if val > best_val:
+                best_val = val
+                best_move = move
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        return best_val, best_move
+    else:
+        moves = get_legal_moves(you, opponent)
+        if not moves:
+            return 10000, None
+        if depth == 0:
+            return -evaluate(you, opponent), None
+        
+        best_val = -float('inf')
+        for move in moves:
+            new_you, new_opp = apply_move(you, opponent, move)
+            val, _ = minimax(new_opp, new_you, depth - 1, -beta, -alpha, True, start_time, time_limit)
+            val = -val
+            best_val = max(best_val, val)
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        return best_val, None
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    you = np.array(you)
+    opponent = np.array(opponent)
+    
+    moves = get_legal_moves(you, opponent)
+    if not moves:
+        # Should not happen in valid game state, but return something
+        for r in range(ROWS):
+            for c in range(COLS):
+                if you[r, c] == 1:
+                    return f"{r},{c},U"
+        return "0,0,U"
+    
+    if len(moves) == 1:
+        m = moves[0]
+        return f"{m[0]},{m[1]},{m[2]}"
+    
+    start_time = time.time()
+    time_limit = 0.85
+    best_move = moves[0]
+    
+    for depth in range(1, 20):
+        if time.time() - start_time > time_limit:
+            break
+        val, move = minimax(you, opponent, depth, -float('inf'), float('inf'), True, start_time, time_limit)
+        if move is not None:
+            best_move = move
+        if abs(val) > 9000:
+            break
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

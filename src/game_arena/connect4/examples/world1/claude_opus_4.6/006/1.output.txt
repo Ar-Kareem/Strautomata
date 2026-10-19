@@ -1,0 +1,178 @@
+## Strategy
+
+I'll implement a strong Connect 4 AI using iterative deepening minimax with alpha-beta pruning. Key components:
+
+1. **Threat detection**: Immediately win if possible, block opponent wins.
+2. **Alpha-beta pruning with iterative deepening**: Search as deep as possible within the time limit.
+3. **Move ordering**: Prioritize center columns and moves that create threats for better pruning.
+4. **Evaluation function**: Score based on potential 4-in-a-row windows, center control, and threat analysis.
+5. **Transposition table**: Cache evaluated positions to avoid redundant computation.
+
+<code>
+import time
+
+def policy(board: list[list[int]]) -> int:
+    ROWS, COLS = 6, 7
+    import numpy as np
+    
+    b = [row[:] for row in board]
+    
+    def get_row(col):
+        for r in range(ROWS - 1, -1, -1):
+            if b[r][col] == 0:
+                return r
+        return -1
+    
+    def drop(bd, col, player):
+        for r in range(ROWS - 1, -1, -1):
+            if bd[r][col] == 0:
+                bd[r][col] = player
+                return r
+        return -1
+    
+    def undrop(bd, col, row):
+        bd[row][col] = 0
+    
+    def check_win(bd, player):
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                if bd[r][c] == bd[r][c+1] == bd[r][c+2] == bd[r][c+3] == player:
+                    return True
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                if bd[r][c] == bd[r+1][c] == bd[r+2][c] == bd[r+3][c] == player:
+                    return True
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                if bd[r][c] == bd[r+1][c+1] == bd[r+2][c+2] == bd[r+3][c+3] == player:
+                    return True
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                if bd[r][c] == bd[r-1][c+1] == bd[r-2][c+2] == bd[r-3][c+3] == player:
+                    return True
+        return False
+    
+    def evaluate(bd):
+        score = 0
+        # Center column preference
+        for r in range(ROWS):
+            if bd[r][3] == 1: score += 3
+            elif bd[r][3] == -1: score -= 3
+        
+        # Evaluate all windows of 4
+        for r in range(ROWS):
+            for c in range(COLS - 3):
+                w = [bd[r][c+i] for i in range(4)]
+                score += eval_window(w)
+        for r in range(ROWS - 3):
+            for c in range(COLS):
+                w = [bd[r+i][c] for i in range(4)]
+                score += eval_window(w)
+        for r in range(ROWS - 3):
+            for c in range(COLS - 3):
+                w = [bd[r+i][c+i] for i in range(4)]
+                score += eval_window(w)
+        for r in range(3, ROWS):
+            for c in range(COLS - 3):
+                w = [bd[r-i][c+i] for i in range(4)]
+                score += eval_window(w)
+        return score
+    
+    def eval_window(w):
+        p = w.count(1); o = w.count(-1); e = w.count(0)
+        if p == 4: return 100000
+        if o == 4: return -100000
+        if p == 3 and e == 1: return 50
+        if o == 3 and e == 1: return -50
+        if p == 2 and e == 2: return 5
+        if o == 2 and e == 2: return -5
+        return 0
+    
+    valid = [c for c in range(COLS) if b[0][c] == 0]
+    order = sorted(valid, key=lambda c: -abs(3 - c) + 10 * (3 == c))
+    # prefer center
+    order = sorted(valid, key=lambda c: abs(c - 3))
+    
+    tt = {}
+    
+    def minimax(bd, depth, alpha, beta, maximizing, deadline):
+        key = (tuple(tuple(r) for r in bd), maximizing)
+        if key in tt and tt[key][1] >= depth:
+            return tt[key][0]
+        
+        if check_win(bd, 1): return 1000000 + depth
+        if check_win(bd, -1): return -1000000 - depth
+        
+        cols = [c for c in range(COLS) if bd[0][c] == 0]
+        if not cols or depth == 0:
+            e = evaluate(bd)
+            tt[key] = (e, depth)
+            return e
+        
+        cols.sort(key=lambda c: abs(c - 3))
+        
+        if time.time() > deadline:
+            return evaluate(bd)
+        
+        if maximizing:
+            val = -float('inf')
+            for c in cols:
+                r = drop(bd, c, 1)
+                v = minimax(bd, depth - 1, alpha, beta, False, deadline)
+                undrop(bd, c, r)
+                val = max(val, v)
+                alpha = max(alpha, v)
+                if alpha >= beta:
+                    break
+            tt[key] = (val, depth)
+            return val
+        else:
+            val = float('inf')
+            for c in cols:
+                r = drop(bd, c, -1)
+                v = minimax(bd, depth - 1, alpha, beta, True, deadline)
+                undrop(bd, c, r)
+                val = min(val, v)
+                beta = min(beta, v)
+                if alpha >= beta:
+                    break
+            tt[key] = (val, depth)
+            return val
+    
+    # Immediate win/block
+    for c in valid:
+        r = drop(b, c, 1)
+        if check_win(b, 1):
+            undrop(b, c, r)
+            return c
+        undrop(b, c, r)
+    
+    for c in valid:
+        r = drop(b, c, -1)
+        if check_win(b, -1):
+            undrop(b, c, r)
+            return c
+        undrop(b, c, r)
+    
+    deadline = time.time() + 0.85
+    best_col = order[0]
+    
+    for depth in range(1, 43):
+        if time.time() > deadline - 0.05:
+            break
+        best_score = -float('inf')
+        current_best = best_col
+        for c in order:
+            r = drop(b, c, 1)
+            sc = minimax(b, depth - 1, -float('inf'), float('inf'), False, deadline)
+            undrop(b, c, r)
+            if sc > best_score:
+                best_score = sc
+                current_best = c
+            if time.time() > deadline:
+                break
+        if time.time() < deadline:
+            best_col = current_best
+    
+    return best_col
+</code>

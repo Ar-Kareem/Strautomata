@@ -1,0 +1,747 @@
+<thinking>
+To design an effective policy for this simplified Blackjack-like game, we need to balance the risk of busting (going over the target T) with the goal of getting as close to T as possible. Since the deck has only one of each card (13 unique cards), and we draw without replacement, we can track which cards have already been played — but in this case, we only observe our own hand, not the opponent's. Therefore, we cannot condition on the opponent's actions directly, but we can assume they follow a reasonable strategy.
+
+However, since we only control our own moves and must act based only on our current hand and the target, the best approach is to:
+
+1. Calculate the current value of our hand, treating 'A' flexibly (as 11 if it doesn't cause busting, else 1).
+2. Estimate the expected improvement from hitting — i.e., the chance of getting closer to T without busting.
+3. Decide to HIT only if the expected benefit outweighs the risk.
+
+But because we have no knowledge of the opponent's hand or future draws, and since the game is symmetric (same deck structure), we can adopt a strategy similar to classic Blackjack:
+- If current hand value is much below target, HIT.
+- If we're close to the target and going over is likely, STAY.
+- Be more aggressive when far from target.
+
+Key considerations:
+- We know the deck perfectly (13 unique cards). From the hand, we can infer which cards remain.
+- So, we can compute the expected value and bust probability of the next draw.
+
+Plan:
+- Compute current hand value (with optimal Ace handling).
+- If current value >= target: must STAY (or already bust).
+- Else, compute all remaining cards (not in hand).
+- For each remaining card, compute:
+  - Its value (J/Q/K = 10, A = 11 initially, but if it would make hand > target, then A counts as 1 — however, we’re adding one card, so we can compute final value accordingly).
+- Simulate adding each possible next card, compute:
+  - Probability of not busting.
+  - Expected improvement (how much closer we get to target, without busting).
+- Use a threshold: if current value is within a safe range of target (e.g. within 3 of T), STAY.
+- Or: if the risk of busting on next hit is above some threshold, STAY.
+
+However, because we can plan ahead (deterministic finite deck), we might use a simple heuristic:
+- If current hand value <= T - 4, HIT.
+- If current hand value > T - 4, STAY, unless a small card could help and large ones dominate the remaining deck.
+
+But more sophisticated: compute the bust probability if we hit.
+
+Let’s implement:
+1. Function to compute hand value (using A as 11 if possible).
+2. Get list of remaining cards.
+3. For each remaining card, compute:
+   - Value if drawn (A in new card: 11 first, but if total > T, then A=1).
+   - But wait: Ace in hand is already counted optimally. The new card’s Ace: if we add "A", its value is 11 only if hand + 11 <= T, otherwise 1.
+   - But if hand + 11 > T, but hand + 1 <= T, then "A" = 1.
+4. Count how many of the remaining cards would cause a bust.
+5. If bust rate is high (> 50%) and we’re within reasonable range, STAY.
+
+Alternatively, use a rule:
+- If hand value <= T - X, HIT, where X is a function of remaining cards.
+
+But we can do better.
+
+Optimal Strategy Heuristic:
+- If current value < T - 4: HIT (safe zone).
+- If current value >= T: STAY (already at/bust).
+- Else (within 4 of T): only HIT if more than 50% of remaining cards won't cause bust.
+
+But even better: if the expected outcome of hitting is not better than staying, STAY.
+
+But note: If we stay, we’re at current_value.
+If we hit:
+- Some chance to bust → lose immediately (if opponent doesn’t bust).
+- Some chance to improve.
+
+But we don’t know opponent’s behavior. So we must assume worst case, or assume opponent plays well.
+
+But since we want to maximize win probability, and we have no info on opponent, the best is to maximize our own expected closeness to T without busting.
+
+Alternative idea: aim for at least T - 1, but don’t bust.
+
+We'll use:
+- If hand value >= T: STAY (already bust or on target — actually, if hand > T → bust, so policy won't be called? But note: Ace can downgrade.
+
+Wait: the rule says:
+> "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T)
+
+So it's not that Ace changes *after* you bust — rather, at any time, the hand value is computed optimally: using Ace as 11 if possible without exceeding T, else as 1.
+
+So: hand value is always computed as the maximum sum ≤ T, with Ace as 11 or 1.
+
+Therefore, if all Aces are counted as 1 and still > T → then bust.
+
+So our first step: compute current hand value with optimal Ace handling.
+
+Algorithm for evaluating hand:
+- Separate Aces from non-Aces.
+- Sum non-Aces.
+- Then add Aces: try using each as 11, up to max possible without exceeding T.
+
+But since there's at most one Ace in the hand at a time? No: the deck has one Ace, so only possibly one Ace.
+
+Wait: we have one copy of each card per deck. So only one Ace exists per player.
+
+Therefore, a hand can contain at most one "A".
+
+So: hand can have at most one Ace.
+
+So computing hand value is:
+- Sum all non-Ace cards (J,Q,K = 10).
+- If hand contains "A":
+   - Try total = non_ace_sum + 11. If <= T, then use 11.
+   - Else, use 1.
+- Else: sum is non_ace_sum.
+
+But note: it's possible that even with Ace=1, we are over T → bust.
+
+So bust occurs when even with Ace=1, sum > T.
+
+Now, back to policy.
+
+We can:
+1. Compute current hand value.
+2. If hand value >= T: then we might want to STAY (if equal, perfect; if greater? but by rule, Ace would be 1, so if even with Ace=1 we are > T → bust → lose. But policy should not be called after bust? The problem doesn’t specify.
+
+But logically: if after drawing, the hand value (with optimal Ace) exceeds T → you bust and lose immediately. So the game ends.
+
+Therefore, the `policy()` function is only called when the current hand is not busting (i.e., hand value ≤ T).
+
+So within `policy`, we know that current hand value <= T.
+
+So we can assume hand_value <= T.
+
+Then:
+- hand_value is computed using Ace as 11 if non_ace + 11 <= T, else as 1, and non_ace + 1 must be <= T (else bust, and we wouldn't be here).
+
+So we compute hand_value correctly.
+
+Now: when to hit?
+
+We can calculate:
+- remaining_cards: all 13 cards minus hand.
+- For each candidate card in remaining_cards:
+   - Compute its value when added:
+     - If card is "A": value = 11 if hand_value + 11 <= T else 1
+     - Else: value = int(card) if card in "2345678910" else 10
+   - But wait: when adding a new card, the Ace in the new hand might change behavior?
+
+Important: after adding a card, the total hand value is recomputed using optimal Ace handling for the *entire hand*.
+
+But since there is only one Ace in the deck, we can have at most one Ace in total.
+
+So:
+- If current hand has Ace → new card cannot be Ace (only one).
+- If current hand does not have Ace, new card could be Ace → then we can use it as 11 if total allows.
+
+So to compute the new hand value after drawing a card:
+Case 1: hand already has Ace → then new card is not Ace → total = current_sum + card_value
+        But wait: current_sum was computed with Ace=11 or 1. But now we're adding a card.
+
+Actually: the Ace remains, and we recompute the best value.
+
+But if hand already has an Ace, then:
+- Original hand: Ace was counted as 11 if sum_without_ace + 11 <= T, else as 1.
+- Now we add a new card with value v → new total with Ace=11: (sum_without_ace + 11) + v.
+   But if that is > T, we can try Ace=1: sum_without_ace + 1 + v.
+
+So the new hand value is:
+   candidate1 = sum_without_ace + 11 + v  # if new_total <= T
+   if candidate1 <= T: use it
+   else: use sum_without_ace + 1 + v (if <= T), else bust.
+
+But note: sum_without_ace is known.
+
+Actually, to keep it clean:
+Define a function to compute hand value given hand and target.
+
+But since we’re doing it in policy, and hand size is small, we can do:
+
+def hand_value(hand, target):
+    non_ace = [c for c in hand if c != "A"]
+    total_non_ace = sum(
+        10 if c in "JQK" else int(c)
+        for c in non_ace
+    )
+    if "A" in hand:
+        # Try with 11
+        if total_non_ace + 11 <= target:
+            total = total_non_ace + 11
+        else:
+            total = total_non_ace + 1
+    else:
+        total = total_non_ace
+    return total
+
+But note: this total must be <= target (else bust, and we wouldn’t be called). But we can still use this function.
+
+Now, for each possible next card c in remaining cards:
+- new_hand = hand + [c]
+- new_value = hand_value(new_hand, target)
+- If new_value > target → bust (but by function, it should cap at <= target? No: our function only uses Ace optimally to get best <= target. But if even with Ace=1 we exceed → then bust → game over.
+
+But in our function: if "A" in new_hand:
+   if non_ace_total + 11 <= target → use 11
+   else → use 1, but if non_ace_total + 1 > target → then value = non_ace_total + 1 > target → bust.
+
+But the function returns the sum using the rules, even if > target. So we can check: if new_value > target → then drawing c causes bust.
+
+So:
+- For each remaining card, compute new_value
+- If new_value > target → bust = True
+- Else → safe
+
+Then:
+- If we stay: our score is current_value
+- If we hit:
+   - Probability of bust = (number of cards that cause bust) / num_remaining
+   - But we don’t get intermediate rewards — if we bust, we lose.
+
+So we should only hit if the chance of improving (getting closer to T) without busting is worth the risk.
+
+But we need to compare:
+- Expected value of score after hitting and possibly continuing? But policy is called after every draw, so we don’t need to plan multiple steps.
+
+Wait: no. The policy is myopic: at each step, I decide based on current hand. So I don’t plan multiple draws ahead.
+
+So it’s a one-step lookahead.
+
+I could simulate: if I hit, and don’t bust, then I’ll get a new hand, and then I’ll call policy again. But since I control the policy, I can assume I’ll play optimally from there.
+
+But that’s recursive and might be heavy.
+
+Given time constraint and simplicity, we go for a greedy myopic policy:
+
+Decision rule:
+- Let current_value = hand_value(hand, target)
+- If current_value == target: STAY (perfect)
+- Else if current_value > target * 0.95: STAY (very close)
+- Else: HIT
+
+But can do better.
+
+Improved:
+- Compute number of cards that would cause bust if drawn.
+- Let safe_cards = [c for c in remaining if hand_value(hand+[c], target) <= target]
+- bust_risk = 1 - len(safe_cards)/len(remaining)
+
+But even if safe, improvement matters.
+
+Compute:
+- current_distance = target - current_value
+- For each safe card, compute new_value, then new_distance = target - new_value
+- improvement = current_distance - new_distance = (target - current) - (target - new) = new - current
+
+So the gain in score.
+
+Let expected_gain = average of new_value - current_value over safe cards that don’t bust.
+
+But we only care about getting closer to T.
+
+Alternatively, define utility of future as the expected final score if we play optimally, but too complex.
+
+Simple heuristic:
+- If there are any cards that would make us reach exactly T, and they are available → high incentive to hit.
+- If current_value is too low, we must hit.
+- If bust risk is high, stay.
+
+Final strategy:
+1. Compute current hand value.
+2. If current_value >= T: STAY → can't improve.
+3. Compute remaining cards.
+4. If no remaining cards: STAY (shouldn't happen in practice).
+5. For each remaining card, simulate:
+   - new_hand = hand + [card]
+   - new_val = hand_value(new_hand, T)
+   - if new_val > T → bust (discard for gain, but count for risk)
+6. Let bust_count = number of cards with new_val > T
+7. If bust_count >= len(remaining)/2 and current_value > T - 5: STAY (high risk)
+8. Else if current_value <= T - 6: HIT (need to catch up)
+9. Else: (within 5-6 of T)
+   - Check if any safe card gets us to T: if yes, and at least 30% of cards are safe → HIT to try
+   - Else: STAY
+
+But we can also compute expected outcome.
+
+Given the constraints, we'll implement:
+
+- Compute current_value
+- If current_value >= T: return "STAY"
+- remaining = all_cards - set(hand)
+- If no remaining: "STAY"
+- safe_moves = 0
+- improvements = []  # list of new_values that are safe
+- for card in remaining:
+    new_val = compute_value(hand + [card], target)
+    if new_val <= target:
+        safe_moves += 1
+        improvements.append(target - new_val)  # distance after move
+
+- bust_risk = (len(remaining) - safe_moves) / len(remaining)
+- current_distance = target - current_value
+
+- If safe_moves == 0: must STAY (any hit busts) — though this may not happen
+
+- Let min_future_distance = min(improvements) if improvements else float('inf')
+- If min_future_distance < current_distance and bust_risk < 0.6:
+    return "HIT"
+- Elif current_value < target - 5:
+    return "HIT"
+- Elif bust_risk < 0.3 and safe_moves > 0:  # low risk, some improvement possible
+    return "HIT"
+- Else:
+    return "STAY"
+
+But we can simplify.
+
+Alternative: classic Blackjack strategy uses thresholds.
+
+After testing various heuristics offline (in mind), we use:
+
+If current_value < target - 3: HIT
+Else if current_value < target: 
+   if (target - current_value) <= 3 and bust_risk > 0.4: STAY
+   else: HIT only if there's a possibility of improvement and bust risk not too high
+But let's try deterministic.
+
+Final implementation:
+
+- If current_value >= target: STAY
+- Compute remaining cards
+- For each remaining card:
+   - Compute what the new hand value would be
+   - If new value <= target and new_value > current_value: it's an improvement
+   - If new value > target: bust
+
+- Let improve_count = number of cards that give a strictly higher value (<= target)
+- bust_count = number that cause bust
+
+- If current_value < target - 5: HIT (need cards)
+- Elif improve_count > bust_count: then more good than bad → HIT
+- Else: STAY
+
+But "improve_count > bust_count" may not be sufficient.
+
+Better: if we are close, and even small cards can help, but big cards bust.
+
+But consider: small cards always safe.
+
+Define card values:
+card_vals = {
+    "2":2, "3":3, ..., "10":10, "J":10, "Q":10, "K":10, "A":11  # but then adjust for Ace
+}
+
+But when adding "A", it might be 11 or 1.
+
+But we already compute new_val correctly.
+
+We'll code a helper function.
+
+Given time, we'll write clearly.
+
+Let's implement:
+
+Steps:
+1. Predefine all_cards
+2. Write a helper to compute hand value
+3. Compute current value
+4. If current_value >= target: return "STAY" — but we know current_value <= target, and if equal, stay.
+5. Get remaining cards
+6. If no remaining: "STAY"
+7. Initialize counters
+8. For each card in remaining:
+   - new_val = hand_value(hand + [card], target)
+   - if new_val > target: bust_count += 1
+   - elif new_val > current_value: improve_count += 1
+   - else: neutral (worse or same)
+9. safe_count = len(remaining) - bust_count
+10. If current_value <= target - 6:
+        return "HIT"
+    elif bust_count > improve_count:  # more ways to bust or not improve than to improve
+        return "STAY"
+    elif improve_count > 0 and bust_count / len(remaining) < 0.5:
+        return "HIT"
+    else:
+        return "STAY"
+
+But maybe too many conditions.
+
+Simpler:
+- If current_value <= T - 5: always HIT
+- Else (within 4 of T):
+   - If more than half the remaining cards would cause a bust → STAY
+   - Else → HIT (since there's room and risk is low)
+
+But "within 4" means we need small cards. If many big cards left (10, J, Q, K, A(=11)), they might bust.
+
+We’ll go with:
+
+if current_value >= target:
+    return "STAY"
+remaining = [c for c in all_cards if c not in hand]
+if not remaining:
+    return "STAY"
+
+bust_count = 0
+for card in remaining:
+    new_val = compute_hand_value(hand + [card], target)
+    if new_val > target:
+        bust_count += 1
+
+bust_rate = bust_count / len(remaining)
+
+if current_value < target - 4:
+    return "HIT"
+else:
+    if bust_rate < 0.5:
+        return "HIT"
+    else:
+        return "STAY"
+
+But this might be too aggressive when close.
+
+What if current_value = target-1, and half the cards are 2s? Then bust_rate=0, so we hit, but we might bust.
+
+Wait: if current_value = target-1, and we draw:
+- Any card with value >=2 may bust:
+   - value=2: new_value = current_value + 2 = target+1 → bust? Only if no Ace adjustment.
+
+But if hand has no Ace, and new card is not Ace → then value = current_value + v
+So if current_value = T-1, and v>=2 → T-1 + v >= T+1 > T → bust.
+
+Only if v=1 can help.
+
+But which card has value 1? Only Ace counted as 1.
+
+But if we draw Ace: can we use it as 1?
+- Then new_value = (current_value) + 1 = T-1 + 1 = T → perfect.
+
+So only Ace helps when current_value = T-1.
+
+And if we draw Ace, and current_value = T-1:
+   - non-ace sum = current_value (since no Ace in hand, by assumption) → T-1
+   - add Ace: try 11 → T-1+11=T+10 > T → not allowed
+   - use 1 → T-1+1=T → valid.
+
+So Ace is safe and perfect.
+
+But any other card:
+   - 2 to 10, J, Q, K: values 2-10 → sum = T-1 + v >= T+1 > T → bust.
+
+So from T-1, only Ace is safe.
+
+So bust_rate = (12 - (1 if "A" in remaining else 0)) / 12 → very high.
+
+So if current_value = T-1, bust_rate = 11/12 if Ace is available, or 12/12 if Ace is not available (already in hand or not) — but can't be in hand because only one.
+
+But if hand has Ace already? Then current_value would have used it as 11 or 1.
+
+If we already have Ace, then we can't get another.
+
+So if current_value = T-1 and we have Ace in hand:
+   - Then the Ace is counted as 1 (because if it were 11, then non_ace = T-1-11 = T-12, which may be possible)
+   - Example: T=12, hand: ["A", "K"] → non_ace=10, with Ace=11 → 10+11=21>12 → so must be Ace=1 → 11, but 10+1=11. So current_value=11.
+   - Then we are at T-1=11.
+   - Add any card: non_ace_sum was 10 from "K", now add say "2": non_ace_sum=10+2=12, with Ace=1 → total=13 >12 → bust.
+   - So any draw will add at least 2 (smallest non-Ace card) → non_ace becomes 12, Ace=1 → 13>12 → bust.
+   - So from T-1 with Ace already in hand, any draw busts.
+
+Therefore, from T-1, bust risk is very high.
+
+So if current_value >= T-1: we should STAY.
+
+Similarly, T-2:
+- Need card with value 1 or 2.
+- Value 1: only Ace as 1 — but only possible if Ace not in hand.
+- Value 2: card "2", which adds 2 → then total = T-2+2 = T → safe.
+- But only if no Ace issue — but if we have Ace, then adding "2":
+   - non_ace_sum increases by 2
+   - Ace still there: try 11 → new_total = (old_non_ace + 2) + 11 = (non_ace + 11) + 2 = old_value + 2
+        But old_value = T-2
+        So new_total = T → if T <= T → valid? Only if Ace can still be 11.
+
+But old_value was computed as <= T.
+
+But when we had Ace and non_ace, we had:
+   if non_ace + 11 <= T → used 11, value = non_ace+11
+   else used 1, value = non_ace+1
+
+So if current_value = T-2 and Ace in hand and counted as 11 → then non_ace = T-2-11 = T-13
+Then adding "2": new_non_ace = T-13+2 = T-11
+Then try Ace=11 → total = T-11+11 = T → valid.
+
+Similarly, if Ace was counted as 1, then non_ace = T-2-1 = T-3
+Add "2": non_ace becomes T-1, Ace=1 → total = T → valid only if T <= T → yes, but T-1+1 = T → valid.
+
+Wait: Ace=1, non_ace = T-1 → total = T-1+1 = T → valid.
+
+But can Ace be counted as 1 if non_ace=T-1? Only if non_ace+11 = T-1+11 = T+10 > T → yes, so must be 1.
+
+So both cases, adding "2" is safe only if new total <= T.
+
+In the first case: non_ace = T-13, +2 → T-11, +11 → T → safe.
+
+In the second: non_ace = T-3, +2 → T-1, Ace=1 → T → safe.
+
+But adding a "3"?
+First case: non_ace = T-13+3 = T-10, +11 → T+1 > T → not allowed, so try Ace=1 → T-10+1 = T-9 < T → valid. So total = T-9.
+
+But T-9 < T, so not bust.
+
+But we are at T-2, add 3 → go to T-9? That doesn't make sense.
+
+Wait: no:
+- Initially: non_ace = T-13, Ace=11 → total = T-13+11 = T-2 → correct.
+- Add "3": new_non_ace = T-13+3 = T-10
+- Try Ace=11: T-10+11 = T+1 > T → invalid
+- Try Ace=1: T-10+1 = T-9 → valid.
+
+So new_value = T-9, which is worse.
+
+So we didn't bust, but score decreased.
+
+But the goal is to get closer to T.
+
+From T-2, we went to T-9 → farther.
+
+But we didn't bust.
+
+So bust only if even with Ace=1, > T.
+
+So in this case, not bust.
+
+But it's a bad move.
+
+So we should only consider improvement.
+
+Given complexity, we will implement a policy that:
+- Always STAY if current_value > T - 3 and bust_rate > 0.5
+- But if current_value is low, HIT.
+
+After analysis, a solid strategy is:
+- If current_value <= T - 5: HIT
+- Elif current_value == T: STAY
+- Else:  # T-4, T-3, T-2, T-1
+   - Compute the minimum card value needed to reach T: need = T - current_value
+   - Find if there are cards with value <= need in remaining? But we want to get close, not under.
+   - Actually, we want cards that can get us closer without busting.
+   - But safer to stay if the risk of busting is significant.
+
+We'll use the following: if there is a reasonable chance of hitting without busting and improving, and we are not very close, then hit.
+
+Revised plan:
+
+- Compute current_value
+- If current_value >= T: return "STAY"
+- remaining = [c for c in all_cards if c not in hand]
+- bust_count = 0
+- for card in remaining:
+    new_val = compute_hand_value(hand + [card], target)
+    if new_val > target:
+        bust_count += 1
+- bust_rate = bust_count / len(remaining) if remaining else 0
+
+- if current_value <= target - 6:
+    return "HIT"
+- elif current_value <= target - 3:
+    # willing to hit if bust_rate is not too high
+    return "HIT" if bust_rate < 0.6 else "STAY"
+- else:
+    # very close: T-2, T-1
+    return "HIT" if bust_rate < 0.3 else "STAY"
+
+We can tune thresholds.
+
+After some reflection, here's a balanced approach.
+
+But to make it simple and effective, we can hardcode: if current_value < T - 4: HIT
+Otherwise, only hit if less than 20% of the remaining cards cause a bust.
+
+Because when close, even small bust risk is not worth it.
+
+So:
+- if current_value <= T - 5: HIT
+- else: HIT only if bust_rate < 0.2
+
+But at T-4, bust_rate < 0.2 means at least 80% of remaining cards are safe.
+
+But T-4 is not that close.
+
+Better:
+- if current_value <= T - 6: HIT
+- elif current_value <= T - 4: HIT if bust_rate < 0.5
+- elif current_value <= T - 2: HIT if bust_rate < 0.3
+- else: HIT if bust_rate < 0.1
+
+But this is complicated.
+
+Given time, we’ll go with a simpler, more robust rule:
+
+We’ll always HIT if current_value <= T - 5.
+
+Otherwise, we HIT only if more than half of the remaining cards do NOT cause a bust.
+
+But that's bust_rate < 0.5.
+
+So:
+if current_value <= T - 5:
+    return "HIT"
+else:
+    return "HIT" if bust_rate < 0.5 else "STAY"
+
+Let's test with example:
+T=20, hand_value=16 (<=15? no, 16>15) → 16<=20-5=15? False, so use else.
+bust_rate: need card<=4 to avoid bust? 
+But hand_value=16, draw any card with value>=5 → 16+5=21>20 → bust if no Ace downgrading.
+
+But if hand has no Ace and no Ace in new card, then yes.
+
+But if we draw Ace: can be 1, so 16+1=17<=20 → safe.
+
+So safe cards: "2","3","4","5",... but wait, 5: 16+5=21>20 → bust if no adjustment.
+
+But no Ace in hand, new card "5": value=5, sum=21>20 → bust.
+
+Only cards with value<=4 are safe: "2"(2), "3"(3), "4"(4)
+
+Also, "A" can be 1 → 17, safe.
+
+So safe: "2","3","4","A" → 4 cards.
+
+Remaining: 13 - len(hand)
+
+We don't know hand size.
+
+But in any case, safe only if card value <= 4 or card is "A"
+
+Value<=4: 2,3,4 → three cards
+A: one card
+But also, is there a card with value 1? No.
+
+So safe: 4 cards.
+
+But if hand already has "2", then "2" not in remaining.
+
+So varies.
+
+But in this example, if hand_value=16, and T=20, current_value=16 > T-5=15, so we go to else.
+
+bust_rate = 1 - (number of safe cards)/remaining_count
+
+If many high cards left, bust_rate may be high.
+
+For example, if half the remaining cards are safe, then bust_rate=0.5, so we STAY.
+
+But in blackjack, you hit on 16 if dealer shows low card, but here we don't know.
+
+Given no knowledge of the opponent, and to be safe, we might want to hit on 16.
+
+But our policy might be too conservative.
+
+Alternatively, we can always hit below T, but only if not too risky.
+
+After careful thought, I found in classic blackjack, with a single deck, basic strategy says:
+
+- Hit on 16 if dealer's up card is 7 or higher
+- But we don't know dealer.
+
+So safest: try to get as close as possible without high bust risk.
+
+Given that, we'll go with the following:
+
+We'll HIT if:
+   current_value < T - 4
+or (current_value < T and bust_rate < 0.3)
+
+But <0.3 is very safe.
+
+Alternatively, we can use expected value.
+
+Let's compute expected new hand value if we hit and stop immediately after:
+- For each card in remaining:
+   - new_val = hand_value(hand+[card], T)
+   - if new_val > T: contribution = -1000 (bust)
+   - else: contribution = new_val
+- expected_value = average of contributions
+
+- If expected_value > current_value: HIT
+- else: STAY
+
+But we may continue after hitting, so it's not final.
+
+But as a heuristic.
+
+And if expected_value is -1000, it means bust guaranteed.
+
+So this incorporates both risk and reward.
+
+We'll use this.
+
+Final policy:
+- If current_value >= T: "STAY"
+- Compute expected_value of next state (after one hit, then staying)
+- If expected_value > current_value: "HIT"
+- else: "STAY"
+
+This is a myopic improvement.
+
+It should work well.
+
+Let's implement that.
+</thinking>
+<code>
+def policy(hand: list[str], target: int) -> str:
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    
+    def compute_hand_value(current_hand, T):
+        non_ace_cards = [c for c in current_hand if c != "A"]
+        non_ace_sum = sum(
+            10 if c in "JQK" else int(c)
+            for c in non_ace_cards
+        )
+        if "A" in current_hand:
+            if non_ace_sum + 11 <= T:
+                return non_ace_sum + 11
+            else:
+                return non_ace_sum + 1
+        else:
+            return non_ace_sum
+    
+    current_value = compute_hand_value(hand, target)
+    
+    # If we are at or above target, stay (above should not happen as we bust, but if equal, stay)
+    if current_value >= target:
+        return "STAY"
+    
+    # Get remaining cards (not in hand)
+    remaining = [c for c in all_cards if c not in hand]
+    if not remaining:
+        return "STAY"
+    
+    # Compute expected value of the hand after one hit and then staying
+    total_future_value = 0.0
+    for card in remaining:
+        new_hand = hand + [card]
+        new_value = compute_hand_value(new_hand, target)
+        if new_value > target:
+            # Bust: this is very bad, so we assign a very low value
+            total_future_value += -1000.0
+        else:
+            total_future_value += new_value
+    
+    expected_future_value = total_future_value / len(remaining)
+    
+    # If the expected value after hitting is better than current, then hit
+    if expected_future_value > current_value:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

@@ -1,0 +1,189 @@
+I'll create a smart policy for Lines of Action that focuses on both immediate tactical moves and long-term strategic goals like connectivity.
+
+The strategy will:
+1. Prioritize capturing opponent pieces when possible
+2. Look for moves that connect pieces into larger groups
+3. Avoid moving pieces into positions that could be easily captured
+4. Try to maintain mobility and flexibility in piece positioning
+5. Use a simple but effective evaluation function to choose the best move
+
+Let me implement this strategy:
+
+<code>
+import numpy as np
+import random
+from collections import deque
+
+def policy(board):
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board)
+    
+    # Get all player pieces (1)
+    player_pieces = np.argwhere(board == 1)
+    
+    # Find all valid moves for current player
+    valid_moves = []
+    
+    # For each piece, generate all possible moves
+    for r, c in player_pieces:
+        # Try all 8 directions
+        directions = [
+            (-1, -1), (-1, 0), (-1, 1),  # Up-left, up, up-right
+            (0, -1),           (0, 1),   # Left, right
+            (1, -1),  (1, 0),  (1, 1)    # Down-left, down, down-right
+        ]
+        
+        for dr, dc in directions:
+            # Calculate the number of pieces in that line
+            pieces_in_line = count_pieces_in_line(board, r, c, dr, dc)
+            
+            # Try moving exactly as many squares as there are pieces
+            for steps in range(1, pieces_in_line + 1):
+                new_r = r + steps * dr
+                new_c = c + steps * dc
+                
+                # Check if the destination is valid
+                if 0 <= new_r < 8 and 0 <= new_c < 8:
+                    # Check if we can move to that position
+                    if is_valid_move(board, r, c, new_r, new_c, dr, dc, pieces_in_line):
+                        valid_moves.append((r, c, new_r, new_c))
+    
+    # If no valid moves, return a random legal move or pass
+    if not valid_moves:
+        # Find any legal move at all (this should be rare)
+        for r in range(8):
+            for c in range(8):
+                if board[r, c] == 1:
+                    # Try to find a simple move
+                    for dr in [-1, 0, 1]:
+                        for dc in [-1, 0, 1]:
+                            if dr == 0 and dc == 0:
+                                continue
+                            new_r, new_c = r + dr, c + dc
+                            if 0 <= new_r < 8 and 0 <= new_c < 8:
+                                if board[new_r, new_c] != -1:  # Not landing on enemy
+                                    return f"{r},{c}:{new_r},{new_c}"
+        # If we really can't move, return any valid move
+        return "0,0:0,1"  # Default move if no valid moves
+    
+    # Evaluate each move
+    best_move = None
+    best_score = -float('inf')
+    
+    for from_r, from_c, to_r, to_c in valid_moves:
+        # Evaluate the move
+        score = evaluate_move(board, from_r, from_c, to_r, to_c)
+        
+        # Choose highest scoring move
+        if score > best_score:
+            best_score = score
+            best_move = (from_r, from_c, to_r, to_c)
+    
+    if best_move is None:
+        # Fallback to a random valid move
+        from_r, from_c, to_r, to_c = random.choice(valid_moves)
+        return f"{from_r},{from_c}:{to_r},{to_c}"
+        
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+
+def count_pieces_in_line(board, r, c, dr, dc):
+    """Count how many pieces (both players) are in the line starting from (r,c) in direction (dr,dc)"""
+    count = 1  # Count the piece at (r,c)
+    
+    # Check forward in direction (dr,dc)
+    r_forward, c_forward = r + dr, c + dc
+    while 0 <= r_forward < 8 and 0 <= c_forward < 8:
+        if board[r_forward, c_forward] != 0:
+            count += 1
+        r_forward += dr
+        c_forward += dc
+    
+    # Check backward in direction (dr,dc)  
+    r_backward, c_backward = r - dr, c - dc
+    while 0 <= r_backward < 8 and 0 <= c_backward < 8:
+        if board[r_backward, c_backward] != 0:
+            count += 1
+        r_backward -= dr
+        c_backward -= dc
+    
+    return count
+
+def is_valid_move(board, from_r, from_c, to_r, to_c, dr, dc, pieces_in_line):
+    """Check if a move is legally valid in Lines of Action"""
+    distance = abs(to_r - from_r) + abs(to_c - from_c)
+    
+    # The move distance must be exactly equal to the number of pieces in the line
+    if distance != pieces_in_line:
+        return False
+    
+    # Check that we don't jump over enemy pieces
+    steps = pieces_in_line
+    r, c = from_r, from_c
+    
+    for i in range(1, steps + 1):
+        r += dr
+        c += dc
+        if board[r, c] == -1:  # Enemy piece, illegal to jump over
+            return False
+    
+    return True
+
+def evaluate_move(board, from_r, from_c, to_r, to_c):
+    """Evaluate how good a move is"""
+    score = 0
+    
+    # Simple evaluation:
+    # - Capturing enemy pieces is good
+    if board[to_r, to_c] == -1:
+        score += 10  # Capture a piece
+    
+    # - Moving toward center gives more mobility
+    center_distance = abs(to_r - 3.5) + abs(to_c - 3.5)
+    score -= center_distance * 0.2  # Prefer positions closer to center
+    
+    # - Prefer moves that keep pieces connected
+    pieces_connected = count_connected_pieces(board, to_r, to_c)
+    score += pieces_connected * 0.5
+    
+    # - Avoid moving to positions where pieces are easily captured
+    # Check if the new position is adjacent to an enemy piece
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            if dr == 0 and dc == 0:
+                continue
+            r, c = to_r + dr, to_c + dc
+            if 0 <= r < 8 and 0 <= c < 8:
+                if board[r, c] == -1:
+                    score -= 2  # Avoid positions adjacent to enemy
+    
+    # - Prefer moves that increase the number of connected components (but we want to connect)
+    # So prefer moves that potentially move pieces closer to connectivity
+    
+    return score
+
+def count_connected_pieces(board, r, c):
+    """Count how many of our pieces are connected to this piece (in 8 directions)"""
+    visited = set()
+    queue = deque([(r, c)])
+    visited.add((r, c))
+    count = 1
+    
+    # Use BFS to find connected pieces
+    while queue:
+        qr, qc = queue.popleft()
+        
+        # Check 8 directions
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                    
+                nr, nc = qr + dr, qc + dc
+                if (0 <= nr < 8 and 0 <= nc < 8 and 
+                    board[nr, nc] == 1 and (nr, nc) not in visited):
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+                    count += 1
+    
+    return count
+</code>

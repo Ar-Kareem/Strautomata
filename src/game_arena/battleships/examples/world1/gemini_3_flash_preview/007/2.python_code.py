@@ -1,0 +1,71 @@
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship targeting policy.
+    0: Unknown, -1: Miss, 1: Hit.
+    """
+    size = 10
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Identify all current hits
+    hits = []
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 1:
+                hits.append((r, c))
+
+    heatmap = [[0.0 for _ in range(size)] for _ in range(size)]
+
+    if not hits:
+        # HUNT MODE: Parity-based random search
+        best_score = -1
+        best_coords = []
+        for r in range(size):
+            for c in range(size):
+                if board[r][c] == 0:
+                    # Prefer even parity to find smallest ship (length 2)
+                    score = 1 if (r + c) % 2 == 0 else 0.5
+                    # Add a tiny bit of randomness to break ties
+                    score += random.random() * 0.1
+                    if score > best_score:
+                        best_score = score
+                        best_coords = [(r, c)]
+                    elif score == best_score:
+                        best_coords.append((r, c))
+        return random.choice(best_coords)
+
+    # TARGET MODE: Proximity to hits
+    for r, c in hits:
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < size and 0 <= nc < size and board[nr][nc] == 0:
+                # Basic weight for being adjacent to a hit
+                heatmap[nr][nc] += 10.0
+                
+                # Line recognition: If the cell opposite to (nr, nc) is also a hit, 
+                # we are extending a line. Increase priority significantly.
+                pr, pc = r - dr, c - dc
+                if 0 <= pr < size and 0 <= pc < size and board[pr][pc] == 1:
+                    heatmap[nr][nc] += 20.0
+
+    # Find the cell with the highest heat
+    max_heat = -1
+    targets = []
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 0:
+                score = heatmap[r][c]
+                if score > max_heat:
+                    max_heat = score
+                    targets = [(r, c)]
+                elif score == max_heat:
+                    targets.append((r, c))
+
+    # If targets are found via heatmap (adjacent to hits)
+    if max_heat > 0:
+        return random.choice(targets)
+
+    # Fallback: Hunt mode if target mode yielded nothing (shouldn't happen with hits)
+    possible = [(r, c) for r in range(size) for c in range(size) if board[r][c] == 0]
+    return random.choice(possible) if possible else (0, 0)

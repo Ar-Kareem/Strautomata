@@ -1,0 +1,118 @@
+The strategy for this policy is to prioritize aggressive and efficient moves while ensuring full legality. It follows a strict hierarchy: first, always move checkers off the bar when present (as required by the rules); second, favor hitting opponent blots to send them to the bar; third, prioritize bearing off checkers when all pieces are in the home board; fourth, move checkers from the furthest back points to maximize advancement. For two-die rolls, the policy evaluates moves sequentially: it selects the best first move, updates the board state, then selects the best second move from the resulting position, using "H" order (higher die first) for non-doubles to maximize impact.
+
+<code>
+import copy
+
+def policy(state: dict) -> str:
+    """Return a legal backgammon move string."""
+    dice = state['dice']
+    if not dice:
+        return "H:P,P"
+    
+    # Create mutable state copy for simulation
+    mutable_state = copy.deepcopy(state)
+    
+    # Bar checkers must move first
+    if mutable_state['my_bar'] > 0:
+        return handle_bar(mutable_state, dice)
+    
+    # Single die roll
+    if len(dice) == 1:
+        move = select_best_move(mutable_state, dice[0])
+        return f"H:{move},P"
+    
+    # Double dice
+    d1, d2 = dice
+    if d1 == d2:
+        move1 = select_best_move(mutable_state, d1)
+        apply_move(mutable_state, move1, d1)
+        move2 = select_best_move(mutable_state, d2)
+        return f"H:{move1},{move2}"
+    
+    # Two different dice: use H order (higher die first)
+    first_die = max(d1, d2)
+    second_die = min(d1, d2)
+    
+    move1 = select_best_move(mutable_state, first_die)
+    apply_move(mutable_state, move1, first_die)
+    move2 = select_best_move(mutable_state, second_die)
+    
+    return f"H:{move1},{move2}"
+
+def handle_bar(state, dice):
+    """Handle mandatory bar move."""
+    for d in sorted(dice, reverse=True):
+        dest = 24 - d
+        if 0 <= dest <= 23 and state['opp_pts'][dest] < 2:
+            move1 = "B"
+            
+            if len(dice) == 1:
+                return f"H:{move1},P"
+            
+            # Apply bar move and find second move
+            apply_move(state, move1, d)
+            other_d = dice[0] if dice[1] == d else dice[1]
+            move2 = select_best_move(state, other_d)
+            
+            order = "H" if d == max(dice) else "L"
+            return f"{order}:{move1},{move2}"
+    
+    return "H:P,P"
+
+def select_best_move(state, die):
+    """Select the best move for a given die value."""
+    # 1. Hit opponent blot
+    for i in range(23, -1, -1):
+        if state['my_pts'][i] > 0:
+            dest = i - die
+            if dest >= 0 and state['opp_pts'][dest] == 1:
+                return f"A{i}"
+    
+    # 2. Bear off if possible
+    if can_bear_off(state):
+        for i in range(5, -1, -1):
+            if state['my_pts'][i] > 0 and i - die < 0:
+                return f"A{i}"
+    
+    # 3. Safe move from furthest back
+    for i in range(23, -1, -1):
+        if state['my_pts'][i] > 0:
+            dest = i - die
+            if dest >= 0 and state['opp_pts'][dest] < 2:
+                return f"A{i}"
+    
+    return "P"
+
+def apply_move(state, move, die):
+    """Apply a move to the board state."""
+    if move == "P":
+        return
+    
+    if move == "B":
+        state['my_bar'] -= 1
+        dest = 24 - die
+        if state['opp_pts'][dest] == 1:
+            state['opp_pts'][dest] = 0
+            state['opp_bar'] += 1
+        state['my_pts'][dest] += 1
+        return
+    
+    src = int(move[1:])
+    state['my_pts'][src] -= 1
+    dest = src - die
+    
+    if dest >= 0:
+        if state['opp_pts'][dest] == 1:
+            state['opp_pts'][dest] = 0
+            state['opp_bar'] += 1
+        state['my_pts'][dest] += 1
+    else:
+        state['my_off'] += 1
+
+def can_bear_off(state):
+    """Check if all checkers are in home board (points 0-5)."""
+    for i in range(6, 24):
+        if state['my_pts'][i] > 0:
+            return False
+    return True
+</code>

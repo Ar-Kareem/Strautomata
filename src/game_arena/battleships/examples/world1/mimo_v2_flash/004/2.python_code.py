@@ -1,0 +1,158 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Battleship AI Policy using a Hybrid Search/Target approach.
+    
+    1. Parity Search: Initially targets cells with (row + col) % 2 == 0 to cover the board efficiently.
+    2. Probability Targeting: When hits exist, it calculates the likelihood of ships based on 
+       valid remaining placements for the unsunk ship lengths.
+    3. Smart Sinking: Prioritizes cells adjacent to hits to finish off damaged ships.
+    """
+    # Known ship lengths in standard Battleship
+    SHIP_LENGTHS = [5, 4, 3, 3, 2]
+    BOARD_SIZE = 10
+    
+    # Helper to check if a ship placement is valid on the current board
+    def is_valid_placement(r, c, length, horizontal):
+        for i in range(length):
+            nr, nc = (r, c + i) if horizontal else (r + i, c)
+            # Check boundaries
+            if nr >= BOARD_SIZE or nc >= BOARD_SIZE:
+                return False
+            # Check against known misses (-1) or hits (1) that conflict
+            # We assume a cell cannot be both a hit and a miss.
+            # We also avoid overlapping known hits unless they are part of the same logical ship chain,
+            # but for probability estimation, we simply require the path to be clear of misses.
+            if board[nr][nc] == -1:
+                return False
+            # If we are checking potential for NEW hits (0), we just need them to be 0.
+            # If we are validating a known hit, we need the path to be consistent.
+            # For this probability map, we treat 0 as "valid ground" and 1 as "valid ground".
+            # We treat -1 as "blocked".
+        return True
+
+    # Helper to count possible ship segments that cover a specific cell (r, c)
+    def count_placements_for_cell(r, c, current_lengths):
+        count = 0
+        for length in current_lengths:
+            # Horizontal checks
+            for start_col in range(c - length + 1, c + 1):
+                if start_col < 0 or start_col + length > BOARD_SIZE:
+                    continue
+                # Verify this segment is valid
+                valid = True
+                for i in range(length):
+                    nr, nc = r, start_col + i
+                    if board[nr][nc] == -1:
+                        valid = False
+                        break
+                if valid:
+                    count += 1
+            
+            # Vertical checks
+            for start_row in range(r - length + 1, r + 1):
+                if start_row < 0 or start_row + length > BOARD_SIZE:
+                    continue
+                # Verify this segment is valid
+                valid = True
+                for i in range(length):
+                    nr, nc = start_row + i, c
+                    if board[nr][nc] == -1:
+                        valid = False
+                        break
+                if valid:
+                    count += 1
+        return count
+
+    # 1. Identify hits and determine if we are in "Target" mode or "Search" mode
+    hits = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == 1:
+                hits.append((r, c))
+
+    # 2. If we have hits, prioritize sinking them
+    if hits:
+        # Calculate probability map for all unknown cells
+        prob_map = [[0] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        
+        # Estimate remaining lengths (simplified: we don't track exact sunk ships perfectly, 
+        # but we can assume lengths are needed until we can't place them).
+        # For robustness, we use the full set. If a ship is sunk, valid placements will be 0 anyway 
+        # because they would overlap the hits (which act as barriers for new placements in our logic 
+        # unless we track orientation explicitly, but checking validity against current board works).
+        
+        # Optimization: Only check unknown cells around hits and reasonable areas?
+        # Given 1 second limit and 10x10, we can check the whole board or a radius.
+        # Let's check the whole board for max probability.
+        
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if board[r][c] == 0:
+                    # Check parity hint: even if searching, hitting logic benefits from probability
+                    # But strictly, we calculate based on remaining lengths.
+                    # To avoid over-complication, we use the full ship list. 
+                    # A "hit" cell usually implies a ship exists, so we look for extensions.
+                    
+                    # Bias: Check neighbors of existing hits first?
+                    # We will just calculate the raw probability score.
+                    prob_map[r][c] = count_placements_for_cell(r, c, SHIP_LENGTHS)
+        
+        # Find the cell with the highest probability
+        best_move = None
+        max_val = -1
+        
+        # Preference: Check cells adjacent to hits first (Sinking logic)
+        # Expand neighbors of hits
+        candidates = set()
+        for r, c in hits:
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    candidates.add((nr, nc))
+        
+        # Check candidates
+        for r, c in candidates:
+            if prob_map[r][c] > max_val:
+                max_val = prob_map[r][c]
+                best_move = (r, c)
+        
+        # If no adjacent candidates are promising (or they are misses), fall back to global probability
+        if best_move is None:
+            for r in range(BOARD_SIZE):
+                for c in range(BOARD_SIZE):
+                    if board[r][c] == 0:
+                        if prob_map[r][c] > max_val:
+                            max_val = prob_map[r][c]
+                            best_move = (r, c)
+                            
+        if best_move:
+            return best_move
+
+    # 3. If no hits, perform Parity Search
+    # We want to hit the even cells first (where (r+c) is even)
+    # This covers the board efficiently.
+    candidates = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == 0:
+                if (r + c) % 2 == 0:
+                    candidates.append((r, c))
+    
+    if candidates:
+        # Shuffle to avoid predictability, or use a deterministic pattern (e.g., spiraling)
+        # For deterministic winning, let's pick the first available even cell (or a specific order).
+        # A spiral or center-out approach is often better than pure random.
+        # Let's sort by distance to center (4.5, 4.5) to prioritize the center.
+        center_r, center_c = 4.5, 4.5
+        candidates.sort(key=lambda pos: (pos[0] - center_r)**2 + (pos[1] - center_c)**2)
+        return candidates[0]
+
+    # Fallback: If even parity is full (unlikely in standard game unless bugs), hit odd cells
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] == 0:
+                return (r, c)
+                
+    # Should never happen if the game is valid
+    return (0, 0)

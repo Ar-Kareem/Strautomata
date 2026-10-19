@@ -1,0 +1,571 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the optimal move for a 3x3x3 3D Tic Tac Toe game.
+I need to implement a strategy to pick an empty cell.
+
+Here's my general approach:
+1.  **Winning Move:** Check if I can win in the next move. If so, take that move.
+2.  **Blocking Move:** Check if the opponent can win in their next move. If so, block them.
+3.  **Forking Move:** Create a situation where I have two ways to win on the next turn. This is complex for 3D and might be hard to implement quickly and perfectly. I'll prioritize simpler strategies first.
+4.  **Center Preference:** Try to take the center cell (1, 1, 1) if available, as it's the most strategic.
+5.  **Corner Preference:** Try to take corner cells if available. There are 8 corners: (0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2).
+6.  **Edge Preference:** Try to take edge cells if available.
+7.  **Random Move:** If none of the above, pick any available empty cell.
+
+Let's break down the `check_line` and `find_winning_move` logic.
+A line in 3D Tic Tac Toe can be:
+*   **Rows:** (z, y, 0), (z, y, 1), (z, y, 2) for all z, y
+*   **Columns:** (z, 0, x), (z, 1, x), (z, 2, x) for all z, x
+*   **Pillars:** (0, y, x), (1, y, x), (2, y, x) for all y, x
+*   **2D Diagonals (on each slice):**
+    *   (z, 0, 0), (z, 1, 1), (z, 2, 2)
+    *   (z, 0, 2), (z, 1, 1), (z, 2, 0)
+    *   (0, y, 0), (1, y, 1), (2, y, 2)
+    *   (0, y, 2), (1, y, 1), (2, y, 0)
+    *   (0, 0, x), (1, 1, x), (2, 2, x)
+    *   (0, 2, x), (1, 1, x), (2, 0, x)
+*   **3D Diagonals (main diagonals connecting corners of the cube):**
+    *   (0, 0, 0), (1, 1, 1), (2, 2, 2)
+    *   (0, 0, 2), (1, 1, 1), (2, 2, 0)
+    *   (0, 2, 0), (1, 1, 1), (2, 0, 2)
+    *   (2, 0, 0), (1, 1, 1), (0, 2, 2)
+
+There are a total of 49 winning lines:
+*   3 directions * 3x3 planes = 9 lines per plane * 3 planes = 27 lines (rows, columns, pillars)
+*   2 diagonals per plane * 3 planes = 6 lines * 3 directions = 18 lines (2D diagonals)
+*   4 main 3D diagonals = 4 lines
+Total: 27 + 18 + 4 = 49 lines.
+
+I will list all these lines explicitly or generate them. Explicit listing might be clearer for debugging.
+
+Let's represent the board with `1` for me and `-1` for opponent.
+
+Helper function `check_line(line_coords, board, player)`:
+Iterates through `line_coords`, counts `player` symbols and empty cells (`0`).
+If `2` of `player` and `1` empty cell, returns the coordinates of the empty cell. Otherwise, returns `None`.
+
+Function `get_all_lines()`:
+This will return a list of lists of (z, y, x) tuples, where each inner list represents a winning line.
+
+```python
+def get_all_lines():
+    lines = []
+    # 1. Lines along X, Y, Z axes (27 lines)
+    for z in range(3):
+        for y in range(3):
+            lines.append([(z, y, x) for x in range(3)]) # Rows
+        for x in range(3):
+            lines.append([(z, y, x) for y in range(3)]) # Columns
+    for y in range(3):
+        for x in range(3):
+            lines.append([(z, y, x) for z in range(3)]) # Pillars
+
+    # 2. 2D Diagonals on each slice (18 lines)
+    for i in range(3):
+        # Slice Z=i
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+        # Slice Y=i
+        lines.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        lines.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        # Slice X=i
+        lines.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        lines.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+
+    # 3. 3D Diagonals (4 lines)
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+    
+    return lines
+```
+This `get_all_lines` function seems correct and covers all 49 lines.
+
+Now, the `policy` function implementation:
+
+```python
+import random
+
+# Pre-calculate all winning lines once
+ALL_WINNING_LINES = None
+
+def get_all_lines():
+    global ALL_WINNING_LINES
+    if ALL_WINNING_LINES is not None:
+        return ALL_WINNING_LINES
+
+    lines = []
+    # 1. Lines along X, Y, Z axes (27 lines)
+    for z in range(3):
+        for y in range(3):
+            lines.append([(z, y, x) for x in range(3)]) # Rows
+        for x in range(3):
+            lines.append([(z, y, x) for y in range(3)]) # Columns
+    for y in range(3):
+        for x in range(3):
+            lines.append([(z, y, x) for z in range(3)]) # Pillars
+
+    # 2. 2D Diagonals on each slice (18 lines)
+    for i in range(3):
+        # Slice Z=i (horizontal, front-back)
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+        # Slice Y=i (vertical, up-down)
+        lines.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        lines.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        # Slice X=i (depth, left-right)
+        lines.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        lines.append([(0, 2, i), (1, 1, i), (2, 0, i)])
+
+    # 3. 3D Diagonals (4 lines)
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+    
+    ALL_WINNING_LINES = lines
+    return lines
+
+def find_critical_move(board, player):
+    """
+    Checks if 'player' can win in the next move, or if 'player' needs to block
+    an opponent's win.
+    Returns the move (z, y, x) if found, otherwise None.
+    """
+    for line_coords in get_all_lines():
+        player_pieces = 0
+        empty_cell = None
+        
+        for z, y, x in line_coords:
+            cell_value = board[z][y][x]
+            if cell_value == player:
+                player_pieces += 1
+            elif cell_value == 0:
+                empty_cell = (z, y, x)
+        
+        if player_pieces == 2 and empty_cell is not None:
+            return empty_cell
+    return None
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    
+    ME = 1
+    OPPONENT = -1
+
+    # 1. Check for a winning move for me
+    my_winning_move = find_critical_move(board, ME)
+    if my_winning_move:
+        return my_winning_move
+
+    # 2. Check for a blocking move against the opponent
+    opponent_winning_move = find_critical_move(board, OPPONENT)
+    if opponent_winning_move:
+        return opponent_winning_move
+
+    # 3. Try to take the center (1, 1, 1) if available
+    center_cell = (1, 1, 1)
+    if board[center_cell[0]][center_cell[1]][center_cell[2]] == 0:
+        return center_cell
+
+    # 4. Try to take corner cells for strategic advantage
+    corners = [
+        (0,0,0), (0,0,2), (0,2,0), (0,2,2),
+        (2,0,0), (2,0,2), (2,2,0), (2,2,2)
+    ]
+    random.shuffle(corners) # Shuffle to add some variety if multiple corners are open
+    for z, y, x in corners:
+        if board[z][y][x] == 0:
+            return (z, y, x)
+            
+    # 5. Try to take edge cells (non-corner, non-center)
+    edges = []
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                if (z,y,x) not in corners and (z,y,x) != center_cell and board[z][y][x] == 0:
+                    edges.append((z,y,x))
+    
+    if edges:
+        return random.choice(edges)
+
+    # 6. If no strategic moves, pick any available empty cell (shouldn't happen before a draw)
+    # This acts as a fallback for any remaining cells
+    empty_cells = []
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                if board[z][y][x] == 0:
+                    empty_cells.append((z, y, x))
+    
+    if empty_cells:
+        return random.choice(empty_cells)
+    
+    # If the board is full and no move is possible (should theoretically not be reached as game ends)
+    # But as a failsafe, return an invalid move or raise an error.
+    # The problem implies a move is always possible if called, so this is just for safety.
+    return (0,0,0) # Should never reach here in a well-played game
+```
+
+Consider edge cases and potential improvements:
+*   **Performance:** `get_all_lines` is called potentially many times. Making `ALL_WINNING_LINES` a global or static variable that's initialized once is a good idea. I've done this.
+*   **Forking:** This strategy doesn't implement forking. Forking is creating two direct threats simultaneously. This is significantly more complex to detect and might require a mini-max like approach or more sophisticated pattern matching. For a basic "good" bot, win/block/center/corner is usually a solid start.
+*   **Empty Cells List:** The `edges` list generation can be optimized by pre-calculating all possible edge cells or combining it with finding all empty cells. But for 3x3x3, loops are fine.
+*   **Randomization:** Randomizing corner and edge choices adds variety, which is good for competing against other AIs that might have fixed patterns.
+
+Let's double check the `get_all_lines` function comments.
+*   `Slice Z=i` is the front-to-back slice. Correct (z,y,x) where z is constant.
+*   `Slice Y=i` is the up-down slice. Correct (z,y,x) where y is constant.
+*   `Slice X=i` is the left-right slice. Correct (z,y,x) where x is constant.
+
+The 2D diagonals are then on these slices.
+*   `lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])` corresponds to `y=x` on a `Z=i` slice. Correct.
+*   `lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])` corresponds to `y+x=2` on a `Z=i` slice. Correct.
+*   Similarly for `(0, i, 0), (1, i, 1), (2, i, 2)` for `Y=i` slice, with `z=x`. Correct.
+*   And for `(0, 0, i), (1, 1, i), (2, 2, i)` for `X=i` slice, with `z=y`. Correct.
+
+All lines seem to be correctly identified.
+
+The prioritization:
+1. Win
+2. Block
+3. Center
+4. Corners
+5. Edges
+6. Any other empty spot (fallback)
+
+This is a very common and effective strategy for Tic Tac Toe variants. It should perform reasonably well without needing to delve into complex game tree search for this 3x3x3 board.
+
+It's important that `random` is imported.
+
+One final check on the `find_critical_move` logic:
+If `player_pieces == 2` and `empty_cell is not None`, it means there are two of the `player`'s pieces and one empty cell in that line. This is exactly the condition for a winning/blocking move. So this logic is sound.
+
+The specific "edges" list generation is okay, but `random.choice(empty_cells)` at the end will also cover these without explicitly defining `edges` if the earlier steps don't find a move. However, giving specific preference to "corners" and then "edges" (if they are distinct) is part of a strategic hierarchy. My `edges` definition was `(z,y,x) not in corners and (z,y,x) != center_cell`. This is correct for distinguishing those cell types.
+
+The code seems complete and follows a reasonable strategy.
+```python
+import random
+
+# Global variable to store all winning lines, computed once.
+_ALL_WINNING_LINES = None
+
+def _initialize_winning_lines():
+    """
+    Generates and stores all possible winning lines for a 3x3x3 board.
+    A winning line consists of 3 coordinates (z, y, x).
+    There are 49 such lines in 3D Tic-Tac-Toe.
+    """
+    global _ALL_WINNING_LINES
+    if _ALL_WINNING_LINES is not None:
+        return _ALL_WINNING_LINES
+
+    lines = []
+
+    # 1. Lines along Z, Y, X axes (27 lines)
+    for z in range(3):
+        for y in range(3):
+            # Rows (fixed z, y, varying x)
+            lines.append([(z, y, x) for x in range(3)])
+        for x in range(3):
+            # Columns (fixed z, x, varying y)
+            lines.append([(z, y, x) for y in range(3)])
+    for y in range(3):
+        for x in range(3):
+            # Pillars (fixed y, x, varying z)
+            lines.append([(z, y, x) for z in range(3)])
+
+    # 2. 2D Diagonals on each face/slice (18 lines)
+    for i in range(3):
+        # Diagonals on Z-slices (where z=i is constant)
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)]) # Main diagonal
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)]) # Anti-diagonal
+
+        # Diagonals on Y-slices (where y=i is constant)
+        lines.append([(0, i, 0), (1, i, 1), (2, i, 2)]) # Main diagonal
+        lines.append([(0, i, 2), (1, i, 1), (2, i, 0)]) # Anti-diagonal
+
+        # Diagonals on X-slices (where x=i is constant)
+        lines.append([(0, 0, i), (1, 1, i), (2, 2, i)]) # Main diagonal
+        lines.append([(0, 2, i), (1, 1, i), (2, 0, i)]) # Anti-diagonal
+
+    # 3. 3D Space Diagonals (4 main diagonals)
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)]) # (0,0,0) to (2,2,2)
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)]) # (0,0,2) to (2,2,0)
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)]) # (0,2,0) to (2,0,2)
+    lines.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)]) # (2,0,0) to (0,2,2)
+    
+    _ALL_WINNING_LINES = lines
+    return _ALL_WINNING_LINES
+
+def _find_critical_move(board, player_id: int):
+    """
+    Checks if 'player_id' can win in the next move, or if 'player_id' needs to block
+    an opponent's win (when called with opponent's ID).
+    Returns the coordinates (z, y, x) of the strategic move if found, otherwise None.
+    """
+    for line_coords in _initialize_winning_lines():
+        player_pieces_count = 0
+        empty_cell = None
+        
+        for z, y, x in line_coords:
+            cell_value = board[z][y][x]
+            if cell_value == player_id:
+                player_pieces_count += 1
+            elif cell_value == 0:
+                # If there's more than one empty cell in the line, it's not a critical move yet.
+                if empty_cell is not None: 
+                    empty_cell = None 
+                    break # More than one empty cell, this line isn't critical
+                empty_cell = (z, y, x)
+        
+        # A move is critical if there are two of the player's pieces and exactly one empty cell.
+        if player_pieces_count == 2 and empty_cell is not None:
+            return empty_cell
+    return None
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next move for a 3x3x3 3D Tic Tac Toe game.
+    
+    Args:
+        board: A 3x3x3 list of lists representing the game board.
+               0: empty, 1: your piece, -1: opponent's piece.
+               
+    Returns:
+        A tuple (z, y, x) indicating the chosen empty cell.
+    """
+    
+    ME = 1
+    OPPONENT = -1
+
+    # 1. Check for a winning move for me
+    my_winning_move = _find_critical_move(board, ME)
+    if my_winning_move:
+        return my_winning_move
+
+    # 2. Check for a blocking move against the opponent
+    opponent_winning_move = _find_critical_move(board, OPPONENT)
+    if opponent_winning_move:
+        return opponent_winning_move
+
+    # 3. Try to take the center (1, 1, 1) if available, as it's highly strategic.
+    center_cell = (1, 1, 1)
+    if board[center_cell[0]][center_cell[1]][center_cell[2]] == 0:
+        return center_cell
+
+    # 4. Try to take corner cells if available. There are 8 corners.
+    corners = [
+        (0,0,0), (0,0,2), (0,2,0), (0,2,2),
+        (2,0,0), (2,0,2), (2,2,0), (2,2,2)
+    ]
+    # Shuffle to add some variety if multiple corners are open and equally good
+    random.shuffle(corners) 
+    for z, y, x in corners:
+        if board[z][y][x] == 0:
+            return (z, y, x)
+            
+    # 5. Try to take edge cells (non-corner, non-center perimeter cells).
+    # These are cells with exactly one '1' or '2' in their coordinates, not including corners.
+    edges = []
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                cell_coord = (z,y,x)
+                # Check if it's not the center and not a corner
+                is_center = cell_coord == center_cell
+                is_corner = cell_coord in corners
+                
+                # An edge cell has sum of (coord % 2 == 0) equal to 2.
+                # E.g., (0,0,1), (0,1,0), (1,0,0) (outer edges)
+                # (0,1,2), (1,0,2), (2,1,0)
+                # More simply: sum of coordinates is odd and not 1 or 3 (for corner/center cases)
+                # or, one coordinate is 1 and the others are 0 or 2, without being the center.
+                
+                # A more robust way to define edge cells for 3x3x3:
+                # If exactly one coordinate is 1, and the other two are 0 or 2.
+                # E.g., (0,1,0), (0,1,2), (1,0,0), (1,0,2), (1,2,0), (1,2,2), (0,0,1), (0,2,1), (2,0,1), (2,2,1)
+                # There are 12 such edges.
+                # These are cells like (0,1,1), (1,0,1), (1,1,0), (1,1,2), (1,2,1), (2,1,1) (middle edges)
+                # And (0,0,1), (0,2,1), (2,0,1), (2,2,1), (0,1,0), (0,1,2), (1,0,0), (1,0,2) etc.
+                
+                # Easiest way: list all the 24 edge cells.
+                # Or, identify by 'middleness' - sum of indices.
+                # For a (z,y,x) cell:
+                # - Center: (1,1,1)
+                # - Corner: (0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)
+                # - Face center: (0,1,1), (1,0,1), (1,1,0), (1,1,2), (1,2,1), (2,1,1) -> 6 cells
+                # - Edge center: (0,0,1), (0,1,0), (0,1,2), (0,2,1), (1,0,0), (1,0,2), (1,2,0), (1,2,2), (2,0,1), (2,1,0), (2,1,2), (2,2,1) -> 12 cells
+                
+                # A cell is an edge if it's not a corner and not a center.
+                # And is on the perimeter of the cube.
+                # This could be the face centers or the 'true' edge centers.
+                
+                # Let's just gather all remaining empty cells and prioritize them via random choice.
+                # The current logic for `corners` explicitly picks out corners.
+                # The `center` is explicitly picked.
+                # Any others are 'other cells', so let's just use empty_cells for clarity.
+
+                if board[z][y][x] == 0 and not is_center and not is_corner:
+                    edges.append(cell_coord)
+    
+    if edges:
+        return random.choice(edges)
+
+    # 6. Fallback: If no strategic moves, pick any available empty cell.
+    # This should include any remaining 'face center' cells as well if they were not covered by corners/center.
+    empty_cells = []
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                if board[z][y][x] == 0:
+                    empty_cells.append((z, y, x))
+    
+    if empty_cells:
+        return random.choice(empty_cells)
+    
+    # This part should ideally not be reached in a live game as a move is always possible before game end.
+    # But as a failsafe, return (0,0,0) or raise an error.
+    return (0,0,0) 
+```</thinking>
+<code>
+import random
+
+# Global variable to store all winning lines, computed once.
+_ALL_WINNING_LINES = None
+
+def _initialize_winning_lines():
+    """
+    Generates and stores all possible winning lines for a 3x3x3 board.
+    A winning line consists of 3 coordinates (z, y, x).
+    There are 49 such lines in 3D Tic-Tac-Toe.
+    """
+    global _ALL_WINNING_LINES
+    if _ALL_WINNING_LINES is not None:
+        return _ALL_WINNING_LINES
+
+    lines = []
+
+    # 1. Lines along Z, Y, X axes (27 lines)
+    # Rows (fixed z, y, varying x)
+    for z in range(3):
+        for y in range(3):
+            lines.append([(z, y, x) for x in range(3)])
+    # Columns (fixed z, x, varying y)
+    for z in range(3):
+        for x in range(3):
+            lines.append([(z, y, x) for y in range(3)])
+    # Pillars (fixed y, x, varying z)
+    for y in range(3):
+        for x in range(3):
+            lines.append([(z, y, x) for z in range(3)])
+
+    # 2. 2D Diagonals on each face/slice (18 lines)
+    for i in range(3):
+        # Diagonals on Z-slices (where z=i is constant)
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)]) # Main diagonal
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)]) # Anti-diagonal
+
+        # Diagonals on Y-slices (where y=i is constant)
+        lines.append([(0, i, 0), (1, i, 1), (2, i, 2)]) # Main diagonal
+        lines.append([(0, i, 2), (1, i, 1), (2, i, 0)]) # Anti-diagonal
+
+        # Diagonals on X-slices (where x=i is constant)
+        lines.append([(0, 0, i), (1, 1, i), (2, 2, i)]) # Main diagonal
+        lines.append([(0, 2, i), (1, 1, i), (2, 0, i)]) # Anti-diagonal
+
+    # 3. 3D Space Diagonals (4 main diagonals)
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)]) # (0,0,0) to (2,2,2)
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)]) # (0,0,2) to (2,2,0)
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)]) # (0,2,0) to (2,0,2)
+    lines.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)]) # (2,0,0) to (0,2,2)
+    
+    _ALL_WINNING_LINES = lines
+    return _ALL_WINNING_LINES
+
+def _find_critical_move(board, player_id: int):
+    """
+    Checks if 'player_id' can win in the next move, or if 'player_id' needs to block
+    an opponent's win (when called with opponent's ID).
+    Returns the coordinates (z, y, x) of the strategic move if found, otherwise None.
+    """
+    for line_coords in _initialize_winning_lines():
+        player_pieces_count = 0
+        empty_cell = None
+        current_line_empty_count = 0
+        
+        for z, y, x in line_coords:
+            cell_value = board[z][y][x]
+            if cell_value == player_id:
+                player_pieces_count += 1
+            elif cell_value == 0:
+                empty_cell = (z, y, x)
+                current_line_empty_count += 1
+            # If line contains opponent's piece, it cannot be won/blocked by this player
+            elif cell_value == -player_id:
+                player_pieces_count = -1 # Mark as invalid line for this player
+                break
+        
+        # A move is critical if there are two of the player's pieces and exactly one empty cell.
+        if player_pieces_count == 2 and current_line_empty_count == 1 and empty_cell is not None:
+            return empty_cell
+    return None
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next move for a 3x3x3 3D Tic Tac Toe game.
+    
+    Args:
+        board: A 3x3x3 list of lists representing the game board.
+               0: empty, 1: your piece, -1: opponent's piece.
+               
+    Returns:
+        A tuple (z, y, x) indicating the chosen empty cell.
+    """
+    
+    ME = 1
+    OPPONENT = -1
+
+    # 1. Check for a winning move for me
+    my_winning_move = _find_critical_move(board, ME)
+    if my_winning_move:
+        return my_winning_move
+
+    # 2. Check for a blocking move against the opponent
+    opponent_winning_move = _find_critical_move(board, OPPONENT)
+    if opponent_winning_move:
+        return opponent_winning_move
+
+    # 3. Try to take the center (1, 1, 1) if available, as it's highly strategic.
+    center_cell = (1, 1, 1)
+    if board[center_cell[0]][center_cell[1]][center_cell[2]] == 0:
+        return center_cell
+
+    # 4. Try to take corner cells if available. There are 8 corners.
+    corners = [
+        (0,0,0), (0,0,2), (0,2,0), (0,2,2),
+        (2,0,0), (2,0,2), (2,2,0), (2,2,2)
+    ]
+    # Shuffle to add some variety if multiple corners are open and equally good
+    shuffled_corners = random.sample(corners, len(corners)) # Use sample to avoid modifying original list
+    for z, y, x in shuffled_corners:
+        if board[z][y][x] == 0:
+            return (z, y, x)
+            
+    # 5. Fallback: If no strategic moves, pick any available empty cell.
+    # This covers face-centers, true-edge cells, and any other remaining empty cells.
+    empty_cells = []
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                if board[z][y][x] == 0:
+                    empty_cells.append((z, y, x))
+    
+    if empty_cells:
+        # Shuffle empty cells to add variety and avoid predictable patterns
+        return random.choice(empty_cells)
+    
+    # This part should ideally not be reached in a live game as a move is always possible before game end,
+    # unless the board is completely full and it's a draw, in which case no move is needed.
+    # As a failsafe, return a default valid-looking cell, though it implies an error state.
+    return (0,0,0) 
+</code>

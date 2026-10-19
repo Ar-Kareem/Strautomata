@@ -1,0 +1,130 @@
+
+
+The strategy for this policy is to:
+1. **Prioritize Immediate Wins**: Check all possible moves (placement + rotation) to see if any result in an immediate win for the AI. If found, select that move.
+2. **Block Opponent Wins**: Check if any of the opponent's immediate winning moves can be blocked by our move, prioritizing those.
+3. **Heuristic Evaluation**: For non-terminal moves, evaluate the board state using a heuristic that considers:
+   - **Line Potential**: Higher scores for lines with more of our marbles and no opponent marbles.
+   - **Positional Bonus**: Favor placements near the center and key positions that contribute to multiple lines.
+   - **Opponent Threat Reduction**: Penalize positions where the opponent has strong lines.
+4. **Smart Rotation**: Evaluate quadrant rotations that maximize our line potential while disrupting the opponent's lines.
+
+The AI uses exhaustive search over all legal moves, evaluating each with the heuristic. The chosen move optimizes for immediate wins or the highest heuristic score, balancing between offense and defense.
+
+<code>
+import numpy as np
+
+def policy(you, opponent):
+    you = np.array(you, dtype=int)
+    opponent = np.array(opponent, dtype=int)
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if you[r][c] == 0 and opponent[r][c] == 0]
+    
+    # Precompute all 5-in-a-row lines
+    all_lines = []
+    for r in range(6):  # Horizontal lines
+        for c in range(2):
+            all_lines.append([(r, c+i) for i in range(5)])
+    for c in range(6):  # Vertical lines
+        for r in range(2):
+            all_lines.append([(r+i, c) for i in range(5)])
+    for r in range(2):  # Diagonal (top-left to bottom-right)
+        for c in range(2):
+            all_lines.append([(r+i, c+i) for i in range(5)])
+    for r in range(2):  # Diagonal (top-right to bottom-left)
+        for c in range(4, 6):
+            all_lines.append([(r+i, c-i) for i in range(5)])
+    
+    center_bonus = np.array([
+        [1, 2, 2, 2, 2, 1],
+        [2, 3, 3, 3, 3, 2],
+        [2, 3, 4, 4, 3, 2],
+        [2, 3, 4, 4, 3, 2],
+        [2, 3, 3, 3, 3, 2],
+        [1, 2, 2, 2, 2, 1]
+    ])
+    
+    best_score = float('-inf')
+    best_move = None
+    
+    for (r, c) in empty_cells:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                you_temp = you.copy()
+                opp_temp = opponent.copy()
+                
+                # Place marble
+                you_temp[r][c] = 1
+                
+                # Rotate quadrant
+                rotate_quadrant(you_temp, quad, direction)
+                rotate_quadrant(opp_temp, quad, direction)
+                
+                # Check wins
+                ai_win = has_five(you_temp, all_lines)
+                opp_win = has_five(opp_temp, all_lines)
+                if ai_win and not opp_win:
+                    score = float('inf')
+                elif opp_win and not ai_win:
+                    score = float('-inf')
+                elif ai_win and opp_win:
+                    score = float('-inf')
+                else:
+                    score = evaluate_board(you_temp, opp_temp, all_lines, center_bonus)
+                
+                # Update best move
+                if score > best_score:
+                    best_score = score
+                    best_move = (r+1, c+1, quad, direction)
+                    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]}"
+
+def rotate_quadrant(board, quad, direction):
+    if quad == 0:
+        r0, c0 = 0, 0
+    elif quad == 1:
+        r0, c0 = 0, 3
+    elif quad == 2:
+        r0, c0 = 3, 0
+    else:
+        r0, c0 = 3, 3
+        
+    # Extract quadrant
+    sub = [row[c0:c0+3] for row in board[r0:r0+3]]
+    
+    # Rotate
+    if direction == 'L':  # 90° counter-clockwise
+        rotated = list(zip(*sub))[::-1]
+    else:  # 'R' - 90° clockwise
+        rotated = list(zip(*sub[::-1]))
+        
+    rotated = [list(row) for row in rotated]
+    
+    # Write back
+    for i in range(3):
+        for j in range(3):
+            board[r0+i][c0+j] = rotated[i][j]
+
+def has_five(board, lines):
+    for line in lines:
+        if sum(board[r][c] for (r,c) in line) >= 5:
+            return True
+    return False
+
+def evaluate_board(you, opponent, lines, center_bonus):
+    score = 0
+    # Line potential
+    for line in lines:
+        ai_count = sum(you[r][c] for (r,c) in line)
+        opp_count = sum(opponent[r][c] for (r,c) in line)
+        
+        if ai_count > 0 and opp_count == 0:
+            score += ai_count ** 3  # Favor lines with more stones
+        elif opp_count > 0 and ai_count == 0:
+            score -= opp_count ** 3
+            
+    # Positional bonus
+    score += np.sum(you * center_bonus)
+    score -= np.sum(opponent * center_bonus)
+    
+    return score
+</code>

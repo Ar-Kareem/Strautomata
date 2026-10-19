@@ -1,0 +1,213 @@
+### Thinking Process
+
+**Understanding Pentago Rules and Move Selection:**
+Pentago is a two-player game where players take turns placing a marble on an empty cell of a 6x6 grid and then rotating one of the four 3x3 quadrants. The goal is to create a line of five marbles in a row (horizontally, vertically, or diagonally) before the opponent does. The challenge is to implement a move-selection policy that always returns a legal move and ideally tries to win or block the opponent.
+
+**Key Components of the Policy:**
+1. **Legal Move Validation:**
+   - Ensure the placement is on an empty cell.
+   - Ensure the quadrant and direction are valid.
+   - After placement and rotation, check if the move leads to a win or a forced win for the opponent.
+
+2. **Winning Moves:**
+   - Check if placing a marble and rotating a quadrant can create a line of five marbles for the player.
+   - If such a move exists, prioritize it.
+
+3. **Blocking Opponent's Win:**
+   - Check if the opponent can win in their next move. If so, block their potential winning moves by placing a marble and rotating a quadrant to prevent their win.
+
+4. **Fallback Strategy:**
+   - If no immediate winning or blocking moves are found, use a simple heuristic (e.g., place in the center or a random empty cell) and rotate a quadrant that doesn't disrupt existing lines.
+
+**Implementation Steps:**
+1. **Represent the Board:**
+   - Use the given `you` and `opponent` arrays to represent the current state of the board.
+   - Combine them into a single board representation for easier manipulation.
+
+2. **Generate Legal Moves:**
+   - Iterate over all empty cells to find valid placements.
+   - For each placement, iterate over all possible quadrants and directions to generate all possible moves.
+
+3. **Evaluate Moves:**
+   - For each move, simulate the placement and rotation.
+   - Check if the move results in a win for the player.
+   - If not, check if the move blocks the opponent's potential win.
+   - If neither, use a simple heuristic to select a move.
+
+4. **Return the Best Move:**
+   - Return the first move that leads to a win or blocks the opponent.
+   - If no such move exists, return a default move.
+
+**Optimizations:**
+- Precompute potential winning lines for both players to quickly evaluate moves.
+- Use symmetry and board symmetry to reduce the number of moves to evaluate.
+
+**Edge Cases:**
+- Handle cases where the board is full or no immediate winning/blocking moves are available.
+- Ensure that the move is always legal and doesn't violate the game rules.
+
+### Python Implementation
+
+```python
+import numpy as np
+
+def policy(you, opponent) -> str:
+    # Convert inputs to numpy arrays for easier manipulation
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+
+    # Combine the boards to check for empty cells
+    board = you_board + opponent_board
+    empty_cells = np.argwhere(board == 0)
+
+    # Directions for checking lines (horizontal, vertical, diagonal, anti-diagonal)
+    directions = [
+        ((0, 1), (0, -1)),  # horizontal
+        ((1, 0), (-1, 0)),  # vertical
+        ((1, 1), (-1, -1)),  # diagonal
+        ((1, -1), (-1, 1))   # anti-diagonal
+    ]
+
+    def check_win(board, player):
+        """Check if the given player has a line of 5 or more in any direction."""
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] == player:
+                    for dr1, dr2 in directions:
+                        count = 1
+                        # Check in one direction
+                        for step in range(1, 5):
+                            nr, nc = r + step * dr1[0], c + step * dr1[1]
+                            if 0 <= nr < 6 and 0 <= nc < 6 and board[nr][nc] == player:
+                                count += 1
+                            else:
+                                break
+                        # Check in the opposite direction
+                        for step in range(1, 5):
+                            nr, nc = r + step * dr2[0], c + step * dr2[1]
+                            if 0 <= nr < 6 and 0 <= nc < 6 and board[nr][nc] == player:
+                                count += 1
+                            else:
+                                break
+                        if count >= 5:
+                            return True
+        return False
+
+    def rotate_quadrant(quad, direction, you_board, opponent_board):
+        """Rotate the specified quadrant in the given direction."""
+        # Define the quadrant boundaries
+        quadrants = [
+            (slice(0, 3), slice(0, 3)),  # quad 0
+            (slice(0, 3), slice(3, 6)),  # quad 1
+            (slice(3, 6), slice(0, 3)),  # quad 2
+            (slice(3, 6), slice(3, 6))   # quad 3
+        ]
+        rows, cols = quadrants[quad]
+
+        # Extract the quadrant
+        you_quad = you_board[rows, cols]
+        opp_quad = opponent_board[rows, cols]
+
+        # Rotate the quadrant
+        if direction == 'L':
+            you_quad = np.rot90(you_quad, k=-1)
+            opp_quad = np.rot90(opp_quad, k=-1)
+        else:  # 'R'
+            you_quad = np.rot90(you_quad, k=1)
+            opp_quad = np.rot90(opp_quad, k=1)
+
+        # Place the rotated quadrant back
+        you_board[rows, cols] = you_quad
+        opponent_board[rows, cols] = opp_quad
+
+    def simulate_move(row, col, quad, direction):
+        """Simulate the move and check if it results in a win."""
+        # Create copies of the boards
+        new_you = you_board.copy()
+        new_opponent = opponent_board.copy()
+
+        # Place the marble
+        new_you[row - 1, col - 1] = 1
+
+        # Rotate the quadrant
+        rotate_quadrant(quad, direction, new_you, new_opponent)
+
+        # Check if the move results in a win
+        if check_win(new_you, 1):
+            return True
+        return False
+
+    def is_opponent_win(row, col, quad, direction):
+        """Check if the opponent can win after our move."""
+        # Create copies of the boards
+        new_you = you_board.copy()
+        new_opponent = opponent_board.copy()
+
+        # Place the marble
+        new_you[row - 1, col - 1] = 1
+
+        # Rotate the quadrant
+        rotate_quadrant(quad, direction, new_you, new_opponent)
+
+        # Now, check if the opponent can win in their next move
+        # This is a simplified check; in practice, you'd need to simulate all possible opponent moves
+        # For simplicity, we'll assume the opponent can win if they have 4 in a row in any direction
+        # This is a heuristic and may not cover all cases
+        for r in range(6):
+            for c in range(6):
+                if new_opponent[r][c] == 1:
+                    for dr1, dr2 in directions:
+                        count = 1
+                        # Check in one direction
+                        for step in range(1, 5):
+                            nr, nc = r + step * dr1[0], c + step * dr1[1]
+                            if 0 <= nr < 6 and 0 <= nc < 6 and new_opponent[nr][nc] == 1:
+                                count += 1
+                            else:
+                                break
+                        # Check in the opposite direction
+                        for step in range(1, 5):
+                            nr, nc = r + step * dr2[0], c + step * dr2[1]
+                            if 0 <= nr < 6 and 0 <= nc < 6 and new_opponent[nr][nc] == 1:
+                                count += 1
+                            else:
+                                break
+                        if count >= 4:
+                            return True
+        return False
+
+    # Iterate over all empty cells
+    for row, col in empty_cells:
+        row += 1  # convert to 1-based
+        col += 1  # convert to 1-based
+        # Try all quadrants and directions
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                # Check if the move results in a win
+                if simulate_move(row, col, quad, direction):
+                    return f"{row},{col},{quad},{direction}"
+                # Check if the move blocks the opponent's win
+                if is_opponent_win(row, col, quad, direction):
+                    return f"{row},{col},{quad},{direction}"
+
+    # If no winning or blocking move found, choose a random empty cell and rotate a random quadrant
+    # For simplicity, we'll choose the first empty cell and rotate quad 0 left
+    if len(empty_cells) > 0:
+        row, col = empty_cells[0]
+        row += 1  # convert to 1-based
+        col += 1  # convert to 1-based
+        return f"{row},{col},0,L"
+
+    # This should theoretically never be reached as per the problem statement
+    return "1,1,0,L"
+```
+
+### Explanation:
+1. **Board Representation:** The `you` and `opponent` arrays are combined to check for empty cells.
+2. **Win Check:** The `check_win` function checks if a player has a line of five marbles in any direction.
+3. **Move Simulation:** The `simulate_move` function simulates placing a marble and rotating a quadrant to see if it results in a win.
+4. **Opponent Win Check:** The `is_opponent_win` function checks if the opponent can win in their next move after our move.
+5. **Move Selection:** The policy first checks for winning moves, then blocking moves, and defaults to a simple move if none are found.
+6. **Legal Move Guarantee:** The code ensures that the returned move is always legal by checking empty cells and valid quadrants/directions.
+
+This implementation balances simplicity with effectiveness, ensuring legal moves while attempting to win or block the opponent.

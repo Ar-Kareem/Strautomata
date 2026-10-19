@@ -1,0 +1,141 @@
+The strategy for this policy is to use minimax search with alpha-beta pruning and iterative deepening to find the best move. The key elements are:
+
+1. **Extra turn prioritization**: Moves that give an extra turn (last seed lands in your store) are prioritized in move ordering
+2. **Capture detection**: The game state evaluation accounts for captures when the last seed lands in an empty house
+3. **Smart evaluation function**: Evaluates positions based on store difference, seed distribution, and mobility
+4. **Iterative deepening**: Searches progressively deeper until time limit approaches, ensuring a move is always available
+5. **Time management**: Uses a 0.9 second deadline to ensure completion within the 1 second limit
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    
+    def make_move(board, player, move):
+        """Execute a move and return new board state and whether player gets extra turn."""
+        new_board = [board[0][:], board[1][:]]
+        seeds = new_board[player][move]
+        new_board[player][move] = 0
+        
+        side, idx = player, move
+        
+        while seeds > 0:
+            idx += 1
+            if side == player:
+                if idx <= 6:
+                    new_board[player][idx] += 1
+                    seeds -= 1
+                else:
+                    side, idx = 1 - player, -1
+            else:
+                if idx <= 5:
+                    new_board[1-player][idx] += 1
+                    seeds -= 1
+                else:
+                    side, idx = player, -1
+        
+        extra_turn = (side == player and idx == 6)
+        
+        # Check for capture
+        if side == player and 0 <= idx <= 5 and new_board[player][idx] == 1:
+            opp_idx = 5 - idx
+            if new_board[1-player][opp_idx] > 0:
+                captured = 1 + new_board[1-player][opp_idx]
+                new_board[player][6] += captured
+                new_board[player][idx] = 0
+                new_board[1-player][opp_idx] = 0
+        
+        return new_board, extra_turn
+    
+    def is_terminal(board):
+        return all(x == 0 for x in board[0][:6]) or all(x == 0 for x in board[1][:6])
+    
+    def evaluate(board):
+        """Evaluate board from player 0's perspective."""
+        if is_terminal(board):
+            my_store = board[0][6] + sum(board[0][:6])
+            opp_store = board[1][6] + sum(board[1][:6])
+            return (my_store - opp_store) * 10000
+        
+        store_diff = board[0][6] - board[1][6]
+        seed_diff = sum(board[0][:6]) - sum(board[1][:6])
+        mobility_diff = sum(1 for x in board[0][:6] if x > 0) - sum(1 for x in board[1][:6] if x > 0)
+        
+        # Bonus for potential extra turns
+        my_extra = sum(1 for i in range(6) if board[0][i] > 0 and (board[0][i] + i) % 13 == 6)
+        opp_extra = sum(1 for i in range(6) if board[1][i] > 0 and (board[1][i] + i) % 13 == 6)
+        
+        return store_diff * 12 + seed_diff + mobility_diff * 3 + (my_extra - opp_extra) * 5
+    
+    def get_moves(board, player):
+        return [i for i in range(6) if board[player][i] > 0]
+    
+    def order_moves(board, player, moves):
+        """Order moves with extra turns first."""
+        scored = []
+        for m in moves:
+            _, extra = make_move(board, player, m)
+            scored.append((-1000 if extra else 0, m))
+        scored.sort()
+        return [m for _, m in scored]
+    
+    def minimax(board, depth, alpha, beta, maximizing, deadline):
+        if time.time() > deadline:
+            return evaluate(board), None, True
+        
+        if depth == 0 or is_terminal(board):
+            return evaluate(board), None, False
+        
+        player = 0 if maximizing else 1
+        moves = get_moves(board, player)
+        
+        if not moves:
+            return evaluate(board), None, False
+        
+        moves = order_moves(board, player, moves)
+        best_move = moves[0]
+        
+        if maximizing:
+            max_eval = float('-inf')
+            for move in moves:
+                new_board, extra = make_move(board, player, move)
+                score, _, timeout = minimax(new_board, depth - 1, alpha, beta, extra, deadline)
+                if timeout:
+                    return max_eval, best_move, True
+                if score > max_eval:
+                    max_eval, best_move = score, move
+                alpha = max(alpha, score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move, False
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_board, extra = make_move(board, player, move)
+                score, _, timeout = minimax(new_board, depth - 1, alpha, beta, not extra, deadline)
+                if timeout:
+                    return min_eval, best_move, True
+                if score < min_eval:
+                    min_eval, best_move = score, move
+                beta = min(beta, score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move, False
+    
+    board = [you[:], opponent[:]]
+    legal_moves = get_moves(board, 0)
+    
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    deadline = time.time() + 0.9
+    best_move = legal_moves[0]
+    
+    for depth in range(1, 20):
+        _, move, timeout = minimax(board, depth, float('-inf'), float('inf'), True, deadline)
+        if move is not None:
+            best_move = move
+        if timeout:
+            break
+    
+    return best_move
+</code>

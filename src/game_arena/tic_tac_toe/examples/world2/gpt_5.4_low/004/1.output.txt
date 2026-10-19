@@ -1,0 +1,299 @@
+The strategy for this policy is:
+
+1. **Always return a legal move** by first listing empty cells and falling back to the first one if needed.
+2. **Win immediately if possible** by checking whether any legal move completes a 4-in-a-row.
+3. **Block an immediate opponent win** if the opponent has a winning move next turn.
+4. **Search deeper with alpha-beta minimax**:
+   - Use a full search in late-game positions when the board is small enough.
+   - Use iterative deepening with a time limit in earlier positions.
+   - Use strong move ordering so tactical moves are searched first.
+5. **Use a heuristic evaluation** based on the 10 winning lines:
+   - Reward lines containing only our marks.
+   - Penalize lines containing only opponent marks.
+   - Strongly value 3-in-a-row threats and multi-line pressure.
+6. **Prefer central and corner control** slightly through move ordering and evaluation.
+
+This produces a strong, safe policy that handles tactics well and still always returns a legal move under time pressure.
+
+<code>
+from __future__ import annotations
+
+import time
+from typing import List, Tuple, Optional
+
+# Precomputed winning lines for 4x4 Tic Tac Toe
+LINES = [
+    # Rows
+    [(0, 0), (0, 1), (0, 2), (0, 3)],
+    [(1, 0), (1, 1), (1, 2), (1, 3)],
+    [(2, 0), (2, 1), (2, 2), (2, 3)],
+    [(3, 0), (3, 1), (3, 2), (3, 3)],
+    # Cols
+    [(0, 0), (1, 0), (2, 0), (3, 0)],
+    [(0, 1), (1, 1), (2, 1), (3, 1)],
+    [(0, 2), (1, 2), (2, 2), (3, 2)],
+    [(0, 3), (1, 3), (2, 3), (3, 3)],
+    # Diagonals
+    [(0, 0), (1, 1), (2, 2), (3, 3)],
+    [(0, 3), (1, 2), (2, 1), (3, 0)],
+]
+
+CELL_TO_LINES = {(r, c): [] for r in range(4) for c in range(4)}
+for idx, line in enumerate(LINES):
+    for cell in line:
+        CELL_TO_LINES[cell].append(idx)
+
+# Good geometric preference for move ordering / tie-breaking
+MOVE_PRIORITY = {
+    (1, 1): 5, (1, 2): 5, (2, 1): 5, (2, 2): 5,  # center 2x2
+    (0, 0): 4, (0, 3): 4, (3, 0): 4, (3, 3): 4,  # corners
+    (0, 1): 3, (0, 2): 3, (1, 0): 3, (1, 3): 3,
+    (2, 0): 3, (2, 3): 3, (3, 1): 3, (3, 2): 3,
+}
+
+WIN_SCORE = 1_000_000
+TIME_LIMIT = 0.92  # stay safely under 1 second
+
+
+class Timeout(Exception):
+    pass
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    start = time.perf_counter()
+
+    # Defensive copy not necessary; we mutate and undo in place.
+    empties = [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+    if not empties:
+        # Should not happen in a valid arena call, but ensure legal-ish return.
+        return (0, 0)
+
+    # Always have a fallback legal move.
+    fallback = sorted(empties, key=lambda m: (-MOVE_PRIORITY.get(m, 0), m[0], m[1]))[0]
+
+    def check_winner() -> int:
+        for line in LINES:
+            s = board[line[0][0]][line[0][1]] + board[line[1][0]][line[1][1]] + board[line[2][0]][line[2][1]] + board[line[3][0]][line[3][1]]
+            if s == 4:
+                return 1
+            if s == -4:
+                return -1
+        return 0
+
+    def legal_moves() -> List[Tuple[int, int]]:
+        return [(r, c) for r in range(4) for c in range(4) if board[r][c] == 0]
+
+    def winning_moves(player: int) -> List[Tuple[int, int]]:
+        wins = []
+        for r, c in legal_moves():
+            board[r][c] = player
+            if check_winner() == player:
+                wins.append((r, c))
+            board[r][c] = 0
+        return wins
+
+    def count_open_threes(player: int) -> int:
+        # Count lines with exactly 3 of player and 1 empty, no opponent marks.
+        cnt = 0
+        for line in LINES:
+            vals = [board[r][c] for r, c in line]
+            if vals.count(player) == 3 and vals.count(0) == 1:
+                cnt += 1
+        return cnt
+
+    def evaluate() -> int:
+        winner = check_winner()
+        if winner == 1:
+            return WIN_SCORE
+        if winner == -1:
+            return -WIN_SCORE
+
+        score = 0
+
+        # Line-based evaluation
+        # Exponential weights for threats
+        weights = {0: 0, 1: 4, 2: 20, 3: 200, 4: WIN_SCORE}
+
+        for line in LINES:
+            vals = [board[r][c] for r, c in line]
+            my_count = vals.count(1)
+            opp_count = vals.count(-1)
+            empty_count = vals.count(0)
+
+            if my_count and opp_count:
+                continue
+
+            if opp_count == 0:
+                score += weights[my_count]
+                # Slight bonus for lines with multiple ways to build pressure
+                if my_count == 2 and empty_count == 2:
+                    score += 3
+            elif my_count == 0:
+                score -= weights[opp_count]
+                if opp_count == 2 and empty_count == 2:
+                    score -= 3
+
+        # Fork-ish tactical pressure: multiple open threes are extremely strong
+        score += 120 * count_open_threes(1)
+        score -= 120 * count_open_threes(-1)
+
+        # Small positional preference
+        for r in range(4):
+            for c in range(4):
+                if board[r][c] == 1:
+                    score += MOVE_PRIORITY.get((r, c), 0)
+                elif board[r][c] == -1:
+                    score -= MOVE_PRIORITY.get((r, c), 0)
+
+        return score
+
+    def ordered_moves(player: int) -> List[Tuple[int, int]]:
+        moves = legal_moves()
+        scored = []
+        for move in moves:
+            r, c = move
+
+            # Tactical pre-score for move ordering
+            order_score = MOVE_PRIORITY.get(move, 0)
+
+            board[r][c] = player
+            if check_winner() == player:
+                order_score += 100_000
+            else:
+                # Count resulting immediate threats
+                order_score += 500 * count_open_threes(player)
+                # Blocking value: if this square belonged to opponent winning move set
+                board[r][c] = -player
+                if check_winner() == -player:
+                    order_score += 50_000
+                board[r][c] = player
+
+                # General heuristic preview
+                order_score += evaluate() if player == 1 else -evaluate()
+            board[r][c] = 0
+
+            scored.append((order_score, move))
+
+        scored.sort(reverse=True)
+        return [m for _, m in scored]
+
+    transpo = {}
+
+    def board_key(player: int, depth: int) -> Tuple[Tuple[int, ...], int, int]:
+        flat = tuple(board[r][c] for r in range(4) for c in range(4))
+        return (flat, player, depth)
+
+    def negamax(depth: int, alpha: int, beta: int, player: int) -> int:
+        if time.perf_counter() - start > TIME_LIMIT:
+            raise Timeout
+
+        winner = check_winner()
+        if winner != 0:
+            return winner * WIN_SCORE * player
+        moves = legal_moves()
+        if not moves:
+            return 0
+        if depth == 0:
+            return evaluate() * player
+
+        key = board_key(player, depth)
+        if key in transpo:
+            return transpo[key]
+
+        best = -10**18
+
+        # Immediate tactical pruning
+        ordered = ordered_moves(player)
+
+        for r, c in ordered:
+            board[r][c] = player
+            score = -negamax(depth - 1, -beta, -alpha, -player)
+            board[r][c] = 0
+
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        transpo[key] = best
+        return best
+
+    # 1) Immediate win
+    my_wins = winning_moves(1)
+    if my_wins:
+        return sorted(my_wins, key=lambda m: (-MOVE_PRIORITY.get(m, 0), m[0], m[1]))[0]
+
+    # 2) Immediate block
+    opp_wins = winning_moves(-1)
+    if opp_wins:
+        # If multiple opponent winning moves exist, choose one that creates best counterplay.
+        # Usually unavoidable, but still return a legal blocking move if any.
+        blocking = [m for m in opp_wins if board[m[0]][m[1]] == 0]
+        if blocking:
+            return sorted(blocking, key=lambda m: (-MOVE_PRIORITY.get(m, 0), m[0], m[1]))[0]
+
+    # 3) Search
+    empties_n = len(empties)
+    best_move = fallback
+
+    try:
+        # Full solve in small late-game states, iterative deepening otherwise.
+        if empties_n <= 9:
+            max_depth = empties_n
+        elif empties_n <= 12:
+            max_depth = 8
+        else:
+            max_depth = 6
+
+        root_moves = ordered_moves(1)
+        best_score = -10**18
+
+        # Iterative deepening for better time management
+        for depth in range(1, max_depth + 1):
+            current_best_move = best_move
+            current_best_score = -10**18
+
+            for r, c in root_moves:
+                if time.perf_counter() - start > TIME_LIMIT:
+                    raise Timeout
+
+                board[r][c] = 1
+                if check_winner() == 1:
+                    board[r][c] = 0
+                    return (r, c)
+
+                score = -negamax(depth - 1, -10**18, 10**18, -1)
+                board[r][c] = 0
+
+                # Tie-break toward better geometry
+                if (score > current_best_score or
+                    (score == current_best_score and MOVE_PRIORITY.get((r, c), 0) > MOVE_PRIORITY.get(current_best_move, 0))):
+                    current_best_score = score
+                    current_best_move = (r, c)
+
+            best_move = current_best_move
+            best_score = current_best_score
+
+            # If found a forced win, stop early
+            if best_score >= WIN_SCORE // 2:
+                break
+
+    except Timeout:
+        pass
+    except Exception:
+        # Safety: never fail to return a legal move
+        pass
+
+    # Final legality check
+    r, c = best_move
+    if 0 <= r < 4 and 0 <= c < 4 and board[r][c] == 0:
+        return best_move
+
+    # Absolute safe fallback
+    for move in empties:
+        return move
+
+    return fallback
+</code>

@@ -1,0 +1,190 @@
+
+import random
+import math
+
+def get_direction(color):
+    return 1 if color == 'w' else -1
+
+def get_moves(player_set, opponent_set, direction):
+    moves = []
+    for (r, c) in player_set:
+        nr = r + direction
+        # Check bounds (rows 0-7)
+        if 0 <= nr <= 7:
+            # Check Diagonal Left
+            if c - 1 >= 0:
+                target = (nr, c - 1)
+                if target in opponent_set:
+                    moves.append(((r, c), target))
+                elif target not in player_set:
+                    moves.append(((r, c), target))
+            
+            # Check Diagonal Right
+            if c + 1 <= 7:
+                target = (nr, c + 1)
+                if target in opponent_set:
+                    moves.append(((r, c), target))
+                elif target not in player_set:
+                    moves.append(((r, c), target))
+            
+            # Check Straight Forward
+            target = (nr, c)
+            if target not in opponent_set and target not in player_set:
+                moves.append(((r, c), target))
+    return moves
+
+def evaluate(player_set, opponent_set, direction):
+    # Heuristic evaluation
+    # Score = (My Pieces + My Progress) - (Opponent Pieces + Opponent Progress)
+    
+    score = 0
+    
+    # Base material value
+    score += len(player_set) * 100
+    score -= len(opponent_set) * 100
+    
+    for (r, c) in player_set:
+        # Progress towards goal
+        # White moves up (0->7), Black moves down (7->0)
+        if direction == 1: # White
+            progress = r
+        else: # Black
+            progress = 7 - r
+        
+        score += progress * 10
+        
+        # Center control bonus (cols 3 and 4 are indices 3, 4)
+        if 2 <= c <= 5:
+            score += 2
+            
+    for (r, c) in opponent_set:
+        # Calculate opponent's progress relative to their direction
+        # Opponent direction is -direction
+        if direction == -1: # Opponent is White
+            progress = r
+        else: # Opponent is Black
+            progress = 7 - r
+            
+        score -= progress * 10
+        
+        if 2 <= c <= 5:
+            score -= 2
+            
+    return score
+
+def minimax(me_set, opp_set, direction, depth, alpha, beta):
+    # Terminal depth
+    if depth == 0:
+        return evaluate(me_set, opp_set, direction)
+    
+    # Generate moves
+    moves = get_moves(me_set, opp_set, direction)
+    
+    # No moves available implies loss/stalemate (bad position)
+    if not moves:
+        return -1000000
+        
+    # Move ordering: captures first to improve alpha-beta pruning
+    captures = []
+    non_captures = []
+    for m in moves:
+        if m[1] in opp_set:
+            captures.append(m)
+        else:
+            non_captures.append(m)
+    ordered_moves = captures + non_captures
+
+    best_val = -math.inf
+    
+    for move in ordered_moves:
+        fr, fc = move[0]
+        tr, tc = move[1]
+        
+        # Execute move on sets
+        new_me = me_set.copy()
+        new_me.remove((fr, fc))
+        new_me.add((tr, tc))
+        
+        new_opp = opp_set.copy()
+        if (tr, tc) in opp_set:
+            new_opp.remove((tr, tc))
+            
+        # Check for win condition reached in this move
+        won = False
+        if direction == 1 and tr == 7: won = True
+        if direction == -1 and tr == 0: won = True
+        
+        if won:
+            # Large positive score adjusted by depth to prefer faster wins
+            return 1000000 + depth
+            
+        # Recursive search (swap roles and direction)
+        # Note: direction flips for the opponent
+        val = -minimax(new_opp, new_me, -direction, depth - 1, -beta, -alpha)
+        
+        best_val = max(best_val, val)
+        alpha = max(alpha, val)
+        
+        if alpha >= beta:
+            break # Beta cutoff
+            
+    return best_val
+
+def policy(me, opp, color):
+    # Convert lists to sets for O(1) lookups
+    me_set = set(me)
+    opp_set = set(opp)
+    direction = get_direction(color)
+    
+    # Generate all legal moves
+    moves = get_moves(me_set, opp_set, direction)
+    
+    if not moves:
+        # Should not happen in a valid game state unless lost
+        # Return a dummy move or first piece to self (illegal but failsafe)
+        if me:
+            return ((me[0][0], me[0][1]), (me[0][0], me[0][1]))
+        return ((0,0),(0,0))
+
+    # 1. Check for immediate winning moves
+    for move in moves:
+        r, c = move[1]
+        if (color == 'w' and r == 7) or (color == 'b' and r == 0):
+            return move
+            
+    # 2. Run Minimax search
+    # Adaptive depth: deeper search in endgame (fewer pieces)
+    num_pieces = len(me_set) + len(opp_set)
+    search_depth = 3
+    if num_pieces < 10:
+        search_depth = 5
+    elif num_pieces < 16:
+        search_depth = 4
+        
+    best_score = -math.inf
+    best_move = moves[0]
+    
+    # Shuffle moves initially to add variety if scores are equal
+    random.shuffle(moves)
+    
+    for move in moves:
+        fr, fc = move[0]
+        tr, tc = move[1]
+        
+        # Simulate
+        new_me = me_set.copy()
+        new_me.remove((fr, fc))
+        new_me.add((tr, tc))
+        
+        new_opp = opp_set.copy()
+        if (tr, tc) in opp_set:
+            new_opp.remove((tr, tc))
+            
+        # Search
+        val = -minimax(new_opp, new_me, -direction, search_depth, -math.inf, math.inf)
+        
+        if val > best_score:
+            best_score = val
+            best_move = move
+            
+    return best_move

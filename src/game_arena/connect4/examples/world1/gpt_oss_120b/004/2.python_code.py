@@ -1,0 +1,210 @@
+
+import random
+import math
+from typing import List, Tuple
+
+ROWS = 6
+COLS = 7
+PLAYER = 1          # our disc
+OPPONENT = -1       # opponent disc
+WINDOW_LENGTH = 4
+MAX_SCORE = 1_000_000
+MIN_SCORE = -MAX_SCORE
+
+CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]   # best‑first column ordering for pruning
+
+
+def policy(board: List[List[int]]) -> int:
+    """Return the column (0‑6) where the current player should drop a disc."""
+    valid_locations = [c for c in range(COLS) if board[0][c] == 0]
+
+    # 1️⃣  Immediate winning move
+    for col in valid_locations:
+        row = get_next_open_row(board, col)
+        temp_board = copy_board(board)
+        drop_piece(temp_board, row, col, PLAYER)
+        if winning_move(temp_board, PLAYER):
+            return col
+
+    # 2️⃣  Block opponent's immediate win
+    for col in valid_locations:
+        row = get_next_open_row(board, col)
+        temp_board = copy_board(board)
+        drop_piece(temp_board, row, col, OPPONENT)
+        if winning_move(temp_board, OPPONENT):
+            return col
+
+    # 3️⃣  Minimax search
+    depth = 4
+    # increase depth a bit when board is less full (optional)
+    filled = sum(cell != 0 for row in board for cell in row)
+    if filled < 12:
+        depth = 5
+
+    _, col = minimax(board, depth, MIN_SCORE, MAX_SCORE, True)
+    if col is None:
+        # fallback – any legal move
+        return random.choice(valid_locations)
+    return col
+
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def copy_board(board: List[List[int]]) -> List[List[int]]:
+    return [row[:] for row in board]
+
+
+def get_next_open_row(board: List[List[int]], col: int) -> int:
+    """Return the lowest empty row index in the given column."""
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    raise ValueError(f"Column {col} is full")
+
+
+def drop_piece(board: List[List[int]], row: int, col: int, piece: int) -> None:
+    board[row][col] = piece
+
+
+def winning_move(board: List[List[int]], piece: int) -> bool:
+    """Check whether the given piece has a four‑in‑a‑row."""
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if all(board[r][c + i] == piece for i in range(4)):
+                return True
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if all(board[r + i][c] == piece for i in range(4)):
+                return True
+    # Positive diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r + i][c + i] == piece for i in range(4)):
+                return True
+    # Negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            if all(board[r - i][c + i] == piece for i in range(4)):
+                return True
+    return False
+
+
+def is_terminal_node(board: List[List[int]]) -> bool:
+    return (winning_move(board, PLAYER) or
+            winning_move(board, OPPONENT) or
+            all(board[0][c] != 0 for c in range(COLS)))
+
+
+def evaluate_window(window: List[int], piece: int) -> int:
+    """Score a length‑4 window for the given player."""
+    opp_piece = OPPONENT if piece == PLAYER else PLAYER
+    count_piece = window.count(piece)
+    count_opp = window.count(opp_piece)
+    count_empty = window.count(0)
+
+    if count_piece == 4:
+        return 100000
+    if count_piece == 3 and count_empty == 1:
+        return 100
+    if count_piece == 2 and count_empty == 2:
+        return 10
+
+    if count_opp == 3 and count_empty == 1:
+        return -80
+    if count_opp == 2 and count_empty == 2:
+        return -8
+    return 0
+
+
+def score_position(board: List[List[int]], piece: int) -> int:
+    """Heuristic evaluation of board for the given piece."""
+    score = 0
+
+    # Center column preference
+    center_array = [board[r][COLS // 2] for r in range(ROWS)]
+    center_count = center_array.count(piece)
+    score += center_count * 3
+
+    # Horizontal windows
+    for r in range(ROWS):
+        row_array = board[r]
+        for c in range(COLS - 3):
+            window = row_array[c:c + WINDOW_LENGTH]
+            score += evaluate_window(window, piece)
+
+    # Vertical windows
+    for c in range(COLS):
+        col_array = [board[r][c] for r in range(ROWS)]
+        for r in range(ROWS - 3):
+            window = col_array[r:r + WINDOW_LENGTH]
+            score += evaluate_window(window, piece)
+
+    # Positive diagonal windows
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(WINDOW_LENGTH)]
+            score += evaluate_window(window, piece)
+
+    # Negative diagonal windows
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(WINDOW_LENGTH)]
+            score += evaluate_window(window, piece)
+
+    return score
+
+
+def minimax(board: List[List[int]], depth: int, alpha: int, beta: int,
+            maximizingPlayer: bool) -> Tuple[int, int]:
+    """Alpha‑beta minimax. Returns (score, column)."""
+    valid_locations = [c for c in range(COLS) if board[0][c] == 0]
+
+    terminal = is_terminal_node(board)
+    if depth == 0 or terminal:
+        if terminal:
+            if winning_move(board, PLAYER):
+                return (MAX_SCORE, None)
+            elif winning_move(board, OPPONENT):
+                return (MIN_SCORE, None)
+            else:                     # draw
+                return (0, None)
+        else:
+            return (score_position(board, PLAYER), None)
+
+    if maximizingPlayer:
+        value = MIN_SCORE
+        best_col = None
+        for col in CENTER_ORDER:
+            if col not in valid_locations:
+                continue
+            row = get_next_open_row(board, col)
+            b_copy = copy_board(board)
+            drop_piece(b_copy, row, col, PLAYER)
+            new_score, _ = minimax(b_copy, depth - 1, alpha, beta, False)
+            if new_score > value:
+                value = new_score
+                best_col = col
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value, best_col
+    else:
+        value = MAX_SCORE
+        best_col = None
+        for col in CENTER_ORDER:
+            if col not in valid_locations:
+                continue
+            row = get_next_open_row(board, col)
+            b_copy = copy_board(board)
+            drop_piece(b_copy, row, col, OPPONENT)
+            new_score, _ = minimax(b_copy, depth - 1, alpha, beta, True)
+            if new_score < value:
+                value = new_score
+                best_col = col
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value, best_col

@@ -1,0 +1,141 @@
+The strategy for this Clobber game involves a greedy approach that prioritizes moves based on a utility function. The utility function evaluates moves based on:
+1.  **Capturing High-Value Opponent Pieces**: Pieces near the corners (distances 0 or 1 from corners) are considered high-value targets.
+2.  **Maintaining Positional Advantage**: Moving onto high-value squares (corners or adjacent to corners) is preferred, provided the destination isn't a suicide square (attacked by an opponent on an adjacent square).
+3.  **Suicide Avoidance**: We avoid moving to a square that is immediately under attack by an opponent piece (unless it is a corner piece, which is considered strong enough to hold).
+4.  **Safety of the Original Position**: Moves that leave the original position safe (not immediately counter-attacked by an opponent piece) are preferred.
+
+The algorithm scans all possible moves, calculates a score for each, and selects the move with the maximum score. If no moves meet the specific safety/positional criteria, it defaults to the first legal move found (brute force fallback).
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Clobber AI Policy.
+    Selects a move based on capturing value, positional advantage, and safety checks.
+    """
+    R, C = 5, 6
+    
+    # Helper to check if a coordinate is within bounds
+    def in_bounds(r, c):
+        return 0 <= r < R and 0 <= c < C
+    
+    # Helper to check if a square is a high-value target (corner or adjacent to corner)
+    # Prioritize corners: (0,0), (0,5), (4,0), (4,5)
+    # Prioritize adjacent to corners (safe entry points)
+    def is_high_value_target(r, c):
+        corners = {(0,0), (0,5), (4,0), (4,5)}
+        adj_corners = {
+            (0,1), (1,0), # top-left
+            (0,4), (1,5), # top-right
+            (3,0), (4,1), # bottom-left
+            (3,5), (4,4)  # bottom-right
+        }
+        if (r, c) in corners:
+            return 2
+        if (r, c) in adj_corners:
+            return 1
+        return 0
+    
+    # Helper to check if a square is protected (adjacent to a friendly piece)
+    # If we move there, we want it to be protected or a corner.
+    def is_square_protected(r, c, my_pieces):
+        dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and (nr, nc) in my_pieces:
+                return True
+        return False
+        
+    # Helper to check if a square is threatened (adjacent to an opponent piece)
+    # If we move there, we lose immediately unless it's a corner/protected.
+    # NOTE: We must check the board state *before* the move to see who is adjacent to the destination.
+    # If an opponent is adjacent to the destination, moving there is risky (suicide).
+    def is_square_threatened_by_opponent(r, c, opp_pieces):
+        dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and (nr, nc) in opp_pieces:
+                return True
+        return False
+
+    # Helper to check if the start square is safe to leave
+    # If the start square is currently threatened by an opponent, moving is safe (we vacate it).
+    # If the start square is NOT threatened, we prefer to keep it safe.
+    # However, if we move, the start square becomes empty. 
+    # We want to check if the start square is currently safe (no opponent adjacent).
+    def is_start_square_safe(r, c, opp_pieces):
+        dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and (nr, nc) in opp_pieces:
+                return False
+        return True
+
+    # Parse input into sets of coordinates for fast lookup
+    my_pieces = set()
+    opp_pieces = set()
+    for r in range(R):
+        for c in range(C):
+            if you[r][c] == 1:
+                my_pieces.add((r, c))
+            if opponent[r][c] == 1:
+                opp_pieces.add((r, c))
+
+    moves = []
+    
+    # Iterate over all my pieces to find legal moves
+    for (r, c) in my_pieces:
+        for direction, (dr, dc) in enumerate([(-1, 0), (0, 1), (1, 0), (0, -1)]):
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and (nr, nc) in opp_pieces:
+                # Legal move found: (r, c) -> (nr, nc)
+                
+                # Scoring Logic:
+                score = 0
+                
+                # 1. Capture Value: Prioritize capturing pieces near corners
+                score += 100 * is_high_value_target(nr, nc)
+                
+                # 2. Positional Value: Moving to high-value squares
+                # Add small bonus for moving to corners/adjacent
+                pos_val = is_high_value_target(r + dr, c + dc)
+                if pos_val > 0:
+                    score += 20
+                
+                # 3. Safety Check on Destination (Suicide Prevention)
+                # If the destination is threatened by an opponent (and we aren't protected), it's dangerous.
+                # We penalize this heavily unless it's a corner capture.
+                threatened = is_square_threatened_by_opponent(nr, nc, opp_pieces)
+                protected = is_square_protected(nr, nc, my_pieces - {(r, c)}) # Friends excluding the moving piece
+                
+                if threatened:
+                    if pos_val == 2: # Corner capture is worth the risk
+                        score += 50
+                    elif protected:
+                        score += 10 # Safe because we are protected
+                    else:
+                        score -= 500 # Bad move, likely suicide next turn
+                else:
+                    score += 10 # Destination is safe from immediate attack
+
+                # 4. Source Safety
+                # If the source is currently safe (not threatened), moving is neutral.
+                # If the source is threatened, moving is good (escaping danger).
+                if not is_start_square_safe(r, c, opp_pieces):
+                    score += 25 # Escape penalty is reward
+                
+                moves.append((score, r, c, direction))
+
+    if not moves:
+        # Should not happen given problem statement, but fail safe
+        return "0,0,U"
+
+    # Sort moves by score descending
+    moves.sort(key=lambda x: x[0], reverse=True)
+    
+    best_move = moves[0]
+    _, r, c, direction = best_move
+    
+    dirs_map = {0: 'U', 1: 'R', 2: 'D', 3: 'L'}
+    
+    return f"{r},{c},{dirs_map[direction]}"
+```

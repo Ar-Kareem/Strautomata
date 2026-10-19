@@ -1,0 +1,279 @@
+
+import random
+from copy import deepcopy
+
+# Piece values for simple material evaluation
+PIECE_VALUE = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0
+}
+
+# Direction vectors
+KNIGHT_DIRS = [(2, 1), (1, 2), (-1, 2), (-2, 1),
+               (-2, -1), (-1, -2), (1, -2), (2, -1)]
+KING_DIRS = [(-1, -1), (0, -1), (1, -1),
+             (-1, 0),          (1, 0),
+             (-1, 1),  (0, 1), (1, 1)]
+BISHOP_DIRS = [(-1, -1), (1, -1), (-1, 1), (1, 1)]
+ROOK_DIRS   = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+QUEEN_DIRS  = BISHOP_DIRS + ROOK_DIRS
+
+def sq_to_xy(sq: str):
+    """Convert algebraic square (e.g. 'e4') to (x, y) where a1 = (0,0)."""
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return file, rank
+
+def xy_to_sq(x: int, y: int):
+    """Convert (x, y) back to algebraic notation."""
+    return chr(ord('a') + x) + str(y + 1)
+
+def inside(x: int, y: int) -> bool:
+    return 0 <= x < 8 and 0 <= y < 8
+
+def opponent(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+def is_attacked(board: dict, square: str, by_color: str) -> bool:
+    """Return True if `square` is attacked by any piece of `by_color`."""
+    x, y = sq_to_xy(square)
+
+    # Pawn attacks
+    if by_color == 'w':
+        pawn_dirs = [(-1, 1), (1, 1)]
+    else:
+        pawn_dirs = [(-1, -1), (1, -1)]
+    for dx, dy in pawn_dirs:
+        nx, ny = x + dx, y + dy
+        if inside(nx, ny):
+            sq = xy_to_sq(nx, ny)
+            if board.get(sq) == by_color + 'P':
+                return True
+
+    # Knight attacks
+    for dx, dy in KNIGHT_DIRS:
+        nx, ny = x + dx, y + dy
+        if inside(nx, ny):
+            sq = xy_to_sq(nx, ny)
+            if board.get(sq) == by_color + 'N':
+                return True
+
+    # Sliding pieces
+    for dx, dy in BISHOP_DIRS:
+        nx, ny = x + dx, y + dy
+        while inside(nx, ny):
+            sq = xy_to_sq(nx, ny)
+            piece = board.get(sq)
+            if piece:
+                if piece[0] == by_color and piece[1] in ('B', 'Q'):
+                    return True
+                break
+            nx += dx
+            ny += dy
+
+    for dx, dy in ROOK_DIRS:
+        nx, ny = x + dx, y + dy
+        while inside(nx, ny):
+            sq = xy_to_sq(nx, ny)
+            piece = board.get(sq)
+            if piece:
+                if piece[0] == by_color and piece[1] in ('R', 'Q'):
+                    return True
+                break
+            nx += dx
+            ny += dy
+
+    # King attacks
+    for dx, dy in KING_DIRS:
+        nx, ny = x + dx, y + dy
+        if inside(nx, ny):
+            sq = xy_to_sq(nx, ny)
+            if board.get(sq) == by_color + 'K':
+                return True
+
+    return False
+
+def generate_pseudo_moves(board: dict, color: str):
+    """Yield (from_sq, to_sq, promotion_piece_or_None)."""
+    start_rank = 1 if color == 'w' else 6
+    promotion_rank = 7 if color == 'w' else 0
+
+    for sq, piece in board.items():
+        if piece[0] != color:
+            continue
+        ptype = piece[1]
+        x, y = sq_to_xy(sq)
+
+        if ptype == 'P':
+            dir_forward = 1 if color == 'w' else -1
+            # Single step
+            ny = y + dir_forward
+            if inside(x, ny):
+                dest = xy_to_sq(x, ny)
+                if dest not in board:
+                    if ny == promotion_rank:
+                        for promo in 'qrbn':
+                            yield (sq, dest, promo)
+                    else:
+                        yield (sq, dest, None)
+                    # Double step from start rank
+                    if y == start_rank:
+                        ny2 = y + 2 * dir_forward
+                        dest2 = xy_to_sq(x, ny2)
+                        if dest2 not in board:
+                            yield (sq, dest2, None)
+
+            # Captures
+            for dx in (-1, 1):
+                nx = x + dx
+                ny = y + dir_forward
+                if inside(nx, ny):
+                    dest = xy_to_sq(nx, ny)
+                    if dest in board and board[dest][0] == opponent(color):
+                        if ny == promotion_rank:
+                            for promo in 'qrbn':
+                                yield (sq, dest, promo)
+                        else:
+                            yield (sq, dest, None)
+
+        elif ptype == 'N':
+            for dx, dy in KNIGHT_DIRS:
+                nx, ny = x + dx, y + dy
+                if not inside(nx, ny):
+                    continue
+                dest = xy_to_sq(nx, ny)
+                if dest not in board or board[dest][0] == opponent(color):
+                    yield (sq, dest, None)
+
+        elif ptype == 'B':
+            for dx, dy in BISHOP_DIRS:
+                nx, ny = x + dx, y + dy
+                while inside(nx, ny):
+                    dest = xy_to_sq(nx, ny)
+                    if dest in board:
+                        if board[dest][0] == opponent(color):
+                            yield (sq, dest, None)
+                        break
+                    else:
+                        yield (sq, dest, None)
+                    nx += dx
+                    ny += dy
+
+        elif ptype == 'R':
+            for dx, dy in ROOK_DIRS:
+                nx, ny = x + dx, y + dy
+                while inside(nx, ny):
+                    dest = xy_to_sq(nx, ny)
+                    if dest in board:
+                        if board[dest][0] == opponent(color):
+                            yield (sq, dest, None)
+                        break
+                    else:
+                        yield (sq, dest, None)
+                    nx += dx
+                    ny += dy
+
+        elif ptype == 'Q':
+            for dx, dy in QUEEN_DIRS:
+                nx, ny = x + dx, y + dy
+                while inside(nx, ny):
+                    dest = xy_to_sq(nx, ny)
+                    if dest in board:
+                        if board[dest][0] == opponent(color):
+                            yield (sq, dest, None)
+                        break
+                    else:
+                        yield (sq, dest, None)
+                    nx += dx
+                    ny += dy
+
+        elif ptype == 'K':
+            for dx, dy in KING_DIRS:
+                nx, ny = x + dx, y + dy
+                if not inside(nx, ny):
+                    continue
+                dest = xy_to_sq(nx, ny)
+                if dest not in board or board[dest][0] == opponent(color):
+                    yield (sq, dest, None)
+            # Castling is ignored for simplicity
+
+def make_move(board: dict, move):
+    """Apply move (from, to, promo) and return new board dict."""
+    frm, to, promo = move
+    piece = board[frm]
+    new_board = board.copy()
+    del new_board[frm]
+    # Capture handling is implicit – overwrite destination if occupied
+    if promo:
+        new_piece = piece[0] + promo.upper()
+    else:
+        new_piece = piece
+    new_board[to] = new_piece
+    return new_board
+
+def find_king(board: dict, color: str) -> str:
+    """Return square of the king of given color."""
+    for sq, piece in board.items():
+        if piece == color + 'K':
+            return sq
+    raise ValueError("King not found")
+
+def policy(pieces: dict, to_play: str, memory: dict):
+    """Select a legal move using a capture‑priority heuristic."""
+    # Convert to internal board representation
+    board = {sq: pieces[sq] for sq in pieces}
+
+    color = 'w' if to_play == 'white' else 'b'
+    opp_color = opponent(color)
+
+    legal_moves = []
+    best_value = -1
+    best_moves = []
+
+    for move in generate_pseudo_moves(board, color):
+        new_board = make_move(board, move)
+        # locate own king after the move
+        king_sq = find_king(new_board, color)
+        # if our king is attacked, move is illegal
+        if is_attacked(new_board, king_sq, opp_color):
+            continue
+
+        # move is legal
+        legal_moves.append(move)
+
+        # evaluate capture value
+        capture_value = 0
+        to_sq = move[1]
+        if to_sq in board and board[to_sq][0] == opp_color:
+            captured_piece = board[to_sq][1]
+            capture_value = PIECE_VALUE.get(captured_piece, 0)
+
+        # promotion to queen is valued as gaining a queen vs pawn
+        if move[2] == 'q' and board[move[0]][1] == 'P':
+            capture_value += PIECE_VALUE['Q'] - PIECE_VALUE['P']
+
+        if capture_value > best_value:
+            best_value = capture_value
+            best_moves = [move]
+        elif capture_value == best_value:
+            best_moves.append(move)
+
+    # No legal moves? (should not happen in normal play)
+    if not legal_moves:
+        # Return a dummy move; arena will treat as illegal,
+        # but this path should never be reached.
+        return ('a1a1', memory)
+
+    # Choose among best capture moves, otherwise random
+    chosen_move = random.choice(best_moves) if best_moves else random.choice(legal_moves)
+
+    # Build UCI move string
+    uci = chosen_move[0] + chosen_move[1]
+    if chosen_move[2]:
+        uci += chosen_move[2]
+
+    return (uci, memory)

@@ -1,0 +1,238 @@
+
+import numpy as np
+from functools import lru_cache
+
+# Board geometry for a 4x4 box grid:
+# Horizontal edges: rows 0..4, cols 0..3
+# Vertical edges:   rows 0..3, cols 0..4
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    h = np.array(horizontal, copy=True)
+    v = np.array(vertical, copy=True)
+    c = np.array(capture, copy=True)
+
+    moves = legal_moves(h, v)
+    if not moves:
+        # Should not happen in normal play, but always return something syntactically valid.
+        return "0,0,H" if h[0, 0] == 0 else fallback_any_zero(horizontal, vertical)
+
+    # 1) Immediate captures
+    capturing = []
+    for mv in moves:
+        caps = boxes_completed_by_move(h, v, c, mv)
+        if caps > 0:
+            capturing.append((caps, move_priority(mv), mv))
+
+    if capturing:
+        # Maximize immediate captures, then use a mild positional tiebreak.
+        capturing.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return move_to_str(capturing[0][2])
+
+    # 2) Safe moves
+    safe = []
+    for mv in moves:
+        if is_safe_move(h, v, c, mv):
+            h2, v2, c2, _ = apply_move(h, v, c, mv)
+            future_safe = count_safe_moves(h2, v2, c2)
+            score = (future_safe, move_priority(mv))
+            safe.append((score, mv))
+
+    if safe:
+        safe.sort(key=lambda x: x[0], reverse=True)
+        return move_to_str(safe[0][1])
+
+    # 3) Forced moves: minimize opponent's free capture sequence
+    best_mv = None
+    best_key = None
+    for mv in moves:
+        h2, v2, c2, _ = apply_move(h, v, c, mv)
+        opp_gain = max_capture_sequence(h2, v2, c2)
+        # Fewer forced boxes for opponent is better.
+        # Tiebreak: fewer newly created 3-sided boxes, then positional preference.
+        threes = count_three_sided_boxes(h2, v2, c2)
+        key = (-opp_gain, -threes, move_priority(mv))
+        if best_key is None or key > best_key:
+            best_key = key
+            best_mv = mv
+
+    if best_mv is not None:
+        return move_to_str(best_mv)
+
+    return fallback_any_zero(horizontal, vertical)
+
+
+def legal_moves(h, v):
+    moves = []
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] == 0:
+                moves.append((r, c, 'H'))
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] == 0:
+                moves.append((r, c, 'V'))
+    return moves
+
+
+def fallback_any_zero(h, v):
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] == 0:
+                return f"{r},{c},H"
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] == 0:
+                return f"{r},{c},V"
+    return "0,0,H"
+
+
+def move_to_str(mv):
+    return f"{mv[0]},{mv[1]},{mv[2]}"
+
+
+def move_priority(mv):
+    # Mild central preference for tie-breaking.
+    r, c, d = mv
+    if d == 'H':
+        cr, cc = r, c + 0.5
+    else:
+        cr, cc = r + 0.5, c
+    return -((cr - 2.0) ** 2 + (cc - 2.0) ** 2)
+
+
+def adjacent_boxes_of_move(mv):
+    r, c, d = mv
+    out = []
+    if d == 'H':
+        if r > 0:
+            out.append((r - 1, c))
+        if r < 4:
+            out.append((r, c))
+    else:  # 'V'
+        if c > 0:
+            out.append((r, c - 1))
+        if c < 4:
+            out.append((r, c))
+    return out
+
+
+def box_side_count(h, v, br, bc):
+    # Box at (br, bc) for br,bc in 0..3
+    cnt = 0
+    cnt += 1 if h[br, bc] != 0 else 0
+    cnt += 1 if h[br + 1, bc] != 0 else 0
+    cnt += 1 if v[br, bc] != 0 else 0
+    cnt += 1 if v[br, bc + 1] != 0 else 0
+    return cnt
+
+
+def boxes_completed_by_move(h, v, c, mv):
+    r, col, d = mv
+    if d == 'H':
+        if h[r, col] != 0:
+            return -1
+    else:
+        if v[r, col] != 0:
+            return -1
+
+    total = 0
+    for br, bc in adjacent_boxes_of_move(mv):
+        if c[br, bc] != 0:
+            continue
+        sides = box_side_count(h, v, br, bc)
+        if sides == 3:
+            total += 1
+    return total
+
+
+def apply_move(h, v, c, mv):
+    h2 = np.array(h, copy=True)
+    v2 = np.array(v, copy=True)
+    c2 = np.array(c, copy=True)
+
+    r, col, d = mv
+    if d == 'H':
+        h2[r, col] = 1
+    else:
+        v2[r, col] = 1
+
+    captured = 0
+    for br, bc in adjacent_boxes_of_move(mv):
+        if c2[br, bc] == 0 and box_side_count(h2, v2, br, bc) == 4:
+            c2[br, bc] = 1
+            captured += 1
+
+    return h2, v2, c2, captured
+
+
+def is_safe_move(h, v, c, mv):
+    # Safe if after drawing it, no adjacent unclaimed box becomes 3-sided.
+    for br, bc in adjacent_boxes_of_move(mv):
+        if c[br, bc] != 0:
+            continue
+        sides = box_side_count(h, v, br, bc)
+        if sides == 2:
+            return False
+        if sides == 3:
+            return False  # would be a capture, handled earlier
+    return True
+
+
+def count_safe_moves(h, v, c):
+    cnt = 0
+    for mv in legal_moves(h, v):
+        if boxes_completed_by_move(h, v, c, mv) == 0 and is_safe_move(h, v, c, mv):
+            cnt += 1
+    return cnt
+
+
+def count_three_sided_boxes(h, v, c):
+    cnt = 0
+    for br in range(4):
+        for bc in range(4):
+            if c[br, bc] == 0 and box_side_count(h, v, br, bc) == 3:
+                cnt += 1
+    return cnt
+
+
+def encode_state(h, v, c):
+    # Only occupancy matters for edge legality / box completion.
+    hkey = tuple((h[:5, :4] != 0).astype(np.int8).ravel().tolist())
+    vkey = tuple((v[:4, :5] != 0).astype(np.int8).ravel().tolist())
+    ckey = tuple((c[:4, :4] != 0).astype(np.int8).ravel().tolist())
+    return hkey, vkey, ckey
+
+
+def decode_state(key):
+    hkey, vkey, ckey = key
+    h = np.zeros((5, 5), dtype=np.int8)
+    v = np.zeros((5, 5), dtype=np.int8)
+    c = np.zeros((5, 5), dtype=np.int8)
+    h[:5, :4] = np.array(hkey, dtype=np.int8).reshape(5, 4)
+    v[:4, :5] = np.array(vkey, dtype=np.int8).reshape(4, 5)
+    c[:4, :4] = np.array(ckey, dtype=np.int8).reshape(4, 4)
+    return h, v, c
+
+
+@lru_cache(maxsize=100000)
+def max_capture_sequence_from_key(key):
+    h, v, c = decode_state(key)
+
+    best = 0
+    found = False
+    for mv in legal_moves(h, v):
+        caps = boxes_completed_by_move(h, v, c, mv)
+        if caps > 0:
+            found = True
+            h2, v2, c2, got = apply_move(h, v, c, mv)
+            total = got + max_capture_sequence_from_key(encode_state(h2, v2, c2))
+            if total > best:
+                best = total
+
+    if not found:
+        return 0
+    return best
+
+
+def max_capture_sequence(h, v, c):
+    return max_capture_sequence_from_key(encode_state(h, v, c))

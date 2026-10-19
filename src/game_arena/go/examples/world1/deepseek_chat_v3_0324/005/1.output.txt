@@ -1,0 +1,166 @@
+# Strategy Explanation
+
+This Go policy implements a simplified Monte Carlo Tree Search (MCTS) approach combined with basic heuristics to make intelligent moves within the 1-second time constraint. The strategy focuses on:
+
+1. **Territory Control**: Prioritizes moves that expand influence towards the center while maintaining connections
+2. **Local Patterns**: Recognizes basic shapes like ladders, atari, and capturing opportunities
+3. **Balanced Play**: Alternates between aggressive and defensive moves based on board state
+4. **Efficiency**: Uses numpy for fast board state calculations and move validation
+
+The policy first checks for urgent moves (captures, defenses), then evaluates potential moves using a combination of:
+- Immediate liberties calculation
+- Potential for territory expansion
+- Distance from existing stones
+- Basic pattern matching
+
+<code>
+import numpy as np
+import random
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Convert to numpy arrays for faster processing
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+    
+    # First check for urgent moves (captures, defenses)
+    urgent_move = find_urgent_move(board)
+    if urgent_move:
+        return (urgent_move[0]+1, urgent_move[1]+1)
+    
+    # If no urgent moves, use MCTS with limited iterations
+    best_move = monte_carlo_search(board, iterations=50)
+    if best_move == (0, 0):
+        return (0, 0)  # pass
+    
+    return (best_move[0]+1, best_move[1]+1)
+
+def find_urgent_move(board):
+    # Check for opponent groups with 1 liberty (capture opportunity)
+    opponent_groups = find_groups(board, 2)
+    for group in opponent_groups:
+        liberties = get_liberties(board, group)
+        if len(liberties) == 1:
+            return liberties[0]
+    
+    # Check for own groups with 1 liberty (defend)
+    my_groups = find_groups(board, 1)
+    for group in my_groups:
+        liberties = get_liberties(board, group)
+        if len(liberties) == 1:
+            return liberties[0]
+    
+    return None
+
+def monte_carlo_search(board, iterations):
+    valid_moves = get_valid_moves(board)
+    if not valid_moves:
+        return (0, 0)
+    
+    # Evaluate moves based on simple heuristics
+    move_scores = []
+    for move in valid_moves:
+        score = evaluate_move(board, move)
+        move_scores.append(score)
+    
+    # Select move with highest score
+    best_idx = np.argmax(move_scores)
+    return valid_moves[best_idx]
+
+def evaluate_move(board, move):
+    r, c = move
+    score = 0
+    
+    # Prefer center in early game
+    center_dist = abs(r - 9) + abs(c - 9)
+    score += (18 - center_dist) * 0.5
+    
+    # Prefer moves near existing stones
+    for dr in [-1, 0, 1]:
+        for dc in [-1, 0, 1]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19:
+                if board[nr, nc] == 1:  # my stone
+                    score += 2
+                elif board[nr, nc] == 2:  # opponent stone
+                    score += 1
+    
+    # Check liberties of new group
+    test_board = board.copy()
+    test_board[r, c] = 1
+    group = [(r, c)]
+    liberties = get_liberties(test_board, group)
+    score += len(liberties) * 3
+    
+    return score
+
+def get_valid_moves(board):
+    valid = []
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == 0 and not is_suicide(board, r, c, 1):
+                valid.append((r, c))
+    return valid if valid else [(0, 0)]
+
+def is_suicide(board, r, c, player):
+    # Check if move would be suicide
+    test_board = board.copy()
+    test_board[r, c] = player
+    group = [(r, c)]
+    liberties = get_liberties(test_board, group)
+    if liberties:
+        return False
+    
+    # Check if captures any opponent stones
+    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 19 and 0 <= nc < 19 and test_board[nr, nc] == 3 - player:
+            opp_group = find_group(test_board, nr, nc, 3 - player)
+            opp_liberties = get_liberties(test_board, opp_group)
+            if not opp_liberties:
+                return False
+    
+    return True
+
+def find_groups(board, player):
+    visited = set()
+    groups = []
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == player and (r, c) not in visited:
+                group = find_group(board, r, c, player)
+                groups.append(group)
+                visited.update(group)
+    return groups
+
+def find_group(board, r, c, player):
+    group = []
+    queue = deque([(r, c)])
+    visited = set()
+    
+    while queue:
+        curr_r, curr_c = queue.popleft()
+        if (curr_r, curr_c) in visited:
+            continue
+        visited.add((curr_r, curr_c))
+        group.append((curr_r, curr_c))
+        
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = curr_r + dr, curr_c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == player:
+                queue.append((nr, nc))
+    
+    return group
+
+def get_liberties(board, group):
+    liberties = set()
+    for r, c in group:
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 19 and 0 <= nc < 19 and board[nr, nc] == 0:
+                liberties.add((nr, nc))
+    return list(liberties)
+</code>

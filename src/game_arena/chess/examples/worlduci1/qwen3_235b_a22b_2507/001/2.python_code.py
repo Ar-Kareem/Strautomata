@@ -1,0 +1,300 @@
+
+import numpy as np
+
+# Piece values: material worth
+PIECE_VALUES = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0  # King has no material value but losing it means loss
+}
+
+# Center control bonus: center squares are more valuable
+CENTER_SQUARES = {'d4', 'd5', 'e4', 'e5'}
+CORNER_SQUARES = {'a1', 'a8', 'h1', 'h8'}
+
+def square_distance(sq1, sq2):
+    """Returns Manhattan distance between two squares."""
+    file1, rank1 = sq1[0], sq1[1]
+    file2, rank2 = sq2[0], sq2[1]
+    return abs(ord(file1) - ord(file2)) + abs(int(rank1) - int(rank2))
+
+def is_capture(move, pieces):
+    """Returns True if the move results in a capture."""
+    to_square = move[2:4]
+    return to_square in pieces
+
+def get_piece_type(piece_code):
+    """Returns piece type from code like 'wQ' -> 'Q'"""
+    return piece_code[1] if piece_code else None
+
+def get_color(piece_code):
+    """Returns color from code like 'wQ' -> 'w'"""
+    return piece_code[0] if piece_code else None
+
+def evaluate_position(pieces, color_to_move):
+    """Evaluate the board position from perspective of current player."""
+    score = 0
+    enemy_king_square = None
+    our_king_square = None
+
+    for square, piece in pieces.items():
+        piece_color = get_color(piece)
+        piece_type = get_piece_type(piece)
+        value = PIECE_VALUES[piece_type]
+
+        if piece_type == 'K':
+            # Track king locations
+            if piece_color == color_to_move[0]:
+                our_king_square = square
+            else:
+                enemy_king_square = square
+            continue  # Kings have no direct material value
+
+        # Material value
+        sign = 1 if piece_color == color_to_move[0] else -1
+        score += sign * value
+
+        # Center control bonus for minor/major pieces
+        if piece_type in 'NBRQ':
+            if square in CENTER_SQUARES:
+                score += sign * 0.2
+            elif square in CORNER_SQUARES and piece_type == 'B':
+                score -= sign * 0.2  # Bishops in corners are bad
+
+        # Pawn structure: slightly penalize being on edge files
+        if piece_type == 'P':
+            if square[0] in 'ah':
+                score -= sign * 0.1
+
+    # King safety: avoid moving king early unless necessary
+    # If our king has moved from initial rank, penalize
+    if our_king_square:
+        king_file, king_rank = our_king_square[0], int(our_king_square[1])
+        init_rank = 1 if color_to_move == 'white' else 8
+        if king_rank != init_rank:
+            score -= 0.4  # Slight penalty for king moved early
+
+    # Add bonus for threatening enemy king or center
+    for move in generate_pseudo_legal_moves(pieces, color_to_move):
+        to_sq = move[2:4]
+        if to_sq == enemy_king_square:
+            score += 0.3  # Threatening king
+        if to_sq in CENTER_SQUARES:
+            piece_moved = pieces.get(move[:2])
+            if piece_moved and get_piece_type(piece_moved) in 'NBRQ':
+                score += 0.1  # Reward moving toward center
+
+    return score
+
+def would_be_hanging(move, pieces, color_to_move):
+    """Check if the piece moved would be immediately capturable next turn."""
+    from_sq, to_sq = move[:2], move[2:4]
+    piece = pieces[from_sq]
+    temp_pieces = pieces.copy()
+    del temp_pieces[from_sq]
+    temp_pieces[to_sq] = piece
+
+    # Now simulate opponent's moves
+    opp_color = 'black' if color_to_move == 'white' else 'white'
+    for opp_move in generate_pseudo_legal_moves(temp_pieces, opp_color):
+        opp_from, opp_to = opp_move[:2], opp_move[2:4]
+        if opp_to == to_sq:  # Can opponent capture the piece?
+            captured_piece = temp_pieces.get(opp_to)
+            attacker_piece = temp_pieces.get(opp_from)
+            if captured_piece and attacker_piece:
+                attacker_val = PIECE_VALUES[get_piece_type(attacker_piece)]
+                victim_val = PIECE_VALUES[get_piece_type(captured_piece)]
+                if attacker_val <= victim_val:  # Even or favorable capture
+                    return True
+    return False
+
+def generate_pseudo_legal_moves(pieces, color_to_move):
+    """Simple move generator for threats/hanging detection (not full legal)."""
+    moves = []
+    color_char = 'w' if color_to_move == 'white' else 'b'
+    opp_color_char = 'b' if color_to_move == 'white' else 'w'
+
+    for sq, piece in pieces.items():
+        if get_color(piece) != color_char:
+            continue
+        from_file, from_rank = sq[0], int(sq[1])
+        piece_type = get_piece_type(piece)
+
+        # Pawn moves
+        if piece_type == 'P':
+            forward = 1 if color_char == 'w' else -1
+            new_rank = from_rank + forward
+            if 1 <= new_rank <= 8:
+                promo = 'q'  # default promote to queen
+                # Forward move
+                target_sq = f"{from_file}{new_rank}"
+                if target_sq not in pieces:
+                    if new_rank in (1, 8):
+                        moves.append(f"{sq}{target_sq}q")  # promote
+                    else:
+                        moves.append(f"{sq}{target_sq}")
+                # Double move
+                if (color_char == 'w' and from_rank == 2) or (color_char == 'b' and from_rank == 7):
+                    new_rank2 = from_rank + 2 * forward
+                    if f"{from_file}{new_rank2}" not in pieces and target_sq not in pieces:
+                        moves.append(f"{sq}{from_file}{new_rank2}")
+                # Captures
+                for df in [-1, 1]:
+                    to_file = chr(ord(from_file) + df)
+                    if 'a' <= to_file <= 'h':
+                        cap_sq = f"{to_file}{new_rank}"
+                        if cap_sq in pieces and get_color(pieces[cap_sq]) == opp_color_char:
+                            if new_rank in (1, 8):
+                                moves.append(f"{sq}{cap_sq}q")
+                            else:
+                                moves.append(f"{sq}{cap_sq}")
+
+        # Knight moves
+        elif piece_type == 'N':
+            knight_deltas = [(-1,-2), (-2,-1), (-2,1), (-1,2), (1,2), (2,1), (2,-1), (1,-2)]
+            for df, dr in knight_deltas:
+                to_file = chr(ord(from_file) + df)
+                to_rank = from_rank + dr
+                if 'a' <= to_file <= 'h' and 1 <= to_rank <= 8:
+                    to_sq = f"{to_file}{to_rank}"
+                    if to_sq not in pieces or get_color(pieces.get(to_sq)) != color_char:
+                        moves.append(f"{sq}{to_sq}")
+
+        # Bishop, Rook, Queen — sliding pieces
+        elif piece_type in 'BRQ':
+            directions = []
+            if piece_type in 'BQ':
+                directions += [(-1,-1), (-1,1), (1,-1), (1,1)]  # diagonals
+            if piece_type in 'RQ':
+                directions += [(-1,0), (1,0), (0,-1), (0,1)]    # orthogonals
+            for df, dr in directions:
+                for i in range(1, 8):
+                    to_file = chr(ord(from_file) + i*df)
+                    to_rank = from_rank + i*dr
+                    if not ('a' <= to_file <= 'h' and 1 <= to_rank <= 8):
+                        break
+                    to_sq = f"{to_file}{to_rank}"
+                    if to_sq in pieces:
+                        if get_color(pieces[to_sq]) != color_char:
+                            moves.append(f"{sq}{to_sq}")
+                        break
+                    else:
+                        moves.append(f"{sq}{to_sq}")
+
+        # King moves
+        elif piece_type == 'K':
+            king_deltas = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+            for df, dr in king_deltas:
+                to_file = chr(ord(from_file) + df)
+                to_rank = from_rank + dr
+                if 'a' <= to_file <= 'h' and 1 <= to_rank <= 8:
+                    to_sq = f"{to_file}{to_rank}"
+                    if to_sq not in pieces or get_color(pieces.get(to_sq)) != color_char:
+                        moves.append(f"{sq}{to_sq}")
+
+    return moves
+
+def simulate_move(pieces, move):
+    """Apply move to pieces and return new pieces dict."""
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    new_pieces = pieces.copy()
+    piece = new_pieces.pop(from_sq)
+    # Handle promotion
+    if len(move) > 4:
+        promo_char = move[4].upper()
+        new_pieces[to_sq] = piece[0] + promo_char
+    else:
+        new_pieces[to_sq] = piece
+    return new_pieces
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    legal_moves = generate_pseudo_legal_moves(pieces, to_play)
+    color_char = 'w' if to_play == 'white' else 'b'
+    opp_color = 'black' if to_play == 'white' else 'white'
+    opp_color_char = 'b' if to_play == 'white' else 'w'
+
+    best_score = -np.inf
+    best_move = legal_moves[0]  # fallback
+
+    for move in legal_moves:
+        from_sq, to_sq = move[:2], move[2:4]
+        piece = pieces[from_sq]
+        piece_type = get_piece_type(piece)
+
+        score = 0.0
+
+        # 1. Check if this move is a capture
+        if to_sq in pieces:
+            captured_piece = pieces[to_sq]
+            captured_type = get_piece_type(captured_piece)
+            captured_val = PIECE_VALUES[captured_type]
+            attacker_val = PIECE_VALUES[piece_type]
+            # Reward capture with bonus for good trades
+            score += captured_val
+            if attacker_val < captured_val:
+                score += 0.5  # Bonus for winning trade
+            elif attacker_val > captured_val:
+                score -= 1.0  # Penalty for sacrificing high for low
+
+        # 2. Promotion
+        if len(move) > 4:
+            score += PIECE_VALUES['Q']  # Promote to queen
+
+        # 3. Castling — slight bonus
+        if piece_type == 'K' and abs(ord(from_sq[0]) - ord(to_sq[0])) == 2:
+            score += 0.5
+
+        # 4. Center control
+        if to_sq in CENTER_SQUARES and piece_type in 'NBR':
+            score += 0.2
+
+        # 5. Avoid hanging pieces
+        if would_be_hanging(move, pieces, to_play):
+            score -= PIECE_VALUES[piece_type] * 0.8
+
+        # 6. Discourage early king moves
+        if piece_type == 'K':
+            init_rank = 1 if to_play == 'white' else 8
+            if int(from_sq[1]) == init_rank and int(to_sq[1]) != init_rank:
+                score -= 0.4
+
+        # 7. Encourage development: moving pawns and minor pieces forward
+        if piece_type in 'NBP' and to_play == 'white':
+            if int(to_sq[1]) > int(from_sq[1]):  # moving up
+                score += 0.1
+        elif piece_type in 'NBP' and to_play == 'black':
+            if int(to_sq[1]) < int(from_sq[1]):  # moving down
+                score += 0.1
+
+        # 8. Simulate and check if this leads to checkmate in one
+        # We do this by checking if the opponent has no legal moves after this one
+        temp_pieces = simulate_move(pieces, move)
+        opp_moves = generate_pseudo_legal_moves(temp_pieces, opp_color)
+        in_check = False
+        king_sq = None
+        for sq, pc in temp_pieces.items():
+            if pc == f"{color_char}K":
+                king_sq = sq
+                break
+        # Very basic check detection: see if any opponent piece attacks the king
+        for opp_move in generate_pseudo_legal_moves(temp_pieces, opp_color):
+            if opp_move[2:4] == king_sq:
+                in_check = True
+                break
+        # If in check and no legal moves, it's mate
+        if in_check and len(opp_moves) == 0:
+            score = np.inf  # Force mate
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # Ensure best_move is in original legal moves? It should be, but sanity:
+    if best_move not in legal_moves:
+        best_move = legal_moves[0]
+
+    return best_move

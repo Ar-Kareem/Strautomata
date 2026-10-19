@@ -1,0 +1,282 @@
+Strategy:
+- First, try to play any immediate winning move for myself by simulating each legal placement and checking Havannah win conditions (bridge, fork, or ring) on the resulting position.
+- If none, block any immediate winning move of the opponent in the same way.
+- If no immediate tactical moves, pick a heuristic move that:
+  - prefers central positions,
+  - connects to my existing groups (adjacent friendly stones),
+  - and slightly disfavors filling directly adjacent to many opponent stones.
+- The code constructs the hex adjacency, identifies the six hex-corners and the six edges (boundary segments), and uses graph/component tests to detect bridges, forks, and cycles (rings). It is careful to always return a legal move.
+
+<code>
+import math
+import numpy as np
+from collections import deque, defaultdict
+
+# Havannah policy for 15x15 board
+# API: policy(me: list[tuple[int,int]], opp: list[tuple[int,int]], valid_mask) -> (r,c)
+
+# Neighbor offsets on the given rectangular representation of the hex board
+NEIGHBORS = [(-1, 0), (1, 0), (-1, -1), (0, -1), (0, 1), (-1, 1)]
+
+def policy(me, opp, valid_mask):
+    # Convert valid_mask to numpy boolean array
+    vm = np.asarray(valid_mask, dtype=bool)
+    nrows, ncols = vm.shape
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Utility: check a coordinate is valid and empty
+    def is_empty(r, c):
+        return 0 <= r < nrows and 0 <= c < ncols and vm[r, c] and (r, c) not in me_set and (r, c) not in opp_set
+
+    # Build list of all legal moves (unoccupied valid positions)
+    legal_moves = [(r, c) for r in range(nrows) for c in range(ncols) if vm[r, c] and (r, c) not in me_set and (r, c) not in opp_set]
+    if not legal_moves:
+        # Should not happen but return any valid true cell (occupied check required by task)
+        for r in range(nrows):
+            for c in range(ncols):
+                if vm[r, c]:
+                    return (r, c)
+
+    # Precompute neighbors within board-valid cells
+    def neighbors_pos(pos):
+        r, c = pos
+        for dr, dc in NEIGHBORS:
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < nrows and 0 <= cc < ncols and vm[rr, cc]:
+                yield (rr, cc)
+
+    # Compute neighbor counts among valid cells (to detect boundary)
+    neighbor_count = {}
+    valid_cells = [(r, c) for r in range(nrows) for c in range(ncols) if vm[r, c]]
+    valid_set = set(valid_cells)
+    for pos in valid_cells:
+        cnt = 0
+        for nb in neighbors_pos(pos):
+            cnt += 1
+        neighbor_count[pos] = cnt
+
+    # Identify boundary nodes and corners (corner: neighbor_count == 2 usually)
+    boundary_nodes = [pos for pos in valid_cells if neighbor_count[pos] < 6]
+    corners = [pos for pos in valid_cells if neighbor_count[pos] == 2]
+    # Fallback if corners not exactly 6: choose 6 lowest neighbor_count nodes
+    if len(corners) != 6:
+        sorted_by_nc = sorted(valid_cells, key=lambda p: (neighbor_count[p], p))
+        # pick unique positions
+        corners = sorted_by_nc[:6]
+
+    # Attempt to produce ordered boundary cycle
+    boundary_set = set(boundary_nodes)
+    # Build adjacency restricted to boundary nodes
+    boundary_adj = {pos: [nb for nb in neighbors_pos(pos) if nb in boundary_set] for pos in boundary_nodes}
+
+    def build_boundary_cycle():
+        if not boundary_nodes:
+            return []
+        start = boundary_nodes[0]
+        # Choose start as a corner if possible for deterministic ordering
+        for c in corners:
+            if c in boundary_set:
+                start = c
+                break
+        cycle = []
+        visited = set()
+        curr = start
+        prev = None
+        while True:
+            cycle.append(curr)
+            visited.add(curr)
+            # choose next neighbor among boundary neighbors that is not prev
+            nbs = boundary_adj.get(curr, [])
+            nxt = None
+            # Prefer neighbors not yet visited (to go around)
+            for nb in nbs:
+                if nb != prev and nb not in visited:
+                    nxt = nb
+                    break
+            if nxt is None:
+                # fallback: choose any neighbor that's not prev
+                for nb in nbs:
+                    if nb != prev:
+                        nxt = nb
+                        break
+            if nxt is None:
+                break
+            prev, curr = curr, nxt
+            if curr == start:
+                break
+            # safety: if cycle becomes too long, abort
+            if len(cycle) > len(boundary_nodes) + 5:
+                break
+        # Ensure we have a full cycle: otherwise return empty
+        if len(cycle) < 3:
+            return []
+        return cycle
+
+    cycle = build_boundary_cycle()
+
+    # Map each boundary non-corner cell to an edge index 0..5
+    edge_map = {}
+    if cycle:
+        # find indices of corner occurrences in cycle
+        corner_set = set(corners)
+        corner_indices = [i for i, pos in enumerate(cycle) if pos in corner_set]
+        # If corners not found in cycle, fallback
+        if len(corner_indices) >= 6:
+            # pick first occurrence of the 6 corners in order
+            # Determine unique ordered corners as encountered
+            ordered_corners = []
+            seen = set()
+            for pos in cycle:
+                if pos in corner_set and pos not in seen:
+                    ordered_corners.append(pos)
+                    seen.add(pos)
+                    if len(ordered_corners) == 6:
+                        break
+            if len(ordered_corners) == 6:
+                # get indices in cycle for these ordered corners
+                indices = [cycle.index(pos) for pos in ordered_corners]
+                # assign edges between consecutive corner indices
+                L = len(cycle)
+                for i in range(6):
+                    a = indices[i]
+                    b = indices[(i + 1) % 6]
+                    # traverse from a to b (exclusive of corners themselves)
+                    idx = (a + 1) % L
+                    while idx != b:
+                        pos = cycle[idx]
+                        if pos not in corner_set:
+                            edge_map[pos] = i
+                        idx = (idx + 1) % L
+    # Fallback edge mapping by angle around center if above method failed
+    if not edge_map:
+        # Compute center of valid cells
+        xs = [p[0] for p in valid_cells]
+        ys = [p[1] for p in valid_cells]
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        # Map boundary nodes (excluding corners) to one of 6 angular bins
+        for pos in boundary_nodes:
+            if pos in corners:
+                continue
+            r, c = pos
+            angle = math.atan2(r - cx, c - cy)  # note swapping axes for nicer distribution
+            # normalize angle 0..2pi
+            a = angle % (2 * math.pi)
+            bin_idx = int((a / (2 * math.pi)) * 6) % 6
+            edge_map[pos] = bin_idx
+
+    # Helper: detect win for a given set of stones (positions)
+    def is_win_for(positions_set):
+        if not positions_set:
+            return False
+        visited = set()
+        positions = positions_set
+        # Build adjacency among player's positions
+        # Precompute neighbor lists within positions_set
+        pos_adj = {}
+        for p in positions:
+            pos_adj[p] = [nb for nb in neighbors_pos(p) if nb in positions]
+
+        # For each connected component, compute properties
+        for p in positions:
+            if p in visited:
+                continue
+            # BFS/DFS to collect component
+            stack = [p]
+            comp = []
+            visited.add(p)
+            while stack:
+                u = stack.pop()
+                comp.append(u)
+                for nb in pos_adj[u]:
+                    if nb not in visited:
+                        visited.add(nb)
+                        stack.append(nb)
+            # nodes count
+            nodes = len(comp)
+            # edges count: sum degrees /2
+            deg_sum = 0
+            for u in comp:
+                deg_sum += len(pos_adj[u])
+            edges = deg_sum // 2
+            # Ring detection: if edges >= nodes then there's at least one cycle
+            if edges >= nodes:
+                return True  # ring
+            # Bridge detection: if component contains at least two corners
+            comp_corners = [q for q in comp if q in corners]
+            if len(comp_corners) >= 2:
+                return True  # bridge
+            # Fork detection: touches at least 3 distinct edges (edges are boundary segments excluding corners)
+            touched = set()
+            for q in comp:
+                if q in edge_map:
+                    touched.add(edge_map[q])
+            if len(touched) >= 3:
+                return True  # fork
+        return False
+
+    # Function to test if placing move for player_set results in win
+    def is_winning_move(move, player_set):
+        # simulate by adding move to set
+        newset = set(player_set)
+        newset.add(move)
+        return is_win_for(newset)
+
+    # 1) Check immediate winning moves for me
+    for move in legal_moves:
+        if is_winning_move(move, me_set):
+            return move
+
+    # 2) Check immediate winning moves for opponent and block
+    opponent_winning_moves = []
+    for move in legal_moves:
+        if is_winning_move(move, opp_set):
+            opponent_winning_moves.append(move)
+    if opponent_winning_moves:
+        # If any of opponent's immediate winning moves can be directly played to block, play it.
+        # Choose one that also connects to our stones (bonus), otherwise pick first.
+        best_move = opponent_winning_moves[0]
+        best_score = -1e9
+        for m in opponent_winning_moves:
+            # score by adjacency to our stones
+            adj = sum(1 for nb in neighbors_pos(m) if nb in me_set)
+            score = adj
+            if score > best_score:
+                best_score = score
+                best_move = m
+        return best_move
+
+    # 3) Heuristic selection: choose move maximizing heuristic score
+    # Heuristic: centrality + adjacency to own stones * 2 - adjacency to opponent * 0.5
+    # Also small random tie-break via position index
+    # Precompute center
+    center_r = (nrows - 1) / 2.0
+    center_c = (ncols - 1) / 2.0
+
+    best = None
+    best_score = -1e9
+    for move in legal_moves:
+        r, c = move
+        # centrality
+        dist2 = (r - center_r) ** 2 + (c - center_c) ** 2
+        center_score = -dist2
+        # adjacency bonuses
+        adj_me = sum(1 for nb in neighbors_pos(move) if nb in me_set)
+        adj_opp = sum(1 for nb in neighbors_pos(move) if nb in opp_set)
+        score = 4.0 * center_score + 6.0 * adj_me - 3.0 * adj_opp
+        # Slight preference for moves that touch boundary if we have few stones (opening)
+        if len(me) < 6:
+            # prefer central still, but allow some boundary if necessary
+            pass
+        # tie-breaker deterministic
+        score += -0.0001 * (r * ncols + c)
+        if score > best_score:
+            best_score = score
+            best = move
+
+    if best is None:
+        # Fallback: return any legal move
+        return legal_moves[0]
+    return best
+</code>

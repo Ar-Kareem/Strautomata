@@ -1,0 +1,255 @@
+
+from math import inf
+
+N = 4
+
+# All winning lines on a 4x4 board: 4 rows, 4 cols, 2 diagonals
+LINES = []
+for r in range(N):
+    LINES.append([(r, c) for c in range(N)])
+for c in range(N):
+    LINES.append([(r, c) for r in range(N)])
+LINES.append([(i, i) for i in range(N)])
+LINES.append([(i, N - 1 - i) for i in range(N)])
+
+CELL_TO_LINES = {(r, c): [] for r in range(N) for c in range(N)}
+for idx, line in enumerate(LINES):
+    for cell in line:
+        CELL_TO_LINES[cell].append(idx)
+
+# Mild preference for central control
+POSITION_WEIGHTS = [
+    [3, 4, 4, 3],
+    [4, 5, 5, 4],
+    [4, 5, 5, 4],
+    [3, 4, 4, 3],
+]
+
+WIN_SCORE = 10_000_000
+LOSE_SCORE = -10_000_000
+
+def legal_moves(board):
+    return [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+
+def check_winner(board):
+    for line in LINES:
+        s = sum(board[r][c] for r, c in line)
+        if s == N:
+            return 1
+        if s == -N:
+            return -1
+    return 0
+
+def is_full(board):
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return False
+    return True
+
+def line_value(our_count, opp_count):
+    if our_count > 0 and opp_count > 0:
+        return 0
+    if our_count == 0 and opp_count == 0:
+        return 1
+    if opp_count == 0:
+        # Exponential preference for nearly completed lines
+        return [0, 3, 20, 200, WIN_SCORE][our_count]
+    if our_count == 0:
+        return -[0, 3, 20, 220, WIN_SCORE][opp_count]
+    return 0
+
+def evaluate(board):
+    winner = check_winner(board)
+    if winner == 1:
+        return WIN_SCORE
+    if winner == -1:
+        return LOSE_SCORE
+
+    score = 0
+
+    # Line-based heuristic
+    for line in LINES:
+        our_count = 0
+        opp_count = 0
+        for r, c in line:
+            v = board[r][c]
+            if v == 1:
+                our_count += 1
+            elif v == -1:
+                opp_count += 1
+        score += line_value(our_count, opp_count)
+
+    # Positional preference
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1:
+                score += POSITION_WEIGHTS[r][c]
+            elif board[r][c] == -1:
+                score -= POSITION_WEIGHTS[r][c]
+
+    # Fork potential: count open 3-in-a-row threats available after one move
+    score += 40 * count_immediate_wins(board, 1)
+    score -= 45 * count_immediate_wins(board, -1)
+
+    return score
+
+def count_immediate_wins(board, player):
+    cnt = 0
+    for r, c in legal_moves(board):
+        board[r][c] = player
+        if check_winner(board) == player:
+            cnt += 1
+        board[r][c] = 0
+    return cnt
+
+def ordered_moves(board, player):
+    moves = legal_moves(board)
+    scored = []
+    for r, c in moves:
+        board[r][c] = player
+
+        # Fast tactical ordering
+        if check_winner(board) == player:
+            val = 1_000_000
+        else:
+            val = POSITION_WEIGHTS[r][c] * 10
+
+            # Encourage creating threats, discourage allowing threats
+            val += 200 * count_immediate_wins(board, player)
+            val -= 180 * count_immediate_wins(board, -player)
+
+            # Local line influence
+            for line_idx in CELL_TO_LINES[(r, c)]:
+                line = LINES[line_idx]
+                our_count = 0
+                opp_count = 0
+                for rr, cc in line:
+                    v = board[rr][cc]
+                    if v == player:
+                        our_count += 1
+                    elif v == -player:
+                        opp_count += 1
+                if opp_count == 0:
+                    val += [0, 2, 8, 50, 0][our_count]
+                if our_count == 0:
+                    val += [0, 1, 4, 20, 0][opp_count]
+
+        board[r][c] = 0
+        scored.append((val, (r, c)))
+
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+def minimax(board, depth, alpha, beta, player):
+    winner = check_winner(board)
+    if winner == 1:
+        return WIN_SCORE + depth
+    if winner == -1:
+        return LOSE_SCORE - depth
+    if depth == 0 or is_full(board):
+        return evaluate(board)
+
+    moves = ordered_moves(board, player)
+
+    if player == 1:
+        best = -inf
+        for r, c in moves:
+            board[r][c] = 1
+            val = minimax(board, depth - 1, alpha, beta, -1)
+            board[r][c] = 0
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        return best
+    else:
+        best = inf
+        for r, c in moves:
+            board[r][c] = -1
+            val = minimax(board, depth - 1, alpha, beta, 1)
+            board[r][c] = 0
+            if val < best:
+                best = val
+            if best < beta:
+                beta = best
+            if alpha >= beta:
+                break
+        return best
+
+def choose_depth(num_empty):
+    # Depth schedule chosen to remain safe under time limits
+    if num_empty >= 13:
+        return 4
+    if num_empty >= 9:
+        return 5
+    if num_empty >= 6:
+        return 6
+    return 8
+
+def first_legal(board):
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return (r, c)
+    return (0, 0)
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    try:
+        moves = legal_moves(board)
+        if not moves:
+            return (0, 0)
+
+        # 1. Immediate win
+        for r, c in moves:
+            board[r][c] = 1
+            if check_winner(board) == 1:
+                board[r][c] = 0
+                return (r, c)
+            board[r][c] = 0
+
+        # 2. Immediate block
+        opp_wins = []
+        for r, c in moves:
+            board[r][c] = -1
+            if check_winner(board) == -1:
+                opp_wins.append((r, c))
+            board[r][c] = 0
+        if opp_wins:
+            # If multiple threats exist, prefer one that also gives us best future
+            best_move = None
+            best_score = -inf
+            for r, c in opp_wins:
+                if board[r][c] != 0:
+                    continue
+                board[r][c] = 1
+                score = evaluate(board)
+                board[r][c] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+            if best_move is not None:
+                return best_move
+
+        # 3. Search
+        num_empty = len(moves)
+        depth = choose_depth(num_empty)
+
+        best_move = None
+        best_score = -inf
+        for r, c in ordered_moves(board, 1):
+            board[r][c] = 1
+            score = minimax(board, depth - 1, -inf, inf, -1)
+            board[r][c] = 0
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+
+        if best_move is not None and board[best_move[0]][best_move[1]] == 0:
+            return best_move
+
+        return first_legal(board)
+    except Exception:
+        return first_legal(board)

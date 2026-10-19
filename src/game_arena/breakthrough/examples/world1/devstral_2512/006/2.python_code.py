@@ -1,0 +1,80 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Determine the direction of movement based on color
+    direction = -1 if color == 'b' else 1
+    opponent_home_row = 0 if color == 'b' else 7
+
+    # Convert opponent pieces to a set for faster lookup
+    opp_set = set(opp)
+
+    # Check for immediate win: any piece can reach the opponent's home row
+    for piece in me:
+        row, col = piece
+        if row + direction == opponent_home_row:
+            # Check if the square is empty
+            if (row + direction, col) not in opp_set:
+                return ((row, col), (row + direction, col))
+
+    # Check for captures (diagonal moves onto opponent pieces)
+    captures = []
+    for piece in me:
+        row, col = piece
+        # Check left diagonal
+        left_diag = (row + direction, col - 1)
+        if col - 1 >= 0 and left_diag in opp_set:
+            captures.append(((row, col), left_diag))
+        # Check right diagonal
+        right_diag = (row + direction, col + 1)
+        if col + 1 < 8 and right_diag in opp_set:
+            captures.append(((row, col), right_diag))
+
+    if captures:
+        # Prioritize captures that are closer to the opponent's home row
+        captures.sort(key=lambda move: abs(move[1][0] - opponent_home_row))
+        return captures[0]
+
+    # Check for forward moves (straight or diagonal)
+    forward_moves = []
+    for piece in me:
+        row, col = piece
+        # Straight forward
+        straight = (row + direction, col)
+        if 0 <= straight[0] < 8 and straight not in opp_set:
+            forward_moves.append(((row, col), straight))
+        # Left diagonal forward
+        left_diag = (row + direction, col - 1)
+        if col - 1 >= 0 and 0 <= left_diag[0] < 8 and left_diag not in opp_set:
+            forward_moves.append(((row, col), left_diag))
+        # Right diagonal forward
+        right_diag = (row + direction, col + 1)
+        if col + 1 < 8 and 0 <= right_diag[0] < 8 and right_diag not in opp_set:
+            forward_moves.append(((row, col), right_diag))
+
+    if forward_moves:
+        # Prioritize moves that are closer to the opponent's home row
+        forward_moves.sort(key=lambda move: abs(move[1][0] - opponent_home_row))
+        return forward_moves[0]
+
+    # Fallback: move any piece forward (should not reach here if legal moves exist)
+    # This is a safeguard to ensure a legal move is always returned
+    for piece in me:
+        row, col = piece
+        # Try straight forward
+        straight = (row + direction, col)
+        if 0 <= straight[0] < 8 and straight not in opp_set:
+            return ((row, col), straight)
+        # Try left diagonal
+        left_diag = (row + direction, col - 1)
+        if col - 1 >= 0 and 0 <= left_diag[0] < 8 and left_diag not in opp_set:
+            return ((row, col), left_diag)
+        # Try right diagonal
+        right_diag = (row + direction, col + 1)
+        if col + 1 < 8 and 0 <= right_diag[0] < 8 and right_diag not in opp_set:
+            return ((row, col), right_diag)
+
+    # If no moves are found (should not happen in a valid game), return the first piece's straight move
+    # This is a last-resort fallback to ensure a legal move is returned
+    piece = me[0]
+    row, col = piece
+    straight = (row + direction, col)
+    return ((row, col), straight)

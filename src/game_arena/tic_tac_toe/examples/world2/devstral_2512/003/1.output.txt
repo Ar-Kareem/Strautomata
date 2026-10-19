@@ -1,0 +1,184 @@
+<thinking>
+I need to create a Python function that plays 4x4 Tic Tac Toe optimally. Let me think through the approach:
+
+1. First, I should understand the game rules - it's a 4x4 grid where players take turns marking spaces (1 for me, -1 for opponent, 0 for empty). The goal is to get 4 in a row horizontally, vertically, or diagonally.
+
+2. Since it's a small board (only 16 cells), I could potentially use minimax with alpha-beta pruning to find the optimal move. However, with 16 cells, the game tree might be too large for a 1-second time limit.
+
+3. I should consider heuristic approaches:
+   - Check for immediate winning moves
+   - Check for immediate blocking moves (opponent's winning moves)
+   - Look for forks (creating two winning threats)
+   - Consider center control (though in 4x4, center might be less critical than in 3x3)
+   - Consider corner and edge positions
+
+4. For efficiency, I'll implement a heuristic-based approach that:
+   - First checks if I can win immediately
+   - Then checks if I need to block the opponent
+   - Then looks for strategic positions (center, corners)
+   - Finally picks a random available move
+
+5. I'll need helper functions to:
+   - Check if a move is valid
+   - Check if a player has won
+   - Evaluate the board state
+
+6. For the win/block checking, I need to check all possible lines of 4:
+   - 4 horizontal lines
+   - 4 vertical lines
+   - 2 main diagonals
+
+Let me outline the steps in the policy function:
+1. Check all possible moves to see if any would make me win immediately
+2. If not, check all opponent's possible winning moves to block them
+3. If neither, use a scoring system to evaluate positions:
+   - Center positions might be valuable
+   - Positions that create multiple threats
+   - Avoid positions that could lead to opponent forks
+
+I'll implement this with a focus on immediate threats first, then strategic positioning.
+</thinking>
+
+<code>
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Returns the optimal move for a 4x4 Tic Tac Toe game.
+    Board representation: 0 = empty, 1 = me, -1 = opponent
+    Returns (row, col) tuple with 0-based indices
+    """
+
+    def is_valid_move(row: int, col: int) -> bool:
+        """Check if a move is valid (within bounds and empty)"""
+        return 0 <= row < 4 and 0 <= col < 4 and board[row][col] == 0
+
+    def check_win(player: int) -> bool:
+        """Check if the specified player has won"""
+        # Check rows
+        for row in range(4):
+            if all(cell == player for cell in board[row]):
+                return True
+
+        # Check columns
+        for col in range(4):
+            if all(board[row][col] == player for row in range(4)):
+                return True
+
+        # Check diagonals
+        if all(board[i][i] == player for i in range(4)):
+            return True
+        if all(board[i][3-i] == player for i in range(4)):
+            return True
+
+        return False
+
+    def get_winning_move(player: int) -> Tuple[int, int]:
+        """Find a move that would make the player win immediately"""
+        for row in range(4):
+            for col in range(4):
+                if is_valid_move(row, col):
+                    # Try the move
+                    board[row][col] = player
+                    if check_win(player):
+                        # Undo the move
+                        board[row][col] = 0
+                        return (row, col)
+                    # Undo the move
+                    board[row][col] = 0
+        return (-1, -1)
+
+    def evaluate_position(row: int, col: int) -> int:
+        """
+        Evaluate the strategic value of a position
+        Higher score = better position
+        """
+        score = 0
+
+        # Center positions are generally good
+        if (row, col) in [(1, 1), (1, 2), (2, 1), (2, 2)]:
+            score += 3
+        # Corners
+        elif (row, col) in [(0, 0), (0, 3), (3, 0), (3, 3)]:
+            score += 2
+        # Edges
+        else:
+            score += 1
+
+        return score
+
+    # Step 1: Check if we can win immediately
+    win_move = get_winning_move(1)
+    if win_move != (-1, -1):
+        return win_move
+
+    # Step 2: Check if we need to block opponent's winning move
+    block_move = get_winning_move(-1)
+    if block_move != (-1, -1):
+        return block_move
+
+    # Step 3: Find all valid moves and evaluate them
+    valid_moves = []
+    for row in range(4):
+        for col in range(4):
+            if is_valid_move(row, col):
+                valid_moves.append((row, col))
+
+    if not valid_moves:
+        return (0, 0)  # Shouldn't happen in normal game
+
+    # Evaluate each move and pick the best one
+    best_move = None
+    best_score = -1
+
+    for move in valid_moves:
+        row, col = move
+        score = evaluate_position(row, col)
+
+        # Additional scoring: check if this move creates potential threats
+        # Temporarily place our piece
+        board[row][col] = 1
+
+        # Count potential lines of 3 with this move
+        lines_of_3 = 0
+
+        # Check row
+        row_count = sum(1 for c in range(4) if board[row][c] == 1)
+        if row_count == 3 and 0 in board[row]:
+            lines_of_3 += 1
+
+        # Check column
+        col_count = sum(1 for r in range(4) if board[r][col] == 1)
+        if col_count == 3 and any(board[r][col] == 0 for r in range(4)):
+            lines_of_3 += 1
+
+        # Check main diagonal
+        if row == col:
+            diag_count = sum(1 for i in range(4) if board[i][i] == 1)
+            if diag_count == 3 and any(board[i][i] == 0 for i in range(4)):
+                lines_of_3 += 1
+
+        # Check anti-diagonal
+        if row + col == 3:
+            anti_diag_count = sum(1 for i in range(4) if board[i][3-i] == 1)
+            if anti_diag_count == 3 and any(board[i][3-i] == 0 for i in range(4)):
+                lines_of_3 += 1
+
+        # Add bonus for creating threats
+        score += lines_of_3 * 5
+
+        # Undo the temporary move
+        board[row][col] = 0
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # If we found a best move, return it
+    if best_move:
+        return best_move
+
+    # If all else fails, return a random valid move
+    return random.choice(valid_moves)
+</code>

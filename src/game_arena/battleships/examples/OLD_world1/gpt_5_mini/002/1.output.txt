@@ -1,0 +1,228 @@
+```python
+import random
+from collections import deque, defaultdict
+
+# Battleship policy for 10x10 grid
+# board: list[list[int]] with 0 (unknown), -1 (miss), 1 (hit)
+# returns (row, col) of an unknown cell to fire at
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+N = 10
+
+def in_bounds(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+def neighbors(r, c):
+    for dr, dc in ((1,0),(-1,0),(0,1),(0,-1)):
+        nr, nc = r+dr, c+dc
+        if in_bounds(nr, nc):
+            yield nr, nc
+
+def find_hit_components(board):
+    visited = [[False]*N for _ in range(N)]
+    components = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1 and not visited[r][c]:
+                # BFS
+                q = deque([(r,c)])
+                visited[r][c] = True
+                comp = [(r,c)]
+                while q:
+                    cr, cc = q.popleft()
+                    for nr, nc in neighbors(cr, cc):
+                        if board[nr][nc] == 1 and not visited[nr][nc]:
+                            visited[nr][nc] = True
+                            q.append((nr,nc))
+                            comp.append((nr,nc))
+                components.append(comp)
+    return components
+
+def cells_ok(cells, board):
+    # Cells must be in bounds and not a known miss (-1)
+    for r, c in cells:
+        if not in_bounds(r, c):
+            return False
+        if board[r][c] == -1:
+            return False
+    return True
+
+def possible_segment_including(required_cells, length, board):
+    # Check if there exists a contiguous segment (horizontal or vertical) of given length
+    # that includes all required_cells and does not overlap any miss.
+    if not required_cells:
+        return False
+    req = list(required_cells)
+    # try horizontal: all rows must be same to be in same horizontal segment
+    rows = {r for r,c in req}
+    cols = {c for r,c in req}
+    # Horizontal candidate
+    if len(rows) == 1:
+        r = next(iter(rows))
+        minc = min(cols)
+        maxc = max(cols)
+        span = maxc - minc + 1
+        if span <= length:
+            # possible starts: start_col from maxc-length+1 .. minc
+            start_min = maxc - length + 1
+            start_max = minc
+            for start in range(start_min, start_max+1):
+                seg = [(r, start + i) for i in range(length)]
+                if cells_ok(seg, board) and all((rr,cc) in seg for rr,cc in req):
+                    return True
+    # Vertical candidate
+    if len(cols) == 1:
+        c = next(iter(cols))
+        minr = min(rows)
+        maxr = max(rows)
+        span = maxr - minr + 1
+        if span <= length:
+            start_min = maxr - length + 1
+            start_max = minr
+            for start in range(start_min, start_max+1):
+                seg = [(start + i, c) for i in range(length)]
+                if cells_ok(seg, board) and all((rr,cc) in seg for rr,cc in req):
+                    return True
+    # If required cells are not aligned (e.g., singleton could be considered both ways),
+    # for singleton we allow both orientations by trying all possible horizontal and vertical segments that include it.
+    if len(req) == 1:
+        r, c = req[0]
+        # horizontal segments that include (r,c)
+        for start in range(c - length + 1, c + 1):
+            seg = [(r, start + i) for i in range(length)]
+            if all(in_bounds(rr,cc) for rr,cc in seg) and cells_ok(seg, board) and (r,c) in seg:
+                return True
+        # vertical
+        for start in range(r - length + 1, r + 1):
+            seg = [(start + i, c) for i in range(length)]
+            if all(in_bounds(rr,cc) for rr,cc in seg) and cells_ok(seg, board) and (r,c) in seg:
+                return True
+    return False
+
+def heatmap_prob(board):
+    # For each possible placement of each ship length, add +1 to unknown cells in that placement.
+    heat = [[0]*N for _ in range(N)]
+    for L in SHIP_LENGTHS:
+        # horizontal
+        for r in range(N):
+            for start in range(0, N - L + 1):
+                seg = [(r, start + i) for i in range(L)]
+                # must not contain a miss cell
+                if not cells_ok(seg, board):
+                    continue
+                # It's okay if it includes hits; they actually increase probability
+                # Add +1 for each unknown cell in this segment
+                for rr, cc in seg:
+                    if board[rr][cc] == 0:
+                        heat[rr][cc] += 1
+        # vertical
+        for c in range(N):
+            for start in range(0, N - L + 1):
+                seg = [(start + i, c) for i in range(L)]
+                if not cells_ok(seg, board):
+                    continue
+                for rr, cc in seg:
+                    if board[rr][cc] == 0:
+                        heat[rr][cc] += 1
+    return heat
+
+def best_unknown_from_heat(heat, board):
+    best = None
+    best_score = -1
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:
+                continue
+            score = heat[r][c]
+            if score > best_score:
+                best_score = score
+                best = (r,c)
+            elif score == best_score and score > 0:
+                # tie-break deterministically by row,col to be stable
+                if best is None or (r, c) < best:
+                    best = (r,c)
+    return best
+
+def policy(board):
+    # Ensure correct shape assumed 10x10
+    # Target mode: if there are hits, try to extend/finish them
+    comps = find_hit_components(board)
+    candidate_scores = defaultdict(int)  # (r,c) -> score
+    # For each hit component, find neighboring unknown cells that could be part of the ship
+    for comp in comps:
+        comp_set = set(comp)
+        # determine bounding box
+        rows = [r for r,c in comp]
+        cols = [c for r,c in comp]
+        # If aligned, orientation likely known; but allow both for singleton
+        # Generate neighbors (unknown) to consider
+        neighbor_candidates = set()
+        if len(comp) > 1:
+            # infer orientation
+            if len(set(rows)) == 1:
+                # horizontal
+                r = rows[0]
+                minc = min(cols)
+                maxc = max(cols)
+                for nc in (minc - 1, maxc + 1):
+                    if 0 <= nc < N and board[r][nc] == 0:
+                        neighbor_candidates.add((r, nc))
+            elif len(set(cols)) == 1:
+                # vertical
+                c = cols[0]
+                minr = min(rows)
+                maxr = max(rows)
+                for nr in (minr - 1, maxr + 1):
+                    if 0 <= nr < N and board[nr][c] == 0:
+                        neighbor_candidates.add((nr, c))
+            else:
+                # Unexpected: non-straight hits (shouldn't happen), consider all adjacent unknowns
+                for r,c in comp:
+                    for nr,nc in neighbors(r,c):
+                        if board[nr][nc] == 0:
+                            neighbor_candidates.add((nr,nc))
+        else:
+            # singleton: consider all orthogonal unknown neighbors
+            r,c = comp[0]
+            for nr,nc in neighbors(r,c):
+                if board[nr][nc] == 0:
+                    neighbor_candidates.add((nr,nc))
+        # For each candidate, check if there exists any ship length placement that includes comp+candidate
+        for cand in neighbor_candidates:
+            cand_set = set(comp)
+            cand_set.add(cand)
+            # Check if any ship length can include these cells in a valid placement
+            fits = 0
+            for L in SHIP_LENGTHS:
+                if possible_segment_including(cand_set, L, board):
+                    fits += 1
+            if fits > 0:
+                candidate_scores[cand] += fits  # weight by number of fits
+    # If we have candidate target cells, choose the one with highest score
+    if candidate_scores:
+        # choose highest score; tie-break by (r,c)
+        best_cell = None
+        best_score = -1
+        for cell, score in candidate_scores.items():
+            r,c = cell
+            if score > best_score or (score == best_score and (best_cell is None or (r,c) < best_cell)):
+                best_score = score
+                best_cell = (r,c)
+        if best_cell is not None:
+            return best_cell
+
+    # Hunt mode: use heatmap probability over all possible placements
+    heat = heatmap_prob(board)
+    best = best_unknown_from_heat(heat, board)
+    if best is not None:
+        return best
+
+    # As a last resort (shouldn't happen), pick the first unknown cell
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return (r,c)
+
+    # If there are no unknowns (shouldn't be called), return (0,0)
+    return (0,0)
+```

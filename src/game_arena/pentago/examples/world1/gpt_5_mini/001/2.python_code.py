@@ -1,0 +1,24 @@
+
+def policy(you, opponent) -> str:
+    """
+    Simple Pentago move policy:
+    - Find the first empty cell (row-major).
+    - Choose the quadrant containing that cell.
+    - Rotate that quadrant Left (anticlockwise).
+    Returns a move string "row,col,quad,dir".
+    """
+    # Scan for first empty cell
+    for r in range(6):
+        for c in range(6):
+            try:
+                myv = int(you[r][c])
+                opv = int(opponent[r][c])
+            except Exception:
+                # If indexing/coercion fails for some reason, skip this cell
+                continue
+            if myv == 0 and opv == 0:
+                # determine quadrant: 0..3
+                quad = (r // 3) * 2 + (c // 3)
+                return f"{r+1},{c+1},{quad},L"
+    # Fallback (should not be needed since at least one empty cell is guaranteed)
+    return "1,1,0,L"

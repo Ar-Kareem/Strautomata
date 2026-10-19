@@ -1,0 +1,349 @@
+
+import time
+import math
+
+PIECE_VALUES = {
+    'P': 100, 'N': 300, 'B': 300, 'R': 500, 'Q': 900, 'K': 20000
+}
+
+# Piece-square tables for opening/midgame (white perspective, flipped for black)
+PAWN_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    0,  0,  0, 20, 20,  0,  0,  0,
+    5, -5,-10,  0,  0,-10, -5,  5,
+    5, 10, 10,-20,-20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+]
+
+KNIGHT_TABLE = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15,  0,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50,
+]
+
+BISHOP_TABLE = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20,
+]
+
+ROOK_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+]
+
+QUEEN_TABLE = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+]
+
+KING_MID_TABLE = [
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+    20, 20,  0,  0,  0,  0, 20, 20,
+    20, 30, 10,  0,  0, 10, 30, 20
+]
+
+KING_END_TABLE = [
+    -50,-40,-30,-20,-20,-30,-40,-50,
+    -30,-20,-10,  0,  0,-10,-20,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-30,  0,  0,  0,  0,-30,-30,
+    -50,-30,-30,-30,-30,-30,-30,-50
+]
+
+def square_to_index(sq):
+    """Convert algebraic square to 0-63 index."""
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    return rank * 8 + file
+
+def index_to_square(idx):
+    """Convert 0-63 index to algebraic square."""
+    rank = idx // 8
+    file = idx % 8
+    return f"{chr(file + ord('a'))}{rank + 1}"
+
+class ChessBoard:
+    def __init__(self, pieces, to_play):
+        self.board = [None] * 64
+        self.side_to_move = 0 if to_play == 'white' else 1
+        self.white_pieces = []
+        self.black_pieces = []
+        
+        for sq, piece in pieces.items():
+            idx = square_to_index(sq)
+            self.board[idx] = piece
+            if piece[0] == 'w':
+                self.white_pieces.append(idx)
+            else:
+                self.black_pieces.append(idx)
+    
+    def get_piece_at(self, idx):
+        return self.board[idx]
+    
+    def make_move(self, move_str, legal_moves):
+        """Return new board after making move (for simulation)."""
+        # Parse move string (simplified - we just need to simulate)
+        # In practice, we'd parse properly, but for speed we'll use the legal_moves list
+        # We'll find the move in legal_moves and create a new board
+        new_board = ChessBoard({}, 'white')
+        new_board.board = self.board.copy()
+        new_board.side_to_move = 1 - self.side_to_move
+        
+        # Find source and destination squares from move string
+        # This is simplified - actual implementation would need full parsing
+        # For the competition, we'll use a different approach
+        return new_board
+
+def evaluate_board(board):
+    """Evaluate position from white's perspective."""
+    score = 0
+    white_material = 0
+    black_material = 0
+    
+    # Count material and piece-square values
+    for i in range(64):
+        piece = board.board[i]
+        if piece:
+            color = piece[0]
+            piece_type = piece[1]
+            value = PIECE_VALUES.get(piece_type, 0)
+            
+            # Piece-square table
+            table = None
+            if piece_type == 'P':
+                table = PAWN_TABLE
+            elif piece_type == 'N':
+                table = KNIGHT_TABLE
+            elif piece_type == 'B':
+                table = BISHOP_TABLE
+            elif piece_type == 'R':
+                table = ROOK_TABLE
+            elif piece_type == 'Q':
+                table = QUEEN_TABLE
+            elif piece_type == 'K':
+                # Choose king table based on game phase
+                total_material = white_material + black_material
+                if total_material > 6000:  # Midgame
+                    table = KING_MID_TABLE
+                else:  # Endgame
+                    table = KING_END_TABLE
+            
+            if table:
+                # Flip table for black pieces
+                if color == 'w':
+                    psq = table[i]
+                else:
+                    # Mirror vertically for black
+                    row = i // 8
+                    col = i % 8
+                    mirrored_idx = (7 - row) * 8 + col
+                    psq = table[mirrored_idx]
+                value += psq
+            
+            if color == 'w':
+                score += value
+                white_material += PIECE_VALUES.get(piece_type, 0)
+            else:
+                score -= value
+                black_material += PIECE_VALUES.get(piece_type, 0)
+    
+    # Mobility bonus (simplified)
+    mobility_bonus = 0
+    # In full implementation, we'd generate moves and count them
+    
+    # Tempo bonus
+    if board.side_to_move == 0:  # White to move
+        score += 10
+    else:
+        score -= 10
+    
+    return score
+
+def order_moves(moves, board, transposition_table):
+    """Order moves for better alpha-beta pruning."""
+    scored_moves = []
+    for move in moves:
+        score = 0
+        
+        # Check if move is in transposition table with good score
+        # Simulate the move quickly to see if it captures
+        # This is simplified - actual implementation would parse move string
+        if 'x' in move:
+            score += 1000  # Capture moves first
+        elif '+' in move:
+            score += 500  # Checks
+        elif move in ['O-O', 'O-O-O']:
+            score += 300  # Castling
+        
+        scored_moves.append((score, move))
+    
+    scored_moves.sort(reverse=True)
+    return [move for _, move in scored_moves]
+
+def minimax(board, depth, alpha, beta, maximizing, legal_moves_func, start_time, time_limit, transposition_table):
+    """Minimax search with alpha-beta pruning."""
+    if depth == 0 or time.time() - start_time > time_limit:
+        return evaluate_board(board), None
+    
+    legal_moves = legal_moves_func()
+    if not legal_moves:
+        # Checkmate or stalemate
+        # TODO: Check for checkmate vs stalemate
+        return -10000 if maximizing else 10000, None
+    
+    best_move = None
+    
+    if maximizing:
+        max_eval = -float('inf')
+        for move in order_moves(legal_moves, board, transposition_table):
+            # Create new board after move (simplified)
+            new_board = board.make_move(move, legal_moves)
+            eval_score, _ = minimax(new_board, depth-1, alpha, beta, False, 
+                                   legal_moves_func, start_time, time_limit, transposition_table)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = float('inf')
+        for move in order_moves(legal_moves, board, transposition_table):
+            new_board = board.make_move(move, legal_moves)
+            eval_score, _ = minimax(new_board, depth-1, alpha, beta, True,
+                                   legal_moves_func, start_time, time_limit, transposition_table)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Initialize memory if first call
+    if 'transposition_table' not in memory:
+        memory['transposition_table'] = {}
+    if 'move_history' not in memory:
+        memory['move_history'] = []
+    
+    # If there's only one legal move, return it immediately
+    if len(legal_moves) == 1:
+        memory['move_history'].append(legal_moves[0])
+        return legal_moves[0], memory
+    
+    # Create board representation
+    board = ChessBoard(pieces, to_play)
+    
+    # Time management
+    start_time = time.time()
+    time_limit = 0.95  # Use 95% of available time
+    
+    # Simple evaluation of moves if we're short on time or just starting
+    best_move = None
+    best_score = -float('inf') if to_play == 'white' else float('inf')
+    
+    # Quick evaluation for each move
+    for move in legal_moves:
+        score = 0
+        
+        # Material capture heuristic
+        if 'x' in move:
+            # Estimate captured piece value
+            # Move format like "Bxf5" or "exd5"
+            parts = move.split('x')
+            if len(parts) == 2:
+                dest = parts[1]
+                # Get piece at destination
+                for sq, piece in pieces.items():
+                    if dest.startswith(sq):
+                        # Captured piece
+                        piece_type = piece[1]
+                        score += PIECE_VALUES.get(piece_type, 0) * 2
+        
+        # Check bonus
+        if '+' in move or '#' in move:
+            score += 500
+        
+        # Castling bonus
+        if move in ['O-O', 'O-O-O']:
+            score += 300
+        
+        # Promotion bonus
+        if '=Q' in move:
+            score += 800
+        elif '=R' in move:
+            score += 400
+        elif '=B' in move or '=N' in move:
+            score += 200
+        
+        # Center control for pawns
+        if len(move) == 2:  # Simple pawn move
+            file, rank = move[0], move[1]
+            if file in ['d', 'e'] and rank in ['4', '5']:
+                score += 50
+        
+        # Update best move
+        if to_play == 'white':
+            if score > best_score:
+                best_score = score
+                best_move = move
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = move
+    
+    # If we found a good capture or check, use it
+    if best_score > 1000 or best_score < -1000:
+        memory['move_history'].append(best_move)
+        return best_move, memory
+    
+    # Otherwise use the first reasonable move (fallback)
+    # Prefer captures, checks, then center moves
+    for move in legal_moves:
+        if 'x' in move or '+' in move or move in ['O-O', 'O-O-O']:
+            memory['move_history'].append(move)
+            return move, memory
+    
+    # Fallback to first legal move
+    memory['move_history'].append(legal_moves[0])
+    return legal_moves[0], memory

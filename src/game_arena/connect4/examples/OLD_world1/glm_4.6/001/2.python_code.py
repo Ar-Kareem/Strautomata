@@ -1,0 +1,219 @@
+
+import math
+import random
+from copy import deepcopy
+
+# Board dimensions
+ROW_COUNT = 6
+COLUMN_COUNT = 7
+
+# Piece identifiers
+PLAYER = 1      # AI's disc
+OPPONENT = -1   # Opponent's disc
+
+
+def is_valid_location(board: list[list[int]], col: int) -> bool:
+    """Return True if the column has space for a new disc."""
+    return board[0][col] == 0
+
+
+def get_next_open_row(board: list[list[int]], col: int) -> int:
+    """Return the lowest empty row index in the given column."""
+    for r in range(ROW_COUNT - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    raise ValueError("Column is full")
+
+
+def drop_piece(board: list[list[int]], col: int, piece: int) -> None:
+    """Place a piece into the board at the given column."""
+    row = get_next_open_row(board, col)
+    board[row][col] = piece
+
+
+def copy_board(board: list[list[int]]) -> list[list[int]]:
+    """Return a deep copy of the board."""
+    return [row[:] for row in board]
+
+
+def get_valid_locations(board: list[list[int]]) -> list[int]:
+    """List all columns that are not full."""
+    return [c for c in range(COLUMN_COUNT) if is_valid_location(board, c)]
+
+
+def check_win(board: list[list[int]], piece: int) -> bool:
+    """Check if the given piece has four in a row."""
+    # Horizontal
+    for c in range(COLUMN_COUNT - 3):
+        for r in range(ROW_COUNT):
+            if all(board[r][c + i] == piece for i in range(4)):
+                return True
+
+    # Vertical
+    for c in range(COLUMN_COUNT):
+        for r in range(ROW_COUNT - 3):
+            if all(board[r + i][c] == piece for i in range(4)):
+                return True
+
+    # Positive diagonal
+    for c in range(COLUMN_COUNT - 3):
+        for r in range(ROW_COUNT - 3):
+            if all(board[r + i][c + i] == piece for i in range(4)):
+                return True
+
+    # Negative diagonal
+    for c in range(COLUMN_COUNT - 3):
+        for r in range(3, ROW_COUNT):
+            if all(board[r - i][c + i] == piece for i in range(4)):
+                return True
+
+    return False
+
+
+def evaluate_window(window: list[int], piece: int) -> int:
+    """Heuristic score for a single 4-cell window."""
+    score = 0
+    opp_piece = -piece
+
+    if window.count(piece) == 4:
+        score += 100
+    elif window.count(piece) == 3 and window.count(0) == 1:
+        score += 5
+    elif window.count(piece) == 2 and window.count(0) == 2:
+        score += 2
+
+    # Penalize opponent opportunities
+    if window.count(opp_piece) == 3 and window.count(0) == 1:
+        score -= 4
+
+    return score
+
+
+def score_position(board: list[list[int]], piece: int) -> int:
+    """Overall board score for the given piece."""
+    score = 0
+
+    # Center column preference
+    center_col = COLUMN_COUNT // 2
+    center_array = [board[r][center_col] for r in range(ROW_COUNT)]
+    score += center_array.count(piece) * 3
+
+    # Horizontal windows
+    for r in range(ROW_COUNT):
+        row = board[r]
+        for c in range(COLUMN_COUNT - 3):
+            window = row[c:c + 4]
+            score += evaluate_window(window, piece)
+
+    # Vertical windows
+    for c in range(COLUMN_COUNT):
+        col = [board[r][c] for r in range(ROW_COUNT)]
+        for r in range(ROW_COUNT - 3):
+            window = col[r:r + 4]
+            score += evaluate_window(window, piece)
+
+    # Positive diagonal windows
+    for r in range(ROW_COUNT - 3):
+        for c in range(COLUMN_COUNT - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    # Negative diagonal windows
+    for r in range(ROW_COUNT - 3):
+        for c in range(COLUMN_COUNT - 3):
+            window = [board[r + 3 - i][c + i] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    return score
+
+
+def is_terminal_node(board: list[list[int]]) -> bool:
+    """Return True if the game is over."""
+    return check_win(board, PLAYER) or check_win(board, OPPONENT) or len(get_valid_locations(board)) == 0
+
+
+def minimax(board: list[list[int]], depth: int, alpha: float, beta: float,
+            maximizing_player: bool) -> None:
+    """Depth‑limited minimax with alpha‑beta pruning."""
+    valid_locations = get_valid_locations(board)
+    is_terminal = is_terminal_node(board)
+
+    if depth == 0 or is_terminal:
+        if is_terminal:
+            if check_win(board, PLAYER):
+                return None, 100000000
+            elif check_win(board, OPPONENT):
+                return None, -100000000
+            else:
+                return None, 0  # Draw
+        else:
+            return None, score_position(board, PLAYER)
+
+    # Order columns by proximity to center for better pruning
+    valid_locations = sorted(valid_locations, key=lambda c: -abs(c - COLUMN_COUNT // 2))
+
+    if maximizing_player:
+        value = -math.inf
+        best_col = random.choice(valid_locations)
+        for col in valid_locations:
+            board_copy = copy_board(board)
+            drop_piece(board_copy, col, PLAYER)
+            _, new_score = minimax(board_copy, depth - 1, alpha, beta, False)
+            if new_score > value:
+                value = new_score
+                best_col = col
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return best_col, value
+    else:
+        value = math.inf
+        best_col = random.choice(valid_locations)
+        for col in valid_locations:
+            board_copy = copy_board(board)
+            drop_piece(board_copy, col, OPPONENT)
+            _, new_score = minimax(board_copy, depth - 1, alpha, beta, True)
+            if new_score < value:
+                value = new_score
+                best_col = col
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return best_col, value
+
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Choose a column to drop the disc.
+    The function implements:
+      1. Immediate win if possible.
+      2. Block opponent's immediate win.
+      3. Depth‑limited minimax search with a heuristic evaluation.
+    """
+    valid_moves = get_valid_locations(board)
+    if not valid_moves:
+        raise ValueError("No valid moves available")
+
+    # 1. Check for a winning move for the AI
+    for col in valid_moves:
+        sim_board = copy_board(board)
+        drop_piece(sim_board, col, PLAYER)
+        if check_win(sim_board, PLAYER):
+            return col
+
+    # 2. Block opponent's winning move
+    for col in valid_moves:
+        sim_board = copy_board(board)
+        drop_piece(sim_board, col, OPPONENT)
+        if check_win(sim_board, OPPONENT):
+            return col
+
+    # 3. Run minimax to decide the best move
+    depth = 4  # Adjust for speed/strength trade‑off
+    best_col, _ = minimax(board, depth, -math.inf, math.inf, True)
+
+    # Fallback in case minimax returns an invalid column
+    if best_col is None or not is_valid_location(board, best_col):
+        best_col = random.choice(valid_moves)
+
+    return best_col

@@ -1,0 +1,456 @@
+# Strategy
+
+I'll implement a Monte Carlo Tree Search (MCTS) based policy for Hex. This approach will be well-suited for this game because:
+
+1. **MCTS Strength**: MCTS is inherently good at Hex since the game has a clear win condition and the board is relatively small (11x11).
+
+2. **Two-Phase Approach**:
+   - **Exploration Phase**: Use MCTS with UCB1 selection to explore promising moves
+   - **Exploitation Phase**: Favor moves with high win rates from simulations
+
+3. **Key Features**:
+   - **Hex-Specific Board Logic**: Properly handle the hexagonal neighbor relationships
+   - **Winning Path Detection**: Efficiently detect if a player has connected their sides
+   - **Performance Optimization**: Limit search time and use efficient data structures
+   - **Adaptive Strategy**: Adjust based on game state and opponent moves
+
+The algorithm will:
+- Generate all possible legal moves
+- Run Monte Carlo simulations for each move to estimate win probability
+- Select the move with the highest estimated win probability
+- Use efficient graph connectivity checking to determine wins
+- Handle the board validation and neighbor detection for hexagons
+
+<code>
+import random
+import math
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    """
+    Hex policy using Monte Carlo Tree Search
+    """
+    class HexBoard:
+        def __init__(self, size=11):
+            self.size = size
+            self.board = [[None for _ in range(size)] for _ in range(size)]
+            self.players = {'b': 'black', 'w': 'white'}
+            
+        def is_valid(self, row, col):
+            return 0 <= row < self.size and 0 <= col < self.size
+            
+        def is_empty(self, row, col):
+            return self.board[row][col] is None
+            
+        def get_neighbors(self, row, col):
+            # Hexagonal neighbors: 6 directions
+            neighbors = []
+            directions = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+            for dr, dc in directions:
+                new_row, new_col = row + dr, col + dc
+                if self.is_valid(new_row, new_col):
+                    neighbors.append((new_row, new_col))
+            return neighbors
+            
+        def place_stone(self, row, col, color):
+            if self.is_empty(row, col):
+                self.board[row][col] = color
+                return True
+            return False
+            
+        def remove_stone(self, row, col):
+            if self.is_valid(row, col) and self.board[row][col] is not None:
+                self.board[row][col] = None
+                
+        def get_player_stones(self, player_color):
+            stones = []
+            for r in range(self.size):
+                for c in range(self.size):
+                    if self.board[r][c] == player_color:
+                        stones.append((r, c))
+            return stones
+            
+        def check_win(self, color):
+            if color == 'b':  # black connects top and bottom
+                # Initialize frontiers
+                visited = set()
+                top_frontier = set()
+                bottom_frontier = set()
+                
+                # Find all stones on top row
+                for c in range(self.size):
+                    if self.board[0][c] == 'b':
+                        top_frontier.add((0, c))
+                        visited.add((0, c))
+                        
+                # Find all stones on bottom row
+                for c in range(self.size):
+                    if self.board[self.size-1][c] == 'b':
+                        bottom_frontier.add((self.size-1, c))
+                        visited.add((self.size-1, c))
+                        
+                # BFS to see if we can reach from top to bottom
+                frontier = top_frontier.copy()
+                while frontier:
+                    new_frontier = set()
+                    for r, c in frontier:
+                        if (r, c) in bottom_frontier:
+                            return True
+                        for nr, nc in self.get_neighbors(r, c):
+                            if (nr, nc) == 'b' and (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                new_frontier.add((nr, nc))
+                    frontier = new_frontier
+                    
+            elif color == 'w':  # white connects left and right
+                visited = set()
+                left_frontier = set()
+                right_frontier = set()
+                
+                # Find all stones on left column
+                for r in range(self.size):
+                    if self.board[r][0] == 'w':
+                        left_frontier.add((r, 0))
+                        visited.add((r, 0))
+                        
+                # Find all stones on right column
+                for r in range(self.size):
+                    if self.board[r][self.size-1] == 'w':
+                        right_frontier.add((r, self.size-1))
+                        visited.add((r, self.size-1))
+                        
+                # BFS to see if we can reach from left to right
+                frontier = left_frontier.copy()
+                while frontier:
+                    new_frontier = set()
+                    for r, c in frontier:
+                        if (r, c) in right_frontier:
+                            return True
+                        for nr, nc in self.get_neighbors(r, c):
+                            if self.board[nr][nc] == 'w' and (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                new_frontier.add((nr, nc))
+                    frontier = new_frontier
+            return False
+    
+    class MCTSNode:
+        def __init__(self, board, move=None, parent=None, color=None):
+            self.board = board
+            self.move = move
+            self.parent = parent
+            self.children = []
+            self.visits = 0
+            self.wins = 0
+            self.untried_moves = self.get_legal_moves()
+            self.color = color
+            
+        def get_legal_moves(self):
+            moves = []
+            for r in range(11):
+                for c in range(11):
+                    if self.board.is_empty(r, c):
+                        moves.append((r, c))
+            return moves
+            
+        def is_terminal(self):
+            if self.board.check_win('b') or self.board.check_win('w'):
+                return True
+            # Also check if board is full
+            full = True
+            for r in range(11):
+                for c in range(11):
+                    if self.board.is_empty(r, c):
+                        full = False
+                        break
+                if not full:
+                    break
+            return full
+            
+        def is_fully_expanded(self):
+            return len(self.untried_moves) == 0
+            
+        def ucb1(self, exploration_param=1.41):
+            if self.visits == 0:
+                return float('inf')
+            return self.wins / self.visits + exploration_param * math.sqrt(math.log(self.parent.visits) / self.visits)
+            
+        def select_child(self):
+            best_score = float('-inf')
+            best_child = None
+            for child in self.children:
+                score = child.ucb1()
+                if score > best_score:
+                    best_score = score
+                    best_child = child
+            return best_child
+            
+        def expand(self):
+            if self.is_terminal():
+                return None
+                
+            move = self.untried_moves.pop()
+            new_board = HexBoard()
+            # Copy board state
+            for r in range(11):
+                for c in range(11):
+                    new_board.board[r][c] = self.board.board[r][c]
+                    
+            # Place move
+            new_board.place_stone(move[0], move[1], self.color)
+            
+            # Alternate color for next player
+            next_color = 'w' if self.color == 'b' else 'b'
+            
+            child = MCTSNode(new_board, move, self, next_color)
+            self.children.append(child)
+            return child
+            
+        def simulate(self):
+            # Make a copy of the board state
+            sim_board = HexBoard()
+            for r in range(11):
+                for c in range(11):
+                    sim_board.board[r][c] = self.board.board[r][c]
+                    
+            # Alternate color for simulation
+            current_color = self.color
+            while not sim_board.check_win('b') and not sim_board.check_win('w'):
+                # Get legal moves
+                moves = []
+                for r in range(11):
+                    for c in range(11):
+                        if sim_board.is_empty(r, c):
+                            moves.append((r, c))
+                
+                if not moves:
+                    break
+                    
+                # Choose random move
+                move = random.choice(moves)
+                sim_board.place_stone(move[0], move[1], current_color)
+                current_color = 'w' if current_color == 'b' else 'b'
+                
+            # Return result: 1 if we won, 0 if opponent won
+            return 1 if sim_board.check_win(self.color) else 0
+            
+        def backpropagate(self, result):
+            self.visits += 1
+            self.wins += result
+            if self.parent:
+                self.parent.backpropagate(result)
+    
+    def mcts_search(board, color, iterations=1000):
+        root = MCTSNode(board, color=color)
+        
+        for _ in range(iterations):
+            # Selection
+            node = root
+            while node.is_fully_expanded() and not node.is_terminal():
+                node = node.select_child()
+            
+            # Expansion
+            if not node.is_terminal():
+                node = node.expand()
+            
+            # Simulation
+            if node is not None:
+                result = node.simulate()
+                # Backpropagation
+                node.backpropagate(result)
+        
+        # Choose best move
+        best_child = None
+        best_visits = -1
+        for child in root.children:
+            if child.visits > best_visits:
+                best_visits = child.visits
+                best_child = child
+                
+        if best_child:
+            return best_child.move
+        else:
+            # Fallback to random legal move
+            moves = root.get_legal_moves()
+            if moves:
+                return random.choice(moves)
+            return (5, 5)  # If no moves available, return center
+    
+    # Create the initial board state
+    board = HexBoard()
+    
+    # Add our stones
+    for r, c in me:
+        board.place_stone(r, c, 'b' if color == 'b' else 'w')
+        
+    # Add opponent stones  
+    for r, c in opp:
+        board.place_stone(r, c, 'w' if color == 'b' else 'b')
+    
+    # Run MCTS to get best move
+    return mcts_search(board, color)
+
+# The implementation is more accurate as follows with the less copy-intensive approach:
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    """
+    Hex policy using Monte Carlo Tree Search with efficient board copy
+    """
+    
+    # Hex-specific utilities
+    def get_neighbors(row, col):
+        """Get all 6 hexagonal neighbors"""
+        neighbors = []
+        directions = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+        for dr, dc in directions:
+            new_row, new_col = row + dr, col + dc
+            if 0 <= new_row < 11 and 0 <= new_col < 11:
+                neighbors.append((new_row, new_col))
+        return neighbors
+        
+    def check_win(board, color, size=11):
+        """Check if player connected their sides"""
+        if color == 'b':  # Black connects top to bottom
+            # Using BFS to check if connected
+            visited = set()
+            top_stones = set()
+            bottom_stones = set()
+            
+            # Find all black stones on top
+            for col in range(size):
+                if board[0][col] == 'b':
+                    top_stones.add((0, col))
+                    visited.add((0, col))
+                    
+            # Find all black stones on bottom  
+            for col in range(size):
+                if board[size-1][col] == 'b':
+                    bottom_stones.add((size-1, col))
+                    visited.add((size-1, col))
+                    
+            # BFS to see if any top stone connects to bottom
+            frontier = list(top_stones)
+            while frontier:
+                r, c = frontier.pop()
+                if (r, c) in bottom_stones:
+                    return True
+                for nr, nc in get_neighbors(r, c):
+                    if board[nr][nc] == 'b' and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        frontier.append((nr, nc))
+                        
+        elif color == 'w':  # White connects left to right
+            visited = set()
+            left_stones = set()
+            right_stones = set()
+            
+            # Find all white stones on left
+            for row in range(size):
+                if board[row][0] == 'w':
+                    left_stones.add((row, 0))
+                    visited.add((row, 0))
+                    
+            # Find all white stones on right
+            for row in range(size):
+                if board[row][size-1] == 'w':
+                    right_stones.add((row, size-1))
+                    visited.add((row, size-1))
+                    
+            # BFS to see if any left stone connects to right
+            frontier = list(left_stones)
+            while frontier:
+                r, c = frontier.pop()
+                if (r, c) in right_stones:
+                    return True
+                for nr, nc in get_neighbors(r, c):
+                    if board[nr][nc] == 'w' and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        frontier.append((nr, nc))
+                        
+        return False
+    
+    def simulate_game(board_state, current_color):
+        """Simulate random playout"""
+        # Create a copy
+        sim_board = [row[:] for row in board_state]
+        
+        # Alternate color for simulation
+        color = current_color
+        
+        while True:
+            # Find all legal moves
+            moves = []
+            for r in range(11):
+                for c in range(11):
+                    if sim_board[r][c] is None:
+                        moves.append((r, c))
+            
+            if not moves:
+                break
+                
+            # Choose random move
+            move = random.choice(moves)
+            sim_board[move[0]][move[1]] = color
+            color = 'w' if color == 'b' else 'b'
+            
+            # Check for win
+            if check_win(sim_board, 'b') or check_win(sim_board, 'w'):
+                break
+                
+        # Return result (1 for our win, 0 for opponent win)
+        if check_win(sim_board, current_color):
+            return 1
+        return 0
+        
+    def get_legal_moves(board_state):
+        """Get all legal moves for current player"""
+        moves = []
+        for r in range(11):
+            for c in range(11):
+                if board_state[r][c] is None:
+                    moves.append((r, c))
+        return moves
+    
+    # Initialize the board
+    board = [[None for _ in range(11)] for _ in range(11)]
+    
+    # Place our stones
+    for r, c in me:
+        board[r][c] = 'b' if color == 'b' else 'w'
+        
+    # Place opponent stones  
+    for r, c in opp:
+        board[r][c] = 'w' if color == 'b' else 'b'
+    
+    # Run MCTS
+    best_move = None
+    best_wins = -1
+    
+    legal_moves = get_legal_moves(board)
+    if not legal_moves:
+        return (5, 5)  # Fallback to center if no moves
+    
+    # Run multiple simulations for move selection
+    for move in legal_moves:
+        wins = 0
+        simulations = 100  # Reduced to ensure time limits
+        
+        # For each move, simulate several games
+        temp_board = [row[:] for row in board]
+        temp_board[move[0]][move[1]] = color
+        
+        # Simulate games from this state
+        for _ in range(simulations):
+            result = simulate_game(temp_board, color)
+            wins += result
+            
+        if wins > best_wins:
+            best_wins = wins
+            best_move = move
+    
+    # Finally, use MCTS approach with limited iterations
+    if best_move is None:
+        # Fallback to just a random valid move
+        return random.choice(legal_moves)
+    
+    return best_move
+</code>

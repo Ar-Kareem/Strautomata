@@ -1,0 +1,180 @@
+The strategy is to implement a heuristic-based evaluation function that explores possible moves to find the one with the highest immediate score. The evaluation considers three key factors:
+1.  **Immediate Win**: Prioritize any move that results in a 5-in-a-row for the player.
+2.  **Blocking**: Penalize moves that allow the opponent to win on their next turn, unless the player can win immediately.
+3.  **Offense/Defense Score**: Assign points for creating lines of 2, 3, and 4 marbles for the player (high weight) and for the opponent (lower weight), with bonuses for lines that are open (not blocked by opponent marbles).
+4.  **Center Control**: Use a fixed board weight to encourage occupying central positions.
+
+The search algorithm iterates through all empty cells, all quadrants, and both rotation directions (1080 total combinations), applying the move simulation to check for win conditions and calculate the heuristic score. It returns the move with the highest score. To ensure consistency in tie-breaking, the order of iteration is deterministic.
+
+```python
+import numpy as np
+
+def policy(you, opponent) -> str:
+    """
+    Pentago policy that evaluates all legal moves using a heuristic scoring function.
+    It prioritizes immediate wins, blocks opponent wins, and maximizes potential lines.
+    """
+    
+    # Convert inputs to numpy arrays for efficient manipulation
+    board_you = np.array(you, dtype=np.int8)
+    board_opp = np.array(opponent, dtype=np.int8)
+    
+    # Board weights for center control heuristic
+    # 5x5 central weight map (ignoring corners slightly)
+    center_weights = np.array([
+        [0, 1, 2, 1, 0, 0],
+        [1, 3, 4, 3, 1, 0],
+        [2, 4, 6, 4, 2, 0],
+        [1, 3, 4, 3, 1, 0],
+        [0, 1, 2, 1, 0, 0],
+        [0, 0, 0, 0, 0, 0]
+    ], dtype=np.int8)
+
+    # Precompute masks for 5-in-a-row checks
+    # 0-5 horizontal, 0-5 vertical, 0-4 diag (\), 0-4 anti-diag (/)
+    # Each mask is a boolean array of shape (6,6,4) where the last dim represents:
+    # 0: Horizontal, 1: Vertical, 2: Diagonal (\), 3: Anti-diagonal (/)
+    # The value is True if the position is part of a potential 5-in-a-row
+    masks = []
+    
+    # Horizontal
+    for r in range(6):
+        for c in range(2): # start at 0, 1
+            m = np.zeros((6, 6), dtype=bool)
+            m[r, c:c+5] = True
+            masks.append(m)
+            
+    # Vertical
+    for r in range(2): # start at 0, 1
+        for c in range(6):
+            m = np.zeros((6, 6), dtype=bool)
+            m[r:r+5, c] = True
+            masks.append(m)
+            
+    # Diagonal (\)
+    for r in range(2):
+        for c in range(2):
+            m = np.zeros((6, 6), dtype=bool)
+            for k in range(5):
+                m[r+k, c+k] = True
+            masks.append(m)
+            
+    # Anti-diagonal (/)
+    for r in range(2):
+        for c in range(2):
+            m = np.zeros((6, 6), dtype=bool)
+            for k in range(5):
+                m[r+k, c+4-k] = True
+            masks.append(m)
+
+    # Quadrant definitions (0-3) mapping to (r_start, c_start)
+    quad_coords = [(0, 0), (0, 3), (3, 0), (3, 3)]
+
+    def get_lines(b):
+        """Returns a list of all 6x6 masks where b has 1s (occupied)"""
+        return [m for m in masks if np.sum(b & m) >= 5]
+
+    def check_win(b):
+        """Check if board b has a 5-in-a-row"""
+        for m in masks:
+            if np.sum(b & m) == 5:
+                return True
+        return False
+
+    def evaluate(b_you, b_opp):
+        """Heuristic evaluation of the board state"""
+        score = 0
+        
+        # Center control
+        score += np.sum(b_you * center_weights)
+        score -= np.sum(b_opp * center_weights) * 0.5
+        
+        # Line potential
+        # Player lines
+        p_lines = get_lines(b_you)
+        for l in p_lines:
+            s = np.sum(b_you & l)
+            if s == 4: score += 10000
+            elif s == 3: score += 100
+            elif s == 2: score += 10
+            
+            # Openness bonus (simple check: if ends are empty)
+            # This is an approximation to save time
+            # We check sum of both boards on the line. If sum < 5, there are empty spots.
+            # If sum == 5 and s == 4, it's an open 4? Not necessarily.
+            # Let's keep it simple: just weight count.
+        
+        # Opponent lines (defensive weight)
+        o_lines = get_lines(b_opp)
+        for l in o_lines:
+            s = np.sum(b_opp & l)
+            if s == 4: score -= 5000 # Must block
+            elif s == 3: score -= 50
+            elif s == 2: score -= 5
+            
+        return score
+
+    def rotate_quadrant(b, q, direction):
+        """Returns a copy of the board with quadrant q rotated"""
+        br = b.copy()
+        rs, cs = quad_coords[q]
+        sub = br[rs:rs+3, cs:cs+3].copy()
+        if direction == 'R': # Clockwise
+            br[rs:rs+3, cs:cs+3] = np.rot90(sub, 3)
+        else: # Anti-clockwise
+            br[rs:rs+3, cs:cs+3] = np.rot90(sub, 1)
+        return br
+
+    # Find empty cells
+    empty_cells = list(zip(*np.where((board_you == 0) & (board_opp == 0))))
+    
+    best_score = -float('inf')
+    best_move = None
+
+    # Iterate through all empty cells
+    for r, c in empty_cells:
+        # Place our marble
+        current_you = board_you.copy()
+        current_you[r, c] = 1
+        
+        # Check immediate win (Placement only)
+        # Note: Rules say "After the placement and rotation are applied".
+        # But if we can win by rotation, we must consider that.
+        # However, we should definitely check placement win first.
+        
+        # Iterate all quadrants
+        for q in range(4):
+            # Iterate all directions
+            for d in ['L', 'R']:
+                # Apply rotation
+                next_you = rotate_quadrant(current_you, q, d)
+                next_opp = rotate_quadrant(board_opp, q, d)
+                
+                # 1. Check Immediate Win
+                if check_win(next_you):
+                    # Found a winning move, return immediately
+                    # Construct return string (1-indexed)
+                    return f"{r+1},{c+1},{q},{d}"
+                
+                # 2. Check Block (if opponent wins next turn, we might want to block)
+                # This is covered in evaluation, but if opponent wins now, it's bad (draw)
+                # If opponent wins now, we should avoid, unless we win.
+                if check_win(next_opp):
+                    # Opponent wins. We should avoid this move unless we also won (checked above)
+                    # In Pentago, if both win, it's a draw. 
+                    # If we don't win but allow opponent win, it's a loss.
+                    # We heavily penalize this.
+                    score = -100000
+                else:
+                    # 3. Evaluate
+                    score = evaluate(next_you, next_opp)
+                
+                # Update best
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c, q, d)
+                    
+    # If no winning move found, return the best heuristic move
+    r, c, q, d = best_move
+    return f"{r+1},{c+1},{q},{d}"
+```

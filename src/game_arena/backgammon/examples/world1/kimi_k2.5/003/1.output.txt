@@ -1,0 +1,174 @@
+The strategy uses a one-ply search to evaluate all legal ways to play the current dice (handling both die orders H and L) and selects the move that maximizes a heuristic evaluation function. The heuristic values bearing off checkers, hitting opponent blots, making home board points, and minimizes pip count while penalizing exposed blots. It strictly follows the rules: if both dice can be played it plays both; if only one can be played it prefers the higher die.
+
+<code>
+def policy(state: dict) -> str:
+    # Helper to copy state efficiently
+    def copy_state(s):
+        return {
+            'my_pts': s['my_pts'][:],
+            'opp_pts': s['opp_pts'][:],
+            'my_bar': s['my_bar'],
+            'opp_bar': s['opp_bar'],
+            'my_off': s['my_off'],
+            'opp_off': s['opp_off'],
+            'dice': s['dice'][:]
+        }
+    
+    # Apply a single checker move and return new state
+    def apply_move(s, from_str, die):
+        new_s = copy_state(s)
+        if from_str == 'B':
+            new_s['my_bar'] -= 1
+            dest = 24 - die
+            if new_s['opp_pts'][dest] == 1:
+                new_s['opp_pts'][dest] = 0
+                new_s['opp_bar'] += 1
+            new_s['my_pts'][dest] += 1
+        elif from_str == 'P':
+            pass
+        else:  # A0-A23
+            p = int(from_str[1:])
+            new_s['my_pts'][p] -= 1
+            dest = p - die
+            if dest >= 0:
+                if new_s['opp_pts'][dest] == 1:
+                    new_s['opp_pts'][dest] = 0
+                    new_s['opp_bar'] += 1
+                new_s['my_pts'][dest] += 1
+            else:
+                new_s['my_off'] += 1
+        return new_s
+    
+    # Get all legal starting positions for a single die value
+    def get_legal_single(s, die):
+        moves = []
+        if s['my_bar'] > 0:
+            dest = 24 - die
+            if 0 <= dest < 24 and s['opp_pts'][dest] < 2:
+                moves.append('B')
+            return moves
+        
+        # Check if all checkers are in home board (for bearing off)
+        all_home = s['my_bar'] == 0 and all(s['my_pts'][i] == 0 for i in range(6, 24))
+        
+        for p in range(23, -1, -1):
+            if s['my_pts'][p] > 0:
+                dest = p - die
+                if dest >= 0:
+                    if s['opp_pts'][dest] < 2:
+                        moves.append(f'A{p}')
+                else:
+                    # Bearing off
+                    if all_home and p < die:
+                        # Check no higher points block
+                        blocked = False
+                        for q in range(5, p, -1):
+                            if s['my_pts'][q] > 0:
+                                blocked = True
+                                break
+                        if not blocked:
+                            moves.append(f'A{p}')
+        return moves
+    
+    # Heuristic evaluation of a state
+    def evaluate(s):
+        score = 0
+        score += s['my_off'] * 100
+        score -= s['opp_off'] * 100
+        score -= s['my_bar'] * 40
+        score += s['opp_bar'] * 40
+        
+        my_pips = 0
+        for i in range(24):
+            cnt = s['my_pts'][i]
+            if cnt > 0:
+                my_pips += cnt * (i + 1)
+                if cnt == 1:
+                    if i >= 18:
+                        score -= 15
+                    elif i >= 6:
+                        score -= 5
+                elif cnt >= 2:
+                    if i < 6:
+                        score += 10
+                    elif i < 18:
+                        score += 3
+        
+        score -= my_pips * 0.5
+        
+        opp_pips = 0
+        for i in range(24):
+            opp_pips += s['opp_pts'][i] * (24 - i)
+        score += opp_pips * 0.4
+        
+        return score
+    
+    dice = state['dice']
+    if not dice:
+        return "H:P,P"
+    
+    # Sort dice: d1 is high, d2 is low
+    dice_sorted = sorted(dice, reverse=True)
+    d1, d2 = dice_sorted[0], dice_sorted[-1]
+    
+    candidates = []  # (order, from1, from2, value)
+    
+    # Process a specific order (first_die, second_die)
+    def process_order(order, first_die, second_die):
+        moves1 = get_legal_single(state, first_die)
+        for m1 in moves1:
+            s1 = apply_move(state, m1, first_die)
+            moves2 = get_legal_single(s1, second_die)
+            if moves2:
+                for m2 in moves2:
+                    s2 = apply_move(s1, m2, second_die)
+                    val = evaluate(s2)
+                    candidates.append((order, m1, m2, val))
+            else:
+                # Can only play first die
+                val = evaluate(s1)
+                candidates.append((order, m1, 'P', val))
+    
+    # High then Low
+    process_order('H', d1, d2)
+    
+    # Low then High (only if different)
+    if d1 != d2:
+        process_order('L', d2, d1)
+    
+    # If no candidates, try single die plays (fallback)
+    if not candidates:
+        moves_h = get_legal_single(state, d1)
+        for m in moves_h:
+            s = apply_move(state, m, d1)
+            val = evaluate(s)
+            candidates.append(('H', m, 'P', val))
+        if d1 != d2:
+            moves_l = get_legal_single(state, d2)
+            for m in moves_l:
+                s = apply_move(state, m, d2)
+                val = evaluate(s)
+                candidates.append(('L', m, 'P', val))
+    
+    if not candidates:
+        return "H:P,P"
+    
+    # Selection: prefer playing both dice, then high die only, then low die only
+    full_moves = [c for c in candidates if c[2] != 'P']
+    if full_moves:
+        best = max(full_moves, key=lambda x: x[3])
+    else:
+        # Can only play one die - must prefer higher die
+        high_only = [c for c in candidates if c[0] == 'H' and c[1] != 'P']
+        if high_only:
+            best = max(high_only, key=lambda x: x[3])
+        else:
+            low_only = [c for c in candidates if c[0] == 'L' and c[1] != 'P']
+            if low_only:
+                best = max(low_only, key=lambda x: x[3])
+            else:
+                return "H:P,P"
+    
+    order, from1, from2, _ = best
+    return f"{order}:{from1},{from2}"
+</code>

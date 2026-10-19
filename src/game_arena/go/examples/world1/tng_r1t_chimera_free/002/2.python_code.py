@@ -1,0 +1,84 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    from collections import deque
+    occupied = set(me + opponent)
+    
+    # Find opponent groups and their liberties
+    opponent_groups = []
+    visited = set()
+    for stone in opponent:
+        if stone not in visited:
+            q = deque([stone])
+            visited.add(stone)
+            group = []
+            liberties = set()
+            while q:
+                r, c = q.popleft()
+                group.append((r, c))
+                for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    nr, nc = r + dr, c + dc
+                    if 1 <= nr <= 19 and 1 <= nc <= 19:
+                        if (nr, nc) not in occupied:
+                            liberties.add((nr, nc))
+                        elif (nr, nc) in opponent and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            q.append((nr, nc))
+            if liberties:
+                opponent_groups.append((group, liberties))
+    
+    # Check for capturing moves
+    capture_candidates = []
+    for group, liberties in opponent_groups:
+        if len(liberties) == 1:
+            move = liberties.pop()
+            if move not in occupied:
+                capture_candidates.append((len(group), move))
+    if capture_candidates:
+        capture_candidates.sort(reverse=True)
+        for size, (r, c) in capture_candidates:
+            # Ensure the move is not self-capture
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nr, nc = r + dr, c + dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and (nr, nc) not in occupied:
+                    return (r, c)
+            # If all adjacent are occupied, check if captures opponent
+            return (r, c)
+    
+    # Check corners
+    corners = [(1,1), (1,19), (19,1), (19,19)]
+    for r, c in corners:
+        if (r, c) not in occupied:
+            return (r, c)
+    
+    # Expand near own stones with liberties
+    my_stones = set(me)
+    expand_candidates = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) not in occupied:
+                adjacent_my = 0
+                has_liberty = False
+                for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    nr, nc = r + dr, c + dc
+                    if 1 <= nr <= 19 and 1 <= nc <= 19:
+                        if (nr, nc) in my_stones:
+                            adjacent_my += 1
+                        elif (nr, nc) not in occupied:
+                            has_liberty = True
+                if adjacent_my > 0 and has_liberty:
+                    expand_candidates.append((-adjacent_my, r, c))  # Negative for min-heap effect when sorted
+    if expand_candidates:
+        expand_candidates.sort()
+        return (expand_candidates[0][1], expand_candidates[0][2])
+    
+    # Select any legal move with liberties
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) not in occupied:
+                for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                    nr, nc = r + dr, c + dc
+                    if 1 <= nr <= 19 and 1 <= nc <= 19 and (nr, nc) not in occupied:
+                        return (r, c)
+    
+    # Pass if absolutely no moves (unlikely on 19x19)
+    return (0, 0)

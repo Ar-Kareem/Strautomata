@@ -1,0 +1,112 @@
+
+import numpy as np
+from itertools import combinations
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Convert to numpy array for easier handling
+    board = np.array(board)
+    
+    # Find all empty positions
+    empty_positions = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x, y, z] == 0:
+                    empty_positions.append((x, y, z))
+    
+    if not empty_positions:
+        return (0, 0, 0)  # Should not happen in valid game state
+    
+    # Check for winning move
+    for x, y, z in empty_positions:
+        # Make hypothetical move
+        board[x, y, z] = 1
+        if check_win(board, 1):
+            board[x, y, z] = 0  # Reset
+            return (x, y, z)
+        board[x, y, z] = 0  # Reset
+    
+    # Check for blocking move
+    for x, y, z in empty_positions:
+        # Make hypothetical move for opponent
+        board[x, y, z] = -1
+        if check_win(board, -1):
+            board[x, y, z] = 0  # Reset
+            return (x, y, z)
+        board[x, y, z] = 0  # Reset
+    
+    # Prefer center if available
+    if board[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    # Prefer corners
+    corners = [(0,0,0), (0,0,2), (0,2,0), (0,2,2), 
+               (2,0,0), (2,0,2), (2,2,0), (2,2,2)]
+    available_corners = [pos for pos in corners if board[pos] == 0]
+    if available_corners:
+        return available_corners[0]
+    
+    # Otherwise return first empty position
+    return empty_positions[0]
+
+def check_win(board, player):
+    """Check if player has won on the board"""
+    # Check all lines (rows, columns, diagonals)
+    
+    # Lines along x-axis (for each y,z pair)
+    for y in range(3):
+        for z in range(3):
+            if all(board[x, y, z] == player for x in range(3)):
+                return True
+    
+    # Lines along y-axis (for each x,z pair)
+    for x in range(3):
+        for z in range(3):
+            if all(board[x, y, z] == player for y in range(3)):
+                return True
+    
+    # Lines along z-axis (for each x,y pair)
+    for x in range(3):
+        for y in range(3):
+            if all(board[x, y, z] == player for z in range(3)):
+                return True
+    
+    # 3D diagonals
+    # Main diagonals through center
+    if all(board[i, i, i] == player for i in range(3)):
+        return True
+    if all(board[i, i, 2-i] == player for i in range(3)):
+        return True
+    if all(board[i, 2-i, i] == player for i in range(3)):
+        return True
+    if all(board[i, 2-i, 2-i] == player for i in range(3)):
+        return True
+    
+    # Diagonals that don't go through center
+    # X diagonals
+    if all(board[0, i, i] == player for i in range(3)):
+        return True
+    if all(board[2, i, i] == player for i in range(3)):
+        return True
+    # Y diagonals
+    if all(board[i, 0, i] == player for i in range(3)):
+        return True
+    if all(board[i, 2, i] == player for i in range(3)):
+        return True
+    # Z diagonals
+    if all(board[i, i, 0] == player for i in range(3)):
+        return True
+    if all(board[i, i, 2] == player for i in range(3)):
+        return True
+    
+    # Other diagonals
+    if board[0, 0, 2] == player and board[1, 1, 1] == player and board[2, 2, 0] == player:
+        return True
+    if board[0, 2, 0] == player and board[1, 1, 1] == player and board[2, 0, 2] == player:
+        return True
+    if board[0, 2, 2] == player and board[1, 1, 1] == player and board[2, 0, 0] == player:
+        return True
+    if board[0, 0, 0] == player and board[1, 1, 1] == player and board[2, 2, 2] == player:
+        return True
+    
+    return False

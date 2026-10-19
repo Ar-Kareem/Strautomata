@@ -1,0 +1,89 @@
+# Strategy
+
+This is a checkers variant on a wraparound 8x8 board where:
+- Pieces move diagonally forward (toward opponent's side)
+- Pieces can jump over opponent pieces to capture them
+- The board wraps around (important for movement calculations)
+- No kings - pieces only move in one direction
+- Goal: capture opponent's pieces
+
+**Key observations from examples:**
+1. Legal moves are: `move(x1,y1,x2,y2)` for regular moves and `jump(x1,y1,x2,y2,x3,y3)` for captures
+2. Pieces move diagonally; black moves generally downward (increasing y), red moves upward (decreasing y, wrapping)
+3. `noop` is a legal action when no moves are available
+4. Capturing is the primary objective
+
+**Strategy:**
+1. **Prioritize capturing**: Search for all possible jumps first. Jumps are the only way to score.
+2. **Movement generation**: 
+   - For each friendly piece, check diagonal directions
+   - Black pieces: try moving to (x±1, y+1) and (x±1, y-1) with wraparound
+   - Red pieces: try moving to (x±1, y+1) and (x±1, y-1) with wraparound
+   - Account for board wrapping (1-8 range)
+3. **Jump detection**: Look for opponent pieces adjacent diagonally that can be jumped over
+4. **Move quality**: Prefer moves that get closer to opponent pieces or maintain board control
+5. **Fallback**: Return `noop` if no legal moves exist
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the state
+    pieces = {}
+    for fact in state:
+        if fact[0] == "location":
+            x, y, color = int(fact[1]), int(fact[2]), fact[3]
+            if color not in pieces:
+                pieces[color] = []
+            pieces[color].append((x, y))
+    
+    my_pieces = pieces.get(role, [])
+    opp_role = "red" if role == "black" else "black"
+    opp_pieces = pieces.get(opp_role, [])
+    
+    if not my_pieces:
+        return "noop"
+    
+    opp_set = set(opp_pieces)
+    my_set = set(my_pieces)
+    
+    # Direction based on role: black moves down (y increases or wraps), red moves up (y decreases or wraps)
+    if role == "black":
+        directions = [(1, 1), (-1, 1), (1, -1), (-1, -1)]
+    else:
+        directions = [(1, -1), (-1, -1), (1, 1), (-1, 1)]
+    
+    def wrap(pos):
+        """Wrap coordinates to 1-8 range"""
+        x, y = pos
+        x = ((x - 1) % 8) + 1
+        y = ((y - 1) % 8) + 1
+        return (x, y)
+    
+    # First, look for jumps (captures)
+    jumps = []
+    for px, py in my_pieces:
+        for dx, dy in directions:
+            # Check for opponent piece to jump over
+            jx, jy = wrap((px + dx, py + dy))
+            if (jx, jy) in opp_set:
+                # Can we land on the other side?
+                lx, ly = wrap((jx + dx, jy + dy))
+                if (lx, ly) not in my_set and (lx, ly) not in opp_set:
+                    jumps.append(f"jump({px},{py},{jx},{jy},{lx},{ly})")
+    
+    if jumps:
+        return jumps[0]
+    
+    # If no jumps, look for regular moves
+    moves = []
+    for px, py in my_pieces:
+        for dx, dy in directions:
+            nx, ny = wrap((px + dx, py + dy))
+            if (nx, ny) not in my_set and (nx, ny) not in opp_set:
+                moves.append(f"move({px},{py},{nx},{ny})")
+    
+    if moves:
+        return moves[0]
+    
+    # No moves available
+    return "noop"
+</code>

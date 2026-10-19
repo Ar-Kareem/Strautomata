@@ -1,0 +1,507 @@
+The strategy for this policy is:
+
+1. **Always return a legal move.**
+2. **Take boxes when available** — in Dots and Boxes, an available capture is effectively free because you keep the turn.
+3. **Use exact search in the endgame** with memoized alpha-beta style negamax on the remaining edges. This lets the policy handle chains and control decisions much better when the board gets tight.
+4. **If no capture is available, prefer “safe” moves** that do not create a 3-sided box for the opponent.
+5. **If no safe move exists, open the smallest chain** by estimating how many boxes the opponent can immediately harvest after each candidate move.
+
+So the policy is a hybrid:
+- **Exact solver late**
+- **Chain-aware heuristics early**
+- **Legality fallback always**
+
+<code>
+import time
+import numpy as np
+
+# ============================================================
+# Dots and Boxes 4x4 boxes (5x5 dots)
+# Valid edges:
+#   Horizontal: rows 0..4, cols 0..3  -> 20 edges
+#   Vertical:   rows 0..3, cols 0..4  -> 20 edges
+# Total: 40 edges
+# ============================================================
+
+_INITIALIZED = False
+BITS = []
+MOVE_STR = []
+ADJ_BOXES = []
+BOX_MASK = []
+VALID_EDGES = []
+TOTAL_EDGES = 40
+
+_DEADLINE = 0.0
+_NODE_COUNT = 0
+_SOLVE_MEMO = {}
+_CAP_MEMO = {}
+
+
+def _init():
+    global _INITIALIZED, BITS, MOVE_STR, ADJ_BOXES, BOX_MASK, VALID_EDGES
+
+    if _INITIALIZED:
+        return
+
+    BITS = [1 << i for i in range(TOTAL_EDGES)]
+    MOVE_STR = [""] * TOTAL_EDGES
+    ADJ_BOXES = [[] for _ in range(TOTAL_EDGES)]
+    BOX_MASK = [0] * 16
+    VALID_EDGES = list(range(TOTAL_EDGES))
+
+    # Horizontal edges: index = r*4 + c
+    for r in range(5):
+        for c in range(4):
+            e = r * 4 + c
+            MOVE_STR[e] = f"{r},{c},H"
+
+    # Vertical edges: index = 20 + r*5 + c
+    for r in range(4):
+        for c in range(5):
+            e = 20 + r * 5 + c
+            MOVE_STR[e] = f"{r},{c},V"
+
+    # Box masks
+    for r in range(4):
+        for c in range(4):
+            b = r * 4 + c
+            top = r * 4 + c
+            bottom = (r + 1) * 4 + c
+            left = 20 + r * 5 + c
+            right = 20 + r * 5 + (c + 1)
+            BOX_MASK[b] = BITS[top] | BITS[bottom] | BITS[left] | BITS[right]
+
+    # Adjacent boxes for each horizontal edge
+    for r in range(5):
+        for c in range(4):
+            e = r * 4 + c
+            if r > 0:
+                ADJ_BOXES[e].append((r - 1) * 4 + c)
+            if r < 4:
+                ADJ_BOXES[e].append(r * 4 + c)
+
+    # Adjacent boxes for each vertical edge
+    for r in range(4):
+        for c in range(5):
+            e = 20 + r * 5 + c
+            if c > 0:
+                ADJ_BOXES[e].append(r * 4 + (c - 1))
+            if c < 4:
+                ADJ_BOXES[e].append(r * 4 + c)
+
+    ADJ_BOXES[:] = [tuple(x) for x in ADJ_BOXES]
+    _INITIALIZED = True
+
+
+def _tick():
+    global _NODE_COUNT
+    _NODE_COUNT += 1
+    if (_NODE_COUNT & 1023) == 0 and time.perf_counter() > _DEADLINE:
+        raise TimeoutError
+
+
+def _arrays_to_mask(horizontal: np.ndarray, vertical: np.ndarray) -> int:
+    mask = 0
+
+    # Horizontal valid positions: (0..4, 0..3)
+    for r in range(5):
+        base = r * 4
+        for c in range(4):
+            if horizontal[r, c] != 0:
+                mask |= BITS[base + c]
+
+    # Vertical valid positions: (0..3, 0..4)
+    for r in range(4):
+        base = 20 + r * 5
+        for c in range(5):
+            if vertical[r, c] != 0:
+                mask |= BITS[base + c]
+
+    return mask
+
+
+def _box_counts_from_arrays(horizontal: np.ndarray, vertical: np.ndarray):
+    counts = [0] * 16
+    for r in range(4):
+        for c in range(4):
+            cnt = 0
+            if horizontal[r, c] != 0:
+                cnt += 1
+            if horizontal[r + 1, c] != 0:
+                cnt += 1
+            if vertical[r, c] != 0:
+                cnt += 1
+            if vertical[r, c + 1] != 0:
+                cnt += 1
+            counts[r * 4 + c] = cnt
+    return counts
+
+
+def _capture_count(mask: int, e: int) -> int:
+    bit = BITS[e]
+    nm = mask | bit
+    k = 0
+    for b in ADJ_BOXES[e]:
+        if (nm & BOX_MASK[b]) == BOX_MASK[b]:
+            k += 1
+    return k
+
+
+def _box_count(mask: int, b: int) -> int:
+    return (mask & BOX_MASK[b]).bit_count()
+
+
+def _move_order_key(mask: int, e: int):
+    danger = 0
+    fillsum = 0
+    adjn = len(ADJ_BOXES[e])
+    for b in ADJ_BOXES[e]:
+        c = _box_count(mask, b)
+        fillsum += c
+        if c == 2:
+            danger += 1
+    # Lower is better for ordering
+    return (danger, fillsum, adjn, e)
+
+
+def _solve(mask: int, rem: int, alpha: int, beta: int) -> int:
+    """
+    Exact future net box gain for player to move from this position.
+
+    If a capturing move exists, only capturing moves are considered.
+    This is safe because taking a free box weakly dominates skipping it:
+    you get the box and retain the turn.
+    """
+    _tick()
+
+    if rem == 0:
+        return 0
+
+    cached = _SOLVE_MEMO.get(mask)
+    if cached is not None:
+        return cached
+
+    caps = []
+    for e in VALID_EDGES:
+        if mask & BITS[e]:
+            continue
+        k = _capture_count(mask, e)
+        if k > 0:
+            caps.append((e, k))
+
+    best = -100
+    complete = True
+
+    if caps:
+        caps.sort(key=lambda x: (-x[1], x[0]))
+        a = alpha
+        for e, k in caps:
+            v = k + _solve(mask | BITS[e], rem - 1, a - k, beta - k)
+            if v > best:
+                best = v
+            if best > a:
+                a = best
+            if a >= beta:
+                complete = False
+                break
+    else:
+        moves = [e for e in VALID_EDGES if not (mask & BITS[e])]
+        moves.sort(key=lambda e: _move_order_key(mask, e))
+        a = alpha
+        for e in moves:
+            v = -_solve(mask | BITS[e], rem - 1, -beta, -a)
+            if v > best:
+                best = v
+            if best > a:
+                a = best
+            if a >= beta:
+                complete = False
+                break
+
+    if complete:
+        _SOLVE_MEMO[mask] = best
+    return best
+
+
+def _choose_exact(mask: int) -> int:
+    rem = TOTAL_EDGES - mask.bit_count()
+
+    caps = []
+    others = []
+    for e in VALID_EDGES:
+        if mask & BITS[e]:
+            continue
+        k = _capture_count(mask, e)
+        if k > 0:
+            caps.append((e, k))
+        else:
+            others.append(e)
+
+    if caps:
+        root_moves = [e for e, _ in sorted(caps, key=lambda x: (-x[1], x[0]))]
+    else:
+        root_moves = sorted(others, key=lambda e: _move_order_key(mask, e))
+
+    best_move = root_moves[0]
+    best_val = -100
+    alpha = -100
+    beta = 100
+
+    for e in root_moves:
+        k = _capture_count(mask, e)
+        nm = mask | BITS[e]
+        if k > 0:
+            v = k + _solve(nm, rem - 1, alpha - k, beta - k)
+        else:
+            v = -_solve(nm, rem - 1, -beta, -alpha)
+
+        if v > best_val:
+            best_val = v
+            best_move = e
+        if best_val > alpha:
+            alpha = best_val
+
+    return best_move
+
+
+def _max_capture_turn(mask: int) -> int:
+    """
+    Maximum number of boxes the current player can keep taking immediately
+    if they only continue through captures.
+    Useful for chain-size estimation.
+    """
+    _tick()
+
+    cached = _CAP_MEMO.get(mask)
+    if cached is not None:
+        return cached
+
+    best = 0
+    for e in VALID_EDGES:
+        if mask & BITS[e]:
+            continue
+        k = _capture_count(mask, e)
+        if k > 0:
+            v = k + _max_capture_turn(mask | BITS[e])
+            if v > best:
+                best = v
+
+    _CAP_MEMO[mask] = best
+    return best
+
+
+def _count_safe_moves(mask: int) -> int:
+    counts = [_box_count(mask, b) for b in range(16)]
+    cnt = 0
+
+    for e in VALID_EDGES:
+        if mask & BITS[e]:
+            continue
+        safe = True
+        for b in ADJ_BOXES[e]:
+            c = counts[b]
+            if c >= 2:  # 2 -> creates 3rd side, 3 -> capture, so not a safe non-capture
+                safe = False
+                break
+        if safe:
+            cnt += 1
+
+    return cnt
+
+
+def _best_safe_heuristic(mask: int, box_counts, safe_moves):
+    best_move = safe_moves[0]
+    best_score = -1e18
+
+    for e in safe_moves:
+        adj = ADJ_BOXES[e]
+        score = 0.0
+
+        # Prefer affecting fewer boxes slightly (boundary edges)
+        score -= 1.5 * len(adj)
+
+        # Prefer playing next to low-count boxes
+        for b in adj:
+            c = box_counts[b]
+            score -= 2.5 * c
+            if c == 0:
+                score += 1.0
+            elif c == 1:
+                score += 0.3
+
+            # Mild penalty for creating 2-sided boxes
+            if c + 1 == 2:
+                score -= 0.8
+
+        # Prefer positions that preserve many safe moves
+        score += 0.12 * _count_safe_moves(mask | BITS[e])
+
+        # Stable tie-break
+        score -= 0.001 * e
+
+        if score > best_score:
+            best_score = score
+            best_move = e
+
+    return best_move
+
+
+def _best_capture_heuristic(mask: int, capture_moves):
+    best_move = capture_moves[0][0]
+    best_score = -1e18
+
+    for e, k in capture_moves:
+        nm = mask | BITS[e]
+        score = 100.0 * k
+
+        try:
+            total = k + _max_capture_turn(nm)
+            score += 10.0 * total
+        except TimeoutError:
+            pass
+
+        score -= 0.001 * e
+
+        if score > best_score:
+            best_score = score
+            best_move = e
+
+    return best_move
+
+
+def _best_opening_heuristic(mask: int, box_counts, risky_moves):
+    best_move = risky_moves[0]
+    best_key = None
+
+    for e in risky_moves:
+        nm = mask | BITS[e]
+
+        try:
+            opp_gain = _max_capture_turn(nm)
+        except TimeoutError:
+            opp_gain = 999
+
+        immediate = 0
+        fillsum = 0
+        for b in ADJ_BOXES[e]:
+            c = box_counts[b]
+            fillsum += c
+            if c == 2:
+                immediate += 1
+
+        # Lexicographic minimization:
+        # 1) Minimize opponent immediate harvest
+        # 2) Minimize immediately created 3-sided boxes
+        # 3) Prefer lower local fill
+        # 4) Prefer boundary when equal
+        key = (opp_gain, immediate, fillsum, len(ADJ_BOXES[e]), e)
+
+        if best_key is None or key < best_key:
+            best_key = key
+            best_move = e
+
+    return best_move
+
+
+def _first_legal_move(horizontal: np.ndarray, vertical: np.ndarray) -> str:
+    # Valid-board scan first
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                return f"{r},{c},H"
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                return f"{r},{c},V"
+
+    # Ultra-fallback if arrays are unexpected
+    for r in range(5):
+        for c in range(5):
+            if horizontal[r, c] == 0:
+                return f"{r},{c},H"
+    for r in range(5):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                return f"{r},{c},V"
+
+    # Should not happen in a non-terminal legal call
+    return "0,0,H"
+
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    _init()
+
+    global _DEADLINE, _NODE_COUNT, _SOLVE_MEMO, _CAP_MEMO
+    _DEADLINE = time.perf_counter() + 0.90
+    _NODE_COUNT = 0
+    _SOLVE_MEMO = {}
+    _CAP_MEMO = {}
+
+    mask = _arrays_to_mask(horizontal, vertical)
+    rem = TOTAL_EDGES - mask.bit_count()
+
+    legal = []
+    capture_moves = []
+    safe_moves = []
+    risky_moves = []
+
+    box_counts = _box_counts_from_arrays(horizontal, vertical)
+
+    for e in VALID_EDGES:
+        if mask & BITS[e]:
+            continue
+
+        legal.append(e)
+
+        k = 0
+        safe = True
+        for b in ADJ_BOXES[e]:
+            c = box_counts[b]
+            if c == 3:
+                k += 1
+            elif c == 2:
+                safe = False
+
+        if k > 0:
+            capture_moves.append((e, k))
+        elif safe:
+            safe_moves.append(e)
+        else:
+            risky_moves.append(e)
+
+    if not legal:
+        return _first_legal_move(horizontal, vertical)
+
+    # Exact solver in late game / tactical states
+    try:
+        if rem <= 20 or (capture_moves and rem <= 26) or ((not safe_moves) and rem <= 22):
+            return MOVE_STR[_choose_exact(mask)]
+    except TimeoutError:
+        pass
+
+    # Heuristic fallback
+    if capture_moves:
+        try:
+            return MOVE_STR[_best_capture_heuristic(mask, capture_moves)]
+        except TimeoutError:
+            capture_moves.sort(key=lambda x: (-x[1], x[0]))
+            return MOVE_STR[capture_moves[0][0]]
+
+    if safe_moves:
+        return MOVE_STR[_best_safe_heuristic(mask, box_counts, safe_moves)]
+
+    if risky_moves:
+        try:
+            return MOVE_STR[_best_opening_heuristic(mask, box_counts, risky_moves)]
+        except TimeoutError:
+            risky_moves.sort(
+                key=lambda e: (
+                    sum(1 for b in ADJ_BOXES[e] if box_counts[b] == 2),
+                    len(ADJ_BOXES[e]),
+                    e,
+                )
+            )
+            return MOVE_STR[risky_moves[0]]
+
+    return _first_legal_move(horizontal, vertical)
+</code>

@@ -1,0 +1,207 @@
+To implement a **smart policy** for the Kalah game, we need to choose the best possible move from the current state of the board. The goal is to maximize the chances of winning by prioritizing **captures**, **extra moves**, and **strategic seed distribution**.
+
+---
+
+### 🧠 Key Considerations for the Policy
+
+1. **Captures**:
+   - If the last seed lands in your house **j** and **j was empty** before your move, and your opponent's corresponding opposite house **(5 - j)** has seeds, you can capture both your seed and your opponent's seeds.
+   - This gives a **direct advantage**, so we should prioritize such moves.
+
+2. **Extra Move**:
+   - If the last seed lands in your **store**, you get to make another move. This is highly desirable because it gives you an extra turn.
+   - Even small gains in store are better than giving the opponent a turn.
+
+3. **Store Seeds**:
+   - If neither capture nor extra move is possible, prioritize moves that place more seeds in your store.
+
+---
+
+### ✅ Strategy Summary
+
+- **Priority 1**: Maximize captured seeds.
+- **Priority 2**: Move seeds into your store (ends in store).
+- **Priority 3**: Otherwise, choose a move that gives the best chance of future gains.
+
+---
+
+### 🧮 Heuristic Scoring
+
+We use a weight-based scoring system:
+- **Store gain** (1 point)
+- **Capture** (10–1000 points depending on number of seeds)
+- **Extra move** (100 points)
+
+---
+
+### 🧩 Python Implementation
+
+```python
+def policy(you, opponent):
+    """
+    Policy to choose the best move in the Kalah game.
+    Evaluates all possible moves and selects the one with the highest priority:
+        1. Captures (most valuable)
+        2. Ends in the store (extra move)
+        3. Other moves
+    """
+    best_move = None
+    best_score = -1
+    capture_priority = 1000
+    store_priority = 100
+    extra_priority = 10
+
+    for move in range(6):
+        if you[move] == 0:
+            continue  # Skip empty houses
+
+        # Simulate the move and get the capture and store info
+        captured, store_gain, ends_in_store = simulate_move_scores(you, opponent, move)
+
+        # Heuristic score:
+        # Prioritize captures first, then extra move, then store gain
+        score = captured * capture_priority + ends_in_store * extra_priority + store_gain
+
+        # Update best move if this move is better
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+
+def simulate_move_scores(you, opponent, move_i):
+    """
+    Simulates the move and returns:
+    - captured: number of seeds captured
+    - store_gain: number of seeds added to the store during this move
+    - ends_in_store: whether the move ends with a seed in the player's store
+    """
+    new_you = list(you)
+    new_opponent = list(opponent)
+    seeds = new_you[move_i]
+    new_you[move_i] = 0
+    current_pos = move + 1
+    steps_done = 0
+
+    while steps_done < seeds:
+        current_pos %= 13  # wrap around the ring
+        if current_pos < 7:
+            new_you[current_pos] += 1  # plant in your house
+        else:
+            # Jumping opponent's store (skip it)
+            opponent_index = current_pos - 7
+            new_opponent[opponent_index] += 1
+
+        steps_done += 1
+        current_pos += 1
+
+    # Determine where the last seed was placed
+    last_pos = (current_pos - 1) % 13
+    ends_in_store = (last_pos == 6)
+    captured = 0
+
+    if last_pos < 6:
+        j = last_pos
+        # Check if house j was empty before the move
+        if j != move_i and you[j] == 0:
+            # Capture: seeds in your house plus opponent's opposite house
+            opp_house = 5 - j
+            if opponent[opp_house] > 0:
+                captured = 1 + opponent[opp_house]
+    else:
+        # end in your store: bonus move
+        captured = 0
+
+    store_gain = 1 if ends_in_store else 0
+    new_you[6] += captured
+    return captured, store_gain, ends_in_store
+```
+
+---
+
+### 📌 Summary
+
+- **Legality is guaranteed** by checking `you[move] > 0`.
+- **Priorities** are weighted to favor **captures**, then **extra move**, then **store gains**.
+- **Efficiency** is maintained by simulating the last position and capture conditions without overloading with full game simulation.
+
+This policy is **robust and efficient**, and should perform well in a competitive environment by leveraging seed captures and maximizing turn advantage.
+
+---
+
+### 🧪 Example
+
+Given a move that:
+- Ends in your store → score +=100
+- Captures 6 seeds → score += 6000
+- Total score = 6100
+
+Another move that:
+- Ends in your store → +100
+- Captures 0 seeds
+- Total score = 100
+
+The first move will be chosen.
+
+---
+
+### 🧾 Output
+
+```python
+<code>
+import random
+
+def policy(you, opponent):
+    best_move = None
+    best_score = -1
+    capture_priority = 1000
+    store_priority = 100
+    extra_priority = 10
+
+    for move in range(6):
+        if you[move] == 0:
+            continue
+
+        captured, store_gain, ends_in_store = simulate_move_scores(you, opponent, move)
+        score = captured * capture_priority + ends_in_store * extra_priority + store_gain
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+
+def simulate_move_scores(you, opponent, move_i):
+    new_you = list(you)
+    new_opponent = list(opponent)
+    seeds = new_you[move_i]
+    new_you[move_i] = 0
+    current_pos = move + 1
+    steps_done = 0
+
+    while steps_done < seeds:
+        current_pos %= 13
+        if current_pos < 7:
+            new_you[current_pos] += 1
+        else:
+            opp_idx = current_pos - 7
+            new_opponent[opp_idx] += 1
+
+        steps_done += 1
+        current_pos += 1
+
+    last_pos = (current_pos - 1) % 13
+    ends_in_store = (last_pos == 6)
+    captured = 0
+
+    if last_pos < 6:
+        j = last_pos
+        if j != move_i and you[j] == 0:
+            opp_house = 5 - j
+            captured = 1 + opponent[opp_house]
+
+    store_gain = 1 if ends_in_store else 0
+    return captured, store_gain, ends_in_store
+</code>
+```

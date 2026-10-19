@@ -1,0 +1,309 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns the optimal move for a 4x4 Tic Tac Toe game.
+I need to implement a strategy to win or at least not lose.
+A common strategy for Tic Tac Toe AI is Minimax. Given the 1-second time limit and a 4x4 board, a full Minimax search might be too slow if depth is too high. However, the game tree for 4x4 is significantly larger than 3x3. I should start with a simpler approach and then try Minimax with alpha-beta pruning if time permits.
+
+Let's break down the strategy:
+
+1.  **Check for an immediate win:** If I can win in the next move, take it.
+2.  **Block opponent's immediate win:** If the opponent can win in the next move, block them.
+3.  **Prioritize center squares:** In Tic Tac Toe, center squares are generally more strategic. For a 4x4, the 2x2 center (1,1), (1,2), (2,1), (2,2) might be good.
+4.  **Create forks (or block opponent's forks):** This is more complex and might be difficult to implement perfectly within the time limit without a full search.
+5.  **Minimax with Alpha-Beta Pruning:** This is the most robust solution. I need to define a `evaluate` function for a given board state.
+
+Let's try a simpler rule-based approach first, then if that seems insufficient, move to Minimax with limited depth or alpha-beta.
+
+**Rule-based approach:**
+
+*   **Player ID:** My player is `1`, opponent is `-1`.
+*   **Winning condition:** 4 in a row/column/diagonal.
+
+**Steps:**
+
+1.  **Iterate through all empty cells (0,0) to (3,3):**
+    *   For each empty cell `(r, c)`:
+        *   **Try to win:** Place my piece (`1`) at `(r, c)`. Check if `1` wins. If yes, return `(r, c)`.
+        *   **Undo the move:** Reset `board[r][c]` to `0`.
+        *   **Try to block opponent:** Place opponent's piece (`-1`) at `(r, c)`. Check if `-1` wins. If yes, return `(r, c)`. (This blocks the opponent)
+        *   **Undo the move:** Reset `board[r][c]` to `0`.
+
+2.  **If no immediate win or block, look for strategic moves:**
+    *   **Center preference:** If any of the center squares (1,1), (1,2), (2,1), (2,2) are empty, pick one.
+    *   **Corners preference:** If any corners (0,0), (0,3), (3,0), (3,3) are empty, pick one.
+    *   **Any open square:** Otherwise, pick the first available empty square.
+
+This rule-based approach is often fast enough for small boards.
+
+**Helper function: `check_win(board, player)`**
+This function will check if the given `player` has won on the `board`.
+It needs to check all rows, columns, and two diagonals.
+
+*   **Rows:** Iterate `r` from 0 to 3. For each `r`, check if `board[r][0] == board[r][1] == board[r][2] == board[r][3] == player`.
+*   **Columns:** Iterate `c` from 0 to 3. For each `c`, check if `board[0][c] == board[1][c] == board[2][c] == board[3][c] == player`.
+*   **Diagonals:**
+    *   Main diagonal: `board[0][0] == board[1][1] == board[2][2] == board[3][3] == player`
+    *   Anti-diagonal: `board[0][3] == board[1][2] == board[2][1] == board[3][0] == player`
+
+Let's refine the `policy` function:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Define my player and opponent
+    PLAYER = 1
+    OPPONENT = -1
+
+    # --- Helper function to check for a win ---
+    def check_win(current_board, player_id):
+        # Check rows
+        for r in range(4):
+            if all(current_board[r][c] == player_id for c in range(4)):
+                return True
+        # Check columns
+        for c in range(4):
+            if all(current_board[r][c] == player_id for r in range(4)):
+                return True
+        # Check diagonals
+        if all(current_board[i][i] == player_id for i in range(4)):
+            return True
+        if all(current_board[i][3 - i] == player_id for i in range(4)):
+            return True
+        return False
+
+    # --- Step 1: Check for immediate win ---
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = PLAYER
+                if check_win(board, PLAYER):
+                    return (r, c)
+                board[r][c] = 0 # Undo move
+
+    # --- Step 2: Block opponent's immediate win ---
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = OPPONENT
+                if check_win(board, OPPONENT):
+                    return (r, c)
+                board[r][c] = 0 # Undo move
+
+    # --- Step 3: Prioritize strategic squares (center, then corners) ---
+    # Center squares
+    center_squares = [(1,1), (1,2), (2,1), (2,2)]
+    for r, c in center_squares:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Corner squares
+    corner_squares = [(0,0), (0,3), (3,0), (3,3)]
+    for r, c in corner_squares:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # --- Step 4: Take any available empty square ---
+    # This acts as a fallback. It should pick the first available.
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                return (r, c)
+
+    # Should not reach here in a valid game unless board is full and no winner.
+    # But a draw doesn't need to return a move.
+    # In competitive programming, games usually end.
+    return (0, 0) # Fallback, should not be hit.
+```
+
+Let's test this logic mentally.
+-   If I can win, I win.
+-   If I can't win, but the opponent can, I block.
+-   If neither, I pick a center square.
+-   If no center, I pick a corner.
+-   If neither, I pick any open square.
+
+This seems like a reasonable heuristic for Tic-Tac-Toe that should perform adequately. The `check_win` function will be called a maximum of 16 (for self-win) + 16 (for block-opponent) times. Each call involves iterating through at most 4 rows, 4 columns, and 2 diagonals (each check is constant time, max 4 comparisons). So, it's roughly `32 * (4*4 + 4*4 + 2*4) = 32 * (16+16+8) = 32 * 40 = 1280` operations per call to `policy`. This is very fast, well within the 1-second limit.
+
+One edge case: What if the board is completely full? The problem implies I need to return a move, but if the board is full, there are no moves. I will assume the `policy` function will only be called when there is at least one empty square. If it is called on a full board, the last fallback to `(0,0)` would be non-sensical, but that's an invalid game state for "next move."
+
+Consider using `numpy` if it would simplify board operations, but for a 4x4 board, nested lists are perfectly fine and perhaps slightly faster for simple iteration than converting to/from numpy arrays. The `all()` function with generator expressions is quite efficient for checking rows/cols/diagonals.
+
+Let's check the rules of the game: "4x4 Tic Tac Toe". This usually means connected pieces. My `check_win` function correctly identifies 4 connected.
+
+Looks good.
+
+```python
+import random # Not strictly needed for this deterministic strategy, but good for fallbacks or potential upgrades
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Define player IDs
+    PLAYER = 1 # Your player ID
+    OPPONENT = -1 # Opponent's player ID
+
+    # --- Helper function to check if a specific player has won ---
+    def check_win(current_board, player_id) -> bool:
+        # Check rows
+        for r in range(4):
+            if all(current_board[r][c] == player_id for c in range(4)):
+                return True
+        # Check columns
+        for c in range(4):
+            if all(current_board[r][c] == player_id for r in range(4)):
+                return True
+        # Check main diagonal
+        if all(current_board[i][i] == player_id for i in range(4)):
+            return True
+        # Check anti-diagonal
+        if all(current_board[i][3 - i] == player_id for i in range(4)):
+            return True
+        return False
+
+    # --- Strategy Steps ---
+
+    # 1. Check for immediate winning move for self
+    # Iterate through all empty cells
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = PLAYER  # Tentatively make the move
+                if check_win(board, PLAYER):
+                    board[r][c] = 0  # Undo the move before returning
+                    return (r, c)
+                board[r][c] = 0  # Undo the tentative move
+
+    # 2. Check for immediate winning move for opponent and block it
+    # Iterate through all empty cells
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = OPPONENT # Tentatively make opponent's move
+                if check_win(board, OPPONENT):
+                    board[r][c] = 0 # Undo the move before returning
+                    return (r, c)
+                board[r][c] = 0 # Undo the tentative move
+
+    # 3. Prioritize strategic squares if no immediate win/block
+    
+    # Center squares (most strategic for 4x4)
+    # The 2x2 inner square: (1,1), (1,2), (2,1), (2,2)
+    center_squares = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    # Randomize order to add some non-determinism if multiple centers are open
+    random.shuffle(center_squares) 
+    for r, c in center_squares:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Corner squares (also strategic)
+    corner_squares = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    random.shuffle(corner_squares)
+    for r, c in corner_squares:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 4. Take any available empty square (fallback)
+    # Iterate through the board for any remaining empty spot
+    empty_cells = []
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                empty_cells.append((r,c))
+    
+    if empty_cells:
+        return random.choice(empty_cells) # Pick a random empty cell
+
+    # This part should ideally not be reached if the game is always valid
+    # (i.e., policy is only called when there's an empty cell).
+    # If the board is full and no winner, it's a draw, no move needed.
+    # Return (0,0) as a safe, but probably incorrect, default if all else fails.
+    return (0, 0) # Fallback if no moves are possible (e.g., board is full)
+
+```
+Added `random.shuffle` and `random.choice` for center/corner and general empty cells. This adds a little bit of variance to the play for positions where multiple moves are equally good based on the simple heuristic. It could make the AI less predictable in certain scenarios and might inadvertently stumble upon better positions or make it harder for an opponent to predict.
+
+Consider if there's an issue with modifying `board` directly. The problem states `board: list[list[int]]`, but generally, functions shouldn't modify input arguments unless explicitly specified. Python passes lists by reference. So, the `board[r][c] = PLAYER` and `board[r][c] = 0` are in-place modifications. This is fine as long as they are undone before the function exits or before checking opponent moves. My current code structure does this correctly: `board[r][c] = PLAYER`, `check`, `board[r][c] = 0`. This sequence ensures the board is reset to its original state for the next iteration or the subsequent strategy step.
+
+The use of `random.shuffle` for `center_squares` and `corner_squares` ensures that if multiple such squares are available and equally good (by these simple heuristics), the choice isn't always the same fixed one first (e.g., always (1,1) first). This adds a touch of unpredictability without affecting the core logic of prioritizing. Same for the final `random.choice(empty_cells)`. This is a good additive.
+</thinking>
+<code>
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Define player IDs
+    PLAYER = 1 # Your player ID
+    OPPONENT = -1 # Opponent's player ID
+
+    # --- Helper function to check if a specific player has won ---
+    def check_win(current_board: list[list[int]], player_id: int) -> bool:
+        # Check rows
+        for r in range(4):
+            if all(current_board[r][c] == player_id for c in range(4)):
+                return True
+        # Check columns
+        for c in range(4):
+            if all(current_board[r][c] == player_id for r in range(4)):
+                return True
+        # Check main diagonal (top-left to bottom-right)
+        if all(current_board[i][i] == player_id for i in range(4)):
+            return True
+        # Check anti-diagonal (top-right to bottom-left)
+        if all(current_board[i][3 - i] == player_id for i in range(4)):
+            return True
+        return False
+
+    # --- Strategy Steps ---
+
+    # 1. Check for immediate winning move for self
+    # Iterate through all empty cells
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = PLAYER  # Tentatively make the move
+                if check_win(board, PLAYER):
+                    board[r][c] = 0  # Undo the move before returning
+                    return (r, c)
+                board[r][c] = 0  # Undo the tentative move to restore board state
+
+    # 2. Check for immediate winning move for opponent and block it
+    # Iterate through all empty cells
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                board[r][c] = OPPONENT # Tentatively make opponent's move
+                if check_win(board, OPPONENT):
+                    board[r][c] = 0 # Undo the move before returning
+                    return (r, c)
+                board[r][c] = 0 # Undo the tentative move to restore board state
+
+    # 3. Prioritize strategic squares if no immediate win/block
+    
+    # Center squares (most strategic for 4x4, the 2x2 inner square)
+    center_squares = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    # Randomize order to add some non-determinism if multiple centers are open
+    random.shuffle(center_squares) 
+    for r, c in center_squares:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # Corner squares (also strategic)
+    corner_squares = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    random.shuffle(corner_squares)
+    for r, c in corner_squares:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 4. Take any available empty square (fallback)
+    # Collect all empty cells
+    empty_cells = []
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+    
+    if empty_cells:
+        # Pick a random empty cell to add some variety if many are available
+        return random.choice(empty_cells) 
+
+    # This part should ideally not be reached in a valid game scenario
+    # where a move is expected (i.e., if board is full and no moves possible).
+    # Returning (0,0) as a default to satisfy type signature, though it implies
+    # an error in game state assumptions if called on a full board.
+    return (0, 0)
+</code>

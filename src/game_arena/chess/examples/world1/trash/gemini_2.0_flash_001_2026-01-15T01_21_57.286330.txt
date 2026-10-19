@@ -1,0 +1,83 @@
+The strategy for this policy is based on a simplified evaluation function prioritizing checkmate, material advantage, checks, and piece activity. It iterates through `legal_moves`, evaluates the resulting position after each move, and selects the move with the highest score. The evaluation function considers material count (assigning different values to pieces), check status, and a simple form of piece activity based on the piece type. It also includes basic King safety evaluation.
+
+```python
+import chess
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Selects the best legal move based on a simple evaluation function.
+    """
+
+    board = chess.Board()
+    board.clear()
+    for square, piece in pieces.items():
+        board.set_piece_at(chess.parse_square(square), chess.Piece.from_symbol(piece[1].lower() if piece[0] == 'w' else piece[1].upper()))  #corrected piece processing
+
+    if to_play == 'white':
+        board.turn = chess.WHITE
+    else:
+        board.turn = chess.BLACK
+
+    best_move = None
+    best_score = float('-inf')
+
+    for move_string in legal_moves:
+        move = board.parse_uci(move_string) # using uci to parse from string format
+        if move not in board.legal_moves:
+            continue
+
+        board.push(move) 
+        score = evaluate_board(board)
+
+        if score > best_score:
+            best_score = score
+            best_move = move_string # return the move as string
+
+        board.pop()
+
+    if best_move is None:
+        # Fallback: return a random legal move if no move was evaluated
+        return legal_moves[0]
+
+    return best_move
+
+
+def evaluate_board(board: chess.Board) -> float:
+    """
+    A simple evaluation function.
+    """
+    if board.is_checkmate():
+        if board.turn == chess.WHITE:  # Black is checkmated
+            return float('inf')
+        else:
+            return float('-inf')  # White is checkmated
+    elif board.is_stalemate() or board.is_insufficient_material():
+        return 0.0
+    elif board.is_check():
+        if board.turn == chess.WHITE: #black is in check
+            return 0.5
+        else:
+            return -0.5
+
+    score = 0.0
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3.2,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0   # King importance reflects safety more than value
+    }
+
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece is not None:
+            sign = 1 if piece.color == chess.WHITE else -1
+            score += sign * piece_values[piece.piece_type]
+
+    # King safety: punish king being in check
+    if board.is_attacked(board.king(board.turn), not board.turn):
+          score -= 0.3 #penalize if the side to move's king is under attack
+
+    return score
+```

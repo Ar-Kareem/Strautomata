@@ -1,0 +1,98 @@
+The strategy is to implement a heuristic evaluation that prioritizes capturing pieces, particularly those on the edge of the board, as edge pieces are immobile (having fewer than two neighbors) and are often liabilities. I will generate all legal moves and score them based on the type of piece captured (edge vs. center) and the resulting board state. To ensure randomness and avoid deterministic patterns, I will shuffle the list of moves and select the best one based on these heuristics.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Determine dimensions (should be 5x6 based on prompt, but we infer)
+    R = len(you)
+    C = len(you[0])
+    
+    # Identify our pieces and opponent pieces
+    my_pieces = []
+    opp_pieces = set()
+    
+    for r in range(R):
+        for c in range(C):
+            if you[r][c] == 1:
+                my_pieces.append((r, c))
+            elif opponent[r][c] == 1:
+                opp_pieces.add((r, c))
+                
+    # Generate all legal moves
+    legal_moves = []
+    # Directions: (row_delta, col_delta, direction_char)
+    # Up: -1, 0; Down: +1, 0; Left: 0, -1; Right: 0, +1
+    directions = [(-1, 0, 'U'), (1, 0, 'D'), (0, -1, 'L'), (0, 1, 'R')]
+    
+    for r, c in my_pieces:
+        for dr, dc, d_char in directions:
+            nr, nc = r + dr, c + dc
+            # Check bounds
+            if 0 <= nr < R and 0 <= nc < C:
+                # Check if opponent is there
+                if (nr, nc) in opp_pieces:
+                    legal_moves.append(((r, c), (nr, nc), d_char))
+                    
+    # If there are legal moves, select one based on heuristics
+    if legal_moves:
+        # Shuffle to introduce randomness and avoid loops
+        import random
+        random.shuffle(legal_moves)
+        
+        best_move = None
+        best_score = -1
+        
+        for start, end, d_char in legal_moves:
+            # Heuristic 1: Capturing an edge piece is highly valuable
+            # Edge pieces are those with < 4 neighbors (or on the border)
+            # An edge piece is usually one that is trapped.
+            # Let's score based on the target position's mobility in the opponent's perspective.
+            
+            # Count neighbors of the captured piece (before capture)
+            # Since we capture it, we remove it. We want to remove pieces that have few moves.
+            # But if a piece has 0 moves, it's already dead (cannot be captured? No, it can be captured).
+            # Actually, if an opponent piece has 0 legal moves, it's useless to them.
+            # If it has 1 legal move, it's a liability.
+            
+            neighbors = 0
+            for dr, dc, _ in directions:
+                nnr, nnc = end[0] + dr, end[1] + dc
+                if 0 <= nnr < R and 0 <= nnc < C:
+                    # Check if there is any piece (ours or theirs) - strictly for connectivity
+                    # Actually, we care about the opponent's ability to move *from* this square.
+                    # But since we are capturing it, we care about removing a piece that is useful to them.
+                    # A piece is useful if it can capture.
+                    # If a piece is on the edge, it has fewer potential captures.
+                    # Specifically, if a piece is on a corner (2 neighbors) or edge (3 neighbors).
+                    if opponent[nnr][nnc] == 1 or you[nnr][nnc] == 1:
+                        neighbors += 1
+            
+            # Score: Higher is better
+            # Prefer capturing pieces with fewer neighbors (more likely to be dead/edge)
+            # Base score: 10
+            # Bonus for low neighbor count: (4 - neighbors) * 5
+            # (We want to capture pieces that are immobile to clear the board effectively)
+            
+            score = 10 + (4 - neighbors) * 5
+            
+            if score > best_score:
+                best_score = score
+                best_move = (start[0], start[1], d_char)
+                
+        # Format the return as specified
+        # The prompt says "Return a string move in the format 'row,col,dir'"
+        # However, the function signature implies `-> int`. 
+        # Looking closely at the prompt: "Return a string move in the format 'row,col,dir'"
+        # But standard interfaces for these games usually expect a string.
+        # There is a conflict in the prompt: function signature says `-> int`, text says string format.
+        # Given the explicit format requirement ('row,col,dir'), I will return the string.
+        # If the environment strictly expects an int, this might fail, but the text is explicit about the format.
+        # I will assume the return type in the prompt text overrides the hint signature, as format is specific.
+        # Actually, usually these python environments for games return the move string directly.
+        # I will return the formatted string.
+        
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+    
+    # This part is technically unreachable if policy is never called without legal moves
+    # but as a safeguard:
+    return "0,0,U"
+```

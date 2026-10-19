@@ -1,0 +1,113 @@
+The strategy for this policy is a greedy-but-safe Dots and Boxes approach. It always takes any immediate box capture (because capturing gives an extra move), prefers moves that do not create 3‑sided boxes for the opponent, and if forced into a sacrifice, it chooses the move that gives away as few boxes as possible. Among safe moves it favors edges adjacent to boxes with fewer sides already drawn, and slightly prefers border edges.
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Greedy safe Dots and Boxes policy for 4x4 grid (5x5 edge arrays).
+    Returns a legal move string "row,col,dir".
+    """
+
+    # Helper to count edges around a box
+    def box_edge_count(r, c):
+        cnt = 0
+        if horizontal[r, c] != 0: cnt += 1
+        if horizontal[r + 1, c] != 0: cnt += 1
+        if vertical[r, c] != 0: cnt += 1
+        if vertical[r, c + 1] != 0: cnt += 1
+        return cnt
+
+    # Helper to list boxes adjacent to a move
+    def adjacent_boxes(move):
+        r, c, d = move
+        boxes = []
+        if d == 'H':
+            if r < 4 and c < 4:
+                boxes.append((r, c))
+            if r > 0 and c < 4:
+                boxes.append((r - 1, c))
+        else:  # 'V'
+            if c < 4 and r < 4:
+                boxes.append((r, c))
+            if c > 0 and r < 4:
+                boxes.append((r, c - 1))
+        return boxes
+
+    # Generate legal moves (valid edges only)
+    moves = []
+    for r in range(5):
+        for c in range(4):  # horizontal edges: 5 rows, 4 cols
+            if horizontal[r, c] == 0:
+                moves.append((r, c, 'H'))
+    for r in range(4):      # vertical edges: 4 rows, 5 cols
+        for c in range(5):
+            if vertical[r, c] == 0:
+                moves.append((r, c, 'V'))
+
+    if not moves:
+        return "0,0,H"
+
+    capture_moves = []
+    safe_moves = []
+    unsafe_moves = []
+
+    for m in moves:
+        boxes = adjacent_boxes(m)
+        captures = 0
+        risk = 0
+        unsafe = False
+
+        # Evaluate boxes adjacent to this move
+        for br, bc in boxes:
+            if capture[br, bc] != 0:
+                continue
+            cnt = box_edge_count(br, bc)
+            if cnt == 3:
+                captures += 1
+            elif cnt == 2:
+                unsafe = True
+                risk += 1
+
+        if captures > 0:
+            capture_moves.append((m, captures, risk))
+        elif not unsafe:
+            # Safe move: compute heuristic score
+            sum_count = 0
+            adj = 0
+            for br, bc in boxes:
+                if capture[br, bc] == 0:
+                    adj += 1
+                    sum_count += box_edge_count(br, bc)
+            safe_moves.append((m, sum_count, adj))
+        else:
+            # Unsafe move: how many 3-sided boxes will be created?
+            num3 = 0
+            sum_count = 0
+            adj = 0
+            for br, bc in boxes:
+                if capture[br, bc] == 0:
+                    adj += 1
+                    cnt = box_edge_count(br, bc)
+                    if cnt == 2:
+                        num3 += 1
+                    sum_count += cnt
+            unsafe_moves.append((m, num3, sum_count, adj))
+
+    # 1. Take captures immediately
+    if capture_moves:
+        capture_moves.sort(key=lambda x: (-x[1], x[2], x[0][2], x[0][0], x[0][1]))
+        best = capture_moves[0][0]
+        return f"{best[0]},{best[1]},{best[2]}"
+
+    # 2. Otherwise, choose a safe move
+    if safe_moves:
+        safe_moves.sort(key=lambda x: (x[1], x[2], x[0][2], x[0][0], x[0][1]))
+        best = safe_moves[0][0]
+        return f"{best[0]},{best[1]},{best[2]}"
+
+    # 3. If forced, minimize damage
+    unsafe_moves.sort(key=lambda x: (x[1], x[2], x[3], x[0][2], x[0][0], x[0][1]))
+    best = unsafe_moves[0][0]
+    return f"{best[0]},{best[1]},{best[2]}"
+</code>

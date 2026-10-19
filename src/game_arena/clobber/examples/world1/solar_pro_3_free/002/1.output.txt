@@ -1,0 +1,163 @@
+**Strategy**
+
+Our policy follows a classic limited‑depth look‑ahead approach that is fast enough for the 5×6 board while still being smarter than a greedy capture‑any‑piece strategy.
+
+1. **All‑moves generation** – First we collect every legal capture move for our pieces (`row,col,dir`).  
+2. **Immediate win check** – After applying a move we inspect the opponent’s board: if the opponent now has no legal capture move we return that move immediately (we win in one ply).  
+3. **Evaluation function** – When a game‑theoretic win isn’t obvious we score the resulting position:  
+   * Piece advantage (`my_pieces – opponent_pieces`) is weighted heavily (×10) because the game ends when a player runs out of pieces.  
+   * Capture‑opportunity difference (`my_captures – opponent_captures`) adds finer‑grained insight on who is more active.  
+   The sum of these two terms gives a single integer score that can be compared across positions.  
+4. **Minimax with α‑β pruning** – We evaluate each candidate move up to a small depth (default = 2 plies).  
+   * Depth 0 is the opponent’s response, depth 1 is our possible reply, and depth 2 is the leaf evaluation.  
+   * The opponent is treated as a minimizing player, we as maximizing, so the recursion naturally selects moves that maximise our piece advantage while keeping the opponent’s counter‑play in mind.  
+   * α‑β pruning cuts off branches that cannot improve the current best score, keeping the search well under the 1‑second limit.  
+5. **Tie‑breaking** – If two moves give the same score we keep the first one found; a deterministic order is sufficient for the arena.  
+
+All operations use only plain Python (no heavy libraries) and never modify the original `you`/`opponent` arrays, guaranteeing that we always return a legal move.
+
+<code>
+import math
+
+# board dimensions
+ROW = 5
+COL = 6
+MAX_DEPTH = 2                     # look‑ahead up to two opponent moves
+
+# direction vectors
+DIRS = {
+    'U': (-1, 0),
+    'R': (0, 1),
+    'D': (1, 0),
+    'L': (0, -1)
+}
+
+def copy_board(board):
+    """Deep copy a 5×6 board."""
+    return [list(row) for row in board]
+
+def apply_move(you, opponent, move_str):
+    """Return the new board after executing a legal capture move."""
+    parts = move_str.split(',')
+    if len(parts) != 5:
+        raise ValueError("Invalid move format")
+    row, col, dest_row, dest_col, dir_char = map(int, parts[:4])
+    if not (0 <= dir_char < len(DIRS)):
+        raise ValueError("Invalid direction")
+    if not (0 <= row < ROW and 0 <= col < COL and
+            0 <= dest_row < ROW and 0 <= dest_col < COL):
+        raise ValueError("Move out of bounds")
+    dr, dc = DIRS[dir_char]
+    if not (you[row][col] == 1 and opponent[dest_row][dest_col] == 1):
+        raise ValueError("Move does not capture opponent")
+    new_you = copy_board(you)
+    new_opp = copy_board(opponent)
+    new_you[row][col] = 0
+    new_opp[dest_row][dest_col] = 0
+    new_you[dest_row][dest_col] = 1
+    return new_you, new_opp
+
+def get_capture_moves(side_board, other_board):
+    """Yield every legal move for `side_board` as a string."""
+    moves = []
+    for r in range(ROW):
+        for c in range(COL):
+            if side_board[r][c] == 1:
+                for dir_char in DIRS:
+                    dr, dc = DIRS[dir_char]
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < ROW and 0 <= nc < COL and other_board[nr][nc] == 1:
+                        moves.append(f"{r},{c},{nr},{nc},{dir_char}")
+    return moves
+
+def count_captures(side_board, other_board):
+    """Count legal capture moves for `side_board`."""
+    cnt = 0
+    for r in range(ROW):
+        for c in range(COL):
+            if side_board[r][c] == 1:
+                for dir_char in DIRS:
+                    dr, dc = DIRS[dir_char]
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < ROW and 0 <= nc < COL and other_board[nr][nc] == 1:
+                        cnt += 1
+    return cnt
+
+def evaluate(you, opponent):
+    """Score a board from our perspective."""
+    my_pieces = sum(sum(row) for row in you)
+    opp_pieces = sum(sum(row) for row in opponent)
+    diff = my_pieces - opp_pieces
+    my_captures = count_captures(you, opponent)
+    opp_captures = count_captures(opponent, you)
+    return diff * 10 + (my_captures - opp_captures)
+
+def minimax(you, opponent, depth, max_depth, alpha, beta, side):
+    """
+    Return the minimax score for the position where `side` ('you' or 'opponent')
+    is to move. `alpha`/`beta` are the pruning bounds.
+    """
+    if side == 'you':
+        side_board, other_board = you, opponent
+    else:
+        side_board, other_board = opponent, you
+
+    moves = get_capture_moves(side_board, other_board)
+    # terminal positions
+    if not moves:
+        if side == 'you':
+            return -float('inf')   # we have no move → lose
+        else:
+            return float('inf')    # opponent has no move → we win
+
+    if depth == max_depth:
+        return evaluate(you, opponent)
+
+    is_maximizing = (side == 'you')
+    best = -float('inf') if is_maximizing else float('inf')
+    for move in moves:
+        new_you, new_opp = apply_move(you, opponent, move)
+        next_side = 'opponent' if side == 'you' else 'you'
+        score = minimax(new_you, new_opp, depth + 1,
+                        max_depth, alpha, beta, next_side)
+
+        if is_maximizing:
+            best = max(best, score)
+            alpha = max(alpha, best)
+            if beta <= alpha:
+                break
+        else:
+            best = min(best, score)
+            beta = min(beta, best)
+            if alpha >= beta:
+                break
+    return best
+
+def policy(you, opponent):
+    """Choose the next capture move according to the strategy above."""
+    moves = get_capture_moves(you, opponent)
+    if not moves:
+        # According to the arena this should never happen, but we guard against it.
+        raise ValueError("No legal capture moves for you")
+
+    best_move = None
+    best_score = -float('inf')
+    for move in moves:
+        new_you, new_opp = apply_move(you, opponent, move)
+
+        # Check immediate opponent loss
+        opponent_moves = get_capture_moves(new_opp, new_you)
+        if not opponent_moves:
+            return move
+
+        # Look‑ahead evaluation (opponent moves first)
+        score = minimax(new_you, new_opp,
+                        depth=0, max_depth=MAX_DEPTH,
+                        alpha=-float('inf'), beta=float('inf'),
+                        side='opponent')
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+</code>

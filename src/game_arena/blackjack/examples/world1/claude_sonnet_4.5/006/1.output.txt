@@ -1,0 +1,288 @@
+<thinking>
+Let me think about this simplified Blackjack-like game strategically.
+
+Key observations:
+1. Both players draw from their own 13-card deck (one of each rank)
+2. Target T is between 10 and 30
+3. Aces are worth 11 if hand value <= T, otherwise 1
+4. Busting (going over T) is an immediate loss
+5. If both stay without busting, closest to T wins
+
+Strategic considerations:
+1. I need to track what cards I've already drawn (they won't appear again)
+2. I need to calculate the current hand value correctly (handling Aces)
+3. I need to decide when to HIT vs STAY
+
+For the policy:
+- If my current hand value is close to T, I should be more conservative
+- If my hand value is low, I should hit
+- I need to consider what cards are left in my deck
+
+Let me think about the Ace valuation:
+- "A" → 11 when hand value <= T, or 1 when hand value > T
+- This means we need to compute hand value correctly
+- Actually, re-reading: "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T)
+- This seems like we should use 11 when possible (hand <= T), otherwise use 1
+
+Let me write a function to calculate hand value:
+```python
+def calculate_hand_value(hand, target):
+    value = 0
+    aces = 0
+    for card in hand:
+        if card == 'A':
+            aces += 1
+        elif card in ['J', 'Q', 'K']:
+            value += 10
+        else:
+            value += int(card)
+    
+    # Add aces
+    for _ in range(aces):
+        if value + 11 <= target:
+            value += 11
+        else:
+            value += 1
+    
+    return value
+```
+
+Wait, let me re-read the Ace rule more carefully: "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T)
+
+I think this means:
+- If using 11 for the Ace keeps hand value <= T, use 11
+- Otherwise use 1
+
+So for multiple aces, we should maximize the use of 11s while staying <= T.
+
+Strategy for HIT vs STAY:
+1. Calculate current hand value
+2. If current value >= some threshold close to T, STAY
+3. Otherwise, consider what cards remain and the expected value
+
+A simple but effective strategy:
+- If hand value is already >= T - 3 or so, STAY (we're close enough)
+- If hand value is < T - 3, HIT (we want to get closer)
+
+But we can be smarter:
+- Calculate which remaining cards would NOT bust us
+- If most cards would bust us, STAY
+- If most cards would not bust us, HIT
+
+Let me implement a probability-based approach:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    # Calculate current hand value
+    def calculate_value(cards):
+        value = 0
+        aces = 0
+        for card in cards:
+            if card == 'A':
+                aces += 1
+            elif card in ['J', 'Q', 'K']:
+                value += 10
+            else:
+                value += int(card)
+        
+        # Add aces optimally
+        for _ in range(aces):
+            if value + 11 <= target:
+                value += 11
+            else:
+                value += 1
+        
+        return value
+    
+    current_value = calculate_value(hand)
+    
+    # If we've busted or hit target exactly, STAY
+    if current_value >= target:
+        return "STAY"
+    
+    # Determine which cards are left in deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_cards = [c for c in all_cards if c not in hand]
+    
+    # If no cards left (shouldn't happen), STAY
+    if not remaining_cards:
+        return "STAY"
+    
+    # Calculate how many remaining cards would bust us
+    safe_count = 0
+    for card in remaining_cards:
+        test_hand = hand + [card]
+        test_value = calculate_value(test_hand)
+        if test_value <= target:
+            safe_count += 1
+    
+    # Decision based on safety and current value
+    safety_ratio = safe_count / len(remaining_cards)
+    
+    # If we're very close to target, be conservative
+    if current_value >= target - 3:
+        if safety_ratio < 0.5:
+            return "STAY"
+        else:
+            return "HIT"
+    
+    # If we're far from target, be aggressive
+    if current_value <= target - 8:
+        return "HIT"
+    
+    # Middle range: use probability
+    if safety_ratio >= 0.5:
+        return "HIT"
+    else:
+        return "STAY"
+```
+
+Actually, let me think more carefully. The opponent also plays optimally (or at least reasonably). 
+
+A better approach might be:
+- Calculate expected value if we HIT
+- Compare staying at current value vs expected value from hitting
+- Consider risk of busting
+
+Let me refine:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    def calculate_value(cards):
+        value = 0
+        aces = 0
+        for card in cards:
+            if card == 'A':
+                aces += 1
+            elif card in ['J', 'Q', 'K']:
+                value += 10
+            else:
+                value += int(card)
+        
+        for _ in range(aces):
+            if value + 11 <= target:
+                value += 11
+            else:
+                value += 1
+        
+        return value
+    
+    current_value = calculate_value(hand)
+    
+    if current_value >= target:
+        return "STAY"
+    
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_cards = [c for c in all_cards if c not in hand]
+    
+    if not remaining_cards:
+        return "STAY"
+    
+    # Count safe cards and calculate expected improvements
+    safe_cards = []
+    for card in remaining_cards:
+        test_hand = hand + [card]
+        test_value = calculate_value(test_hand)
+        if test_value <= target:
+            safe_cards.append((card, test_value))
+    
+    if len(safe_cards) == 0:
+        return "STAY"
+    
+    # If most cards are safe and we're not close to target, HIT
+    safety_ratio = len(safe_cards) / len(remaining_cards)
+    
+    # Conservative when close to target
+    if current_value >= target - 2:
+        return "STAY"
+    
+    # Hit if safety ratio is good or we're far from target
+    if safety_ratio > 0.6 or current_value <= target - 6:
+        return "HIT"
+    
+    return "STAY"
+```
+
+This looks reasonable. Let me refine it one more time with better thresholds.
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    """
+    Policy for simplified Blackjack-like game.
+    
+    Args:
+        hand: List of card strings currently held
+        target: Target score to approach without exceeding
+    
+    Returns:
+        "HIT" to draw another card, "STAY" to stop drawing
+    """
+    
+    def calculate_value(cards):
+        """Calculate the value of a hand."""
+        value = 0
+        aces = 0
+        
+        for card in cards:
+            if card == 'A':
+                aces += 1
+            elif card in ['J', 'Q', 'K']:
+                value += 10
+            else:
+                value += int(card)
+        
+        # Add aces optimally (11 if it keeps us <= target, otherwise 1)
+        for _ in range(aces):
+            if value + 11 <= target:
+                value += 11
+            else:
+                value += 1
+        
+        return value
+    
+    current_value = calculate_value(hand)
+    
+    # If we've reached or exceeded target, STAY
+    if current_value >= target:
+        return "STAY"
+    
+    # Determine which cards remain in our deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_cards = [c for c in all_cards if c not in hand]
+    
+    # If no cards left, STAY
+    if not remaining_cards:
+        return "STAY"
+    
+    # Count how many remaining cards would NOT bust us
+    safe_count = 0
+    for card in remaining_cards:
+        test_hand = hand + [card]
+        test_value = calculate_value(test_hand)
+        if test_value <= target:
+            safe_count += 1
+    
+    # Calculate safety ratio
+    safety_ratio = safe_count / len(remaining_cards)
+    
+    # Decision logic based on distance to target and safety
+    distance_to_target = target - current_value
+    
+    # Very close to target: be very conservative
+    if distance_to_target <= 2:
+        return "STAY"
+    
+    # Far from target: hit if reasonable safety
+    if distance_to_target >= 7:
+        if safety_ratio >= 0.4:
+            return "HIT"
+        else:
+            return "STAY"
+    
+    # Medium distance: use higher safety threshold
+    if safety_ratio >= 0.6:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

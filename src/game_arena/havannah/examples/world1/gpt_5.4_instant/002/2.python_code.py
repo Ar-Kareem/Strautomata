@@ -1,0 +1,357 @@
+
+from collections import deque, defaultdict
+import math
+
+N = 15
+
+# Havannah hex neighbors in this board embedding:
+# (r-1,c), (r+1,c), (r,c-1), (r,c+1), (r-1,c+1), (r+1,c-1)
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    valid_cells = [(r, c) for r in range(len(valid_mask)) for c in range(len(valid_mask[r])) if bool(valid_mask[r][c])]
+    occupied = set(me) | set(opp)
+    empties = [p for p in valid_cells if p not in occupied]
+
+    # Guaranteed legal fallback
+    if not empties:
+        # Should not happen in legal games, but keep API safe
+        for p in valid_cells:
+            if p not in occupied:
+                return p
+        return (0, 0)
+
+    valid_set = set(valid_cells)
+    me_set = set(me)
+    opp_set = set(opp)
+
+    corners, edge_map = compute_corners_edges(valid_set)
+
+    # Opening: center-ish if free
+    if not me and not opp:
+        center_candidates = sorted(
+            empties,
+            key=lambda p: hex_distance_to_center(p, valid_set)
+        )
+        return center_candidates[0]
+
+    # Candidate pruning: near stones preferred, but keep all if few empties
+    candidates = generate_candidates(empties, me_set, opp_set, valid_set)
+    if not candidates:
+        candidates = empties
+
+    # 1) Immediate winning move
+    for mv in order_moves(candidates, valid_set, me_set, opp_set):
+        if is_winning_move(mv, me_set, opp_set, valid_set, corners, edge_map):
+            return mv
+
+    # 2) Immediate block of opponent winning move
+    opp_wins = []
+    for mv in order_moves(candidates, valid_set, opp_set, me_set):
+        if is_winning_move(mv, opp_set, me_set, valid_set, corners, edge_map):
+            opp_wins.append(mv)
+    if opp_wins:
+        # If several, pick the best blocking move among them
+        best_block = max(opp_wins, key=lambda mv: evaluate_move(mv, me_set, opp_set, valid_set, corners, edge_map))
+        return best_block
+
+    # 3) Score moves
+    best = None
+    best_score = -10**18
+    for mv in order_moves(candidates, valid_set, me_set, opp_set):
+        s = evaluate_move(mv, me_set, opp_set, valid_set, corners, edge_map)
+        # mild anti-blunder: avoid enabling immediate opp win if possible
+        if creates_immediate_opp_win(mv, me_set, opp_set, valid_set, corners, edge_map):
+            s -= 100000
+        if s > best_score:
+            best_score = s
+            best = mv
+
+    if best is not None:
+        return best
+
+    return empties[0]
+
+
+def neighbors(p, valid_set):
+    r, c = p
+    out = []
+    for dr, dc in DIRS:
+        q = (r + dr, c + dc)
+        if q in valid_set:
+            out.append(q)
+    return out
+
+
+def compute_corners_edges(valid_set):
+    # Corners are valid cells with degree 3 on Havannah board boundary
+    deg = {p: len(neighbors(p, valid_set)) for p in valid_set}
+    corners = [p for p in valid_set if deg[p] == 3]
+    # Order corners cyclically by angle around centroid
+    cr = sum(r for r, c in valid_set) / len(valid_set)
+    cc = sum(c for r, c in valid_set) / len(valid_set)
+    corners = sorted(corners, key=lambda p: math.atan2(p[0] - cr, p[1] - cc))
+
+    boundary_noncorners = [p for p in valid_set if deg[p] < 6 and p not in set(corners)]
+    # Build boundary graph among non-corner boundary cells
+    bset = set(boundary_noncorners)
+    b_adj = {p: [q for q in neighbors(p, valid_set) if q in bset] for p in bset}
+
+    # Edge cells are six connected components of boundary excluding corners
+    seen = set()
+    edge_map = {}
+    edge_id = 0
+    for p in boundary_noncorners:
+        if p in seen:
+            continue
+        dq = [p]
+        seen.add(p)
+        comp = []
+        while dq:
+            x = dq.pop()
+            comp.append(x)
+            for y in b_adj[x]:
+                if y not in seen:
+                    seen.add(y)
+                    dq.append(y)
+        for x in comp:
+            edge_map[x] = edge_id
+        edge_id += 1
+
+    # In case component count is not 6 due to representation quirks, edge ids still work for fork counting.
+    return corners, edge_map
+
+
+def component_info_with_move(player_set, move, valid_set, corners, edge_map):
+    stones = set(player_set)
+    stones.add(move)
+    # BFS from move's component
+    dq = deque([move])
+    seen = {move}
+    touch_corners = set()
+    touch_edges = set()
+    while dq:
+        x = dq.popleft()
+        if x in corners:
+            touch_corners.add(x)
+        if x in edge_map:
+            touch_edges.add(edge_map[x])
+        for y in neighbors(x, valid_set):
+            if y in stones and y not in seen:
+                seen.add(y)
+                dq.append(y)
+    return seen, touch_corners, touch_edges
+
+
+def has_ring(player_set, move, opp_set, valid_set):
+    # Ring test by checking if after placing move there exists a non-player region
+    # disconnected from boundary. This detects enclosed cells/areas.
+    stones = set(player_set)
+    stones.add(move)
+
+    non_stones = [p for p in valid_set if p not in stones]
+    if not non_stones:
+        return False
+
+    boundary = {p for p in valid_set if len(neighbors(p, valid_set)) < 6}
+    free_boundary = [p for p in non_stones if p in boundary]
+
+    seen = set()
+    dq = deque(free_boundary)
+    seen.update(free_boundary)
+    while dq:
+        x = dq.popleft()
+        for y in neighbors(x, valid_set):
+            if y not in stones and y not in seen:
+                seen.add(y)
+                dq.append(y)
+
+    # Any non-stone cell not reachable from boundary is enclosed => ring
+    for p in non_stones:
+        if p not in seen:
+            return True
+    return False
+
+
+def is_winning_move(move, player_set, opp_set, valid_set, corners, edge_map):
+    comp, touch_corners, touch_edges = component_info_with_move(player_set, move, valid_set, corners, edge_map)
+    if len(touch_corners) >= 2:
+        return True  # bridge
+    if len(touch_edges) >= 3:
+        return True  # fork
+    if has_ring(player_set, move, opp_set, valid_set):
+        return True
+    return False
+
+
+def generate_candidates(empties, me_set, opp_set, valid_set):
+    stones = me_set | opp_set
+    if len(empties) <= 40 or not stones:
+        return list(empties)
+
+    near = set()
+    for s in stones:
+        near.add(s)
+        for n1 in neighbors(s, valid_set):
+            if n1 in empties:
+                near.add(n1)
+            for n2 in neighbors(n1, valid_set):
+                if n2 in empties:
+                    near.add(n2)
+    cand = [p for p in empties if p in near]
+    if cand:
+        return cand
+    return list(empties)
+
+
+def order_moves(moves, valid_set, me_set, opp_set):
+    return sorted(
+        moves,
+        key=lambda p: (
+            -local_support(p, me_set, valid_set),
+            local_support(p, opp_set, valid_set),
+            hex_distance_to_center(p, valid_set),
+        )
+    )
+
+
+def local_support(p, stones, valid_set):
+    s = 0
+    for q in neighbors(p, valid_set):
+        if q in stones:
+            s += 1
+    return s
+
+
+def hex_distance_to_center(p, valid_set):
+    cr = sum(r for r, c in valid_set) / len(valid_set)
+    cc = sum(c for r, c in valid_set) / len(valid_set)
+    r, c = p
+    return abs(r - cr) + abs(c - cc)
+
+
+def connected_components(stones, valid_set):
+    stones = set(stones)
+    comps = []
+    seen = set()
+    for p in stones:
+        if p in seen:
+            continue
+        dq = [p]
+        seen.add(p)
+        comp = []
+        while dq:
+            x = dq.pop()
+            comp.append(x)
+            for y in neighbors(x, valid_set):
+                if y in stones and y not in seen:
+                    seen.add(y)
+                    dq.append(y)
+        comps.append(comp)
+    return comps
+
+
+def evaluate_move(move, me_set, opp_set, valid_set, corners, edge_map):
+    score = 0.0
+
+    # Local shape
+    my_n = [q for q in neighbors(move, valid_set) if q in me_set]
+    opp_n = [q for q in neighbors(move, valid_set) if q in opp_set]
+    score += 25 * len(my_n)
+    score += 8 * len(opp_n)
+
+    # Connection bonus: number of distinct own components adjacent
+    adj_my_comps = count_adjacent_components(move, me_set, valid_set)
+    score += 40 * adj_my_comps
+    if adj_my_comps >= 2:
+        score += 60
+
+    # Edge/corner ambitions
+    _, touch_corners, touch_edges = component_info_with_move(me_set, move, valid_set, corners, edge_map)
+    score += 35 * len(touch_corners)
+    score += 20 * len(touch_edges)
+    if len(touch_corners) == 1:
+        score += 10
+    if len(touch_edges) >= 2:
+        score += 30
+
+    # Ring potential: friendly occupied neighbors around move
+    cyc = cycle_potential(move, me_set, valid_set)
+    score += 18 * cyc
+
+    # Block opponent local growth
+    score += 10 * count_adjacent_components(move, opp_set, valid_set)
+
+    # Center preference, but weaker later
+    score -= 1.2 * hex_distance_to_center(move, valid_set)
+
+    # Prefer boundary slightly less unless strategically useful
+    if len(neighbors(move, valid_set)) < 6:
+        score -= 3
+
+    # Tactical two-ply hints: if this move creates many next-turn wins
+    next_wins = count_immediate_wins_after(move, me_set, opp_set, valid_set, corners, edge_map, limit=6)
+    score += 50 * next_wins
+
+    return score
+
+
+def count_adjacent_components(move, stones, valid_set):
+    stones = set(stones)
+    touched_roots = set()
+    seen = set()
+    comp_id = {}
+    cid = 0
+    for p in stones:
+        if p in seen:
+            continue
+        dq = [p]
+        seen.add(p)
+        while dq:
+            x = dq.pop()
+            comp_id[x] = cid
+            for y in neighbors(x, valid_set):
+                if y in stones and y not in seen:
+                    seen.add(y)
+                    dq.append(y)
+        cid += 1
+    for q in neighbors(move, valid_set):
+        if q in stones:
+            touched_roots.add(comp_id[q])
+    return len(touched_roots)
+
+
+def cycle_potential(move, me_set, valid_set):
+    # Count pairs of friendly neighbors of move that are separated around it
+    ns = neighbors(move, valid_set)
+    idx = {ns[i]: i for i in range(len(ns))}
+    friendly = [q for q in ns if q in me_set]
+    return len(friendly)
+
+
+def count_immediate_wins_after(move, me_set, opp_set, valid_set, corners, edge_map, limit=6):
+    new_me = set(me_set)
+    new_me.add(move)
+    occupied = new_me | set(opp_set)
+    empties = [p for p in valid_set if p not in occupied]
+    cands = generate_candidates(empties, new_me, opp_set, valid_set)
+    cnt = 0
+    for p in order_moves(cands, valid_set, new_me, opp_set):
+        if is_winning_move(p, new_me, opp_set, valid_set, corners, edge_map):
+            cnt += 1
+            if cnt >= limit:
+                break
+    return cnt
+
+
+def creates_immediate_opp_win(move, me_set, opp_set, valid_set, corners, edge_map):
+    new_me = set(me_set)
+    new_me.add(move)
+    occupied = new_me | set(opp_set)
+    empties = [p for p in valid_set if p not in occupied]
+    cands = generate_candidates(empties, opp_set, new_me, valid_set)
+    for p in order_moves(cands, valid_set, opp_set, new_me):
+        if is_winning_move(p, opp_set, new_me, valid_set, corners, edge_map):
+            return True
+    return False

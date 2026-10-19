@@ -1,0 +1,69 @@
+
+import re
+import random
+
+piece_values = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0}
+central_squares = {'d4', 'e4', 'd5', 'e5'}
+secondary_central_squares = {'c3', 'd3', 'e3', 'f3', 'c4', 'f4', 'c5', 'f5', 'd6', 'e6', 'c6', 'f6', 'd2', 'e2', 'd7', 'e7'}
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    scores = []
+    for move in legal_moves:
+        score = 0
+        squares = re.findall(r'[a-h][1-8]', move)
+        target_square = squares[-1] if squares else None
+
+        # Promotion bonus
+        if '=' in move:
+            promoted_piece = move.split('=')[1][0]
+            if promoted_piece == 'Q':
+                score += 900
+            elif promoted_piece == 'R':
+                score += 800
+            else:
+                score += 700  # Bishop or Knight
+
+        # Castling bonus
+        elif move.startswith('O-O'):
+            score += 200
+
+        # Capture evaluation
+        if 'x' in move and target_square in pieces:
+            captured_piece = pieces[target_square][1]
+            score += 100 * piece_values.get(captured_piece, 0)
+
+        # Piece type determination
+        if move.startswith('O-O'):
+            piece_type = 'K'
+        elif move and move[0] in 'NBRQK':
+            piece_type = move[0]
+        else:
+            piece_type = 'P'
+
+        # Central control for Knights and Bishops
+        if target_square and piece_type in ['N', 'B']:
+            if target_square in central_squares:
+                score += 50
+            elif target_square in secondary_central_squares:
+                score += 30
+
+        # Pawn advancement
+        if piece_type == 'P' and 'x' not in move and '=' not in move and target_square:
+            rank = int(target_square[1])
+            if to_play == 'white':
+                score += 10 * (rank - 2)
+            else:
+                score += 10 * (7 - rank)
+
+        # Check bonus
+        if '+' in move:
+            score += 50
+
+        scores.append((move, score))
+
+    # Select best move
+    max_score = max(s[1] for s in scores)
+    best_moves = [s[0] for s in scores if s[1] == max_score]
+    chosen_move = random.choice(best_moves)
+
+    return (chosen_move, memory)

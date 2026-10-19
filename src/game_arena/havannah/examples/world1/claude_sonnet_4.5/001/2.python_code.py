@@ -1,0 +1,159 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    N = len(valid_mask)
+    
+    # Get neighbors on hexagonal grid
+    def get_neighbors(r, c):
+        neighbors = [
+            (r-1, c), (r+1, c),  # same column
+            (r-1, c-1), (r, c-1),  # left column
+            (r, c+1), (r-1, c+1)   # right column
+        ]
+        return [(nr, nc) for nr, nc in neighbors if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]]
+    
+    # Check if positions form a connected group
+    def get_connected_components(positions):
+        if not positions:
+            return []
+        pos_set = set(positions)
+        visited = set()
+        components = []
+        
+        for start in positions:
+            if start in visited:
+                continue
+            component = set()
+            queue = deque([start])
+            visited.add(start)
+            component.add(start)
+            
+            while queue:
+                r, c = queue.popleft()
+                for nr, nc in get_neighbors(r, c):
+                    if (nr, nc) in pos_set and (nr, nc) not in visited:
+                        visited.add((nr, nc))
+                        component.add((nr, nc))
+                        queue.append((nr, nc))
+            
+            components.append(component)
+        
+        return components
+    
+    # Detect if a move would win
+    def check_win(positions, new_move):
+        test_positions = positions + [new_move]
+        pos_set = set(test_positions)
+        
+        # Check if all positions are connected
+        components = get_connected_components(test_positions)
+        if len(components) != 1:
+            return False
+        
+        # Get corners and edges
+        corners = [(0, 0), (0, N-1), (7, 0), (7, N-1), (14, 0), (14, N-1)]
+        corners = [c for c in corners if valid_mask[c[0]][c[1]]]
+        
+        edges = [set(), set(), set(), set(), set(), set()]  # 6 edges
+        for r in range(N):
+            for c in range(N):
+                if not valid_mask[r][c]:
+                    continue
+                if r == 0:
+                    edges[0].add((r, c))
+                if r == N-1:
+                    edges[1].add((r, c))
+                if c == 0:
+                    edges[2].add((r, c))
+                if c == N-1:
+                    edges[3].add((r, c))
+                if r + c == N-1:
+                    edges[4].add((r, c))
+                if r + c == N-1 + N//2:
+                    edges[5].add((r, c))
+        
+        # Check bridge (2 corners)
+        corner_count = sum(1 for pos in pos_set if pos in corners)
+        if corner_count >= 2:
+            return True
+        
+        # Check fork (3 edges, excluding corners)
+        edge_count = 0
+        for edge in edges:
+            non_corner_edge = edge - set(corners)
+            if any(pos in non_corner_edge for pos in pos_set):
+                edge_count += 1
+        if edge_count >= 3:
+            return True
+        
+        # Check ring (simplified BFS ring detection)
+        if len(pos_set) >= 6:
+            for start_pos in pos_set:
+                visited = {start_pos}
+                queue = deque([(start_pos, [start_pos])])
+                
+                while queue:
+                    (r, c), path = queue.popleft()
+                    
+                    for nr, nc in get_neighbors(r, c):
+                        if (nr, nc) in pos_set:
+                            if (nr, nc) == start_pos and len(path) >= 6:
+                                return True
+                            if (nr, nc) not in visited:
+                                visited.add((nr, nc))
+                                queue.append(((nr, nc), path + [(nr, nc)]))
+        
+        return False
+    
+    # Get all valid moves
+    valid_moves = [(r, c) for r in range(N) for c in range(N) if valid_mask[r][c] and (r, c) not in me and (r, c) not in opp]
+    
+    if not valid_moves:
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+    
+    # Check if we can win
+    for move in valid_moves:
+        if check_win(me, move):
+            return move
+    
+    # Check if we need to block opponent
+    for move in valid_moves:
+        if check_win(opp, move):
+            return move
+    
+    # Evaluate moves
+    def evaluate_move(move):
+        r, c = move
+        score = 0
+        
+        # Favor corners
+        corners = [(0, 0), (0, N-1), (7, 0), (7, N-1), (14, 0), (14, N-1)]
+        if move in corners:
+            score += 50
+        
+        # Favor edges
+        if r == 0 or r == N-1 or c == 0 or c == N-1:
+            score += 30
+        
+        # Favor center
+        center_dist = abs(r - N//2) + abs(c - N//2)
+        score += max(0, 20 - center_dist)
+        
+        # Favor connectivity to own stones
+        neighbor_count = sum(1 for nr, nc in get_neighbors(r, c) if (nr, nc) in me)
+        score += neighbor_count * 15
+        
+        # Block opponent connectivity
+        opp_neighbor_count = sum(1 for nr, nc in get_neighbors(r, c) if (nr, nc) in opp)
+        score += opp_neighbor_count * 10
+        
+        return score
+    
+    # Select best move
+    best_move = max(valid_moves, key=evaluate_move)
+    return best_move

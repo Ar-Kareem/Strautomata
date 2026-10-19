@@ -1,0 +1,188 @@
+
+import numpy as np
+from typing import List, Tuple
+
+# Directions for checking flips (8 possible directions)
+DIRECTIONS = [(-1,-1), (-1,0), (-1,1),
+              (0,-1),          (0,1),
+              (1,-1),  (1,0),  (1,1)]
+
+# Opening book for first few moves (based on standard strong openings)
+OPENING_BOOK = {
+    (0, 0): ["d3", "c4", "f5", "e6"],
+    (1, 1): ["f5", "d3", "c4", "e6"],
+    (1, 0): ["c4", "f5", "d3", "e6"],
+    (0, 1): ["c4", "f5", "d3", "e6"],
+}
+
+def is_legal_move(board: np.ndarray, player: np.ndarray, opponent: np.ndarray, move: str) -> bool:
+    """Check if a move is legal for the current player."""
+    if move == "pass":
+        return True
+
+    r = int(move[1]) - 1
+    c = ord(move[0]) - ord('a')
+
+    # Check if position is empty
+    if player[r][c] == 1 or opponent[r][c] == 1:
+        return False
+
+    # Check if move flips any opponent discs
+    for dr, dc in DIRECTIONS:
+        x, y = r + dr, c + dc
+        flip_count = 0
+
+        while 0 <= x < 8 and 0 <= y < 8 and opponent[x][y] == 1:
+            flip_count += 1
+            x += dr
+            y += dc
+
+        if flip_count > 0 and 0 <= x < 8 and 0 <= y < 8 and player[x][y] == 1:
+            return True
+
+    return False
+
+def get_legal_moves(board: np.ndarray, player: np.ndarray, opponent: np.ndarray) -> List[str]:
+    """Get all legal moves for the current player."""
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if player[r][c] == 0 and opponent[r][c] == 0:
+                move = chr(ord('a') + c) + str(r + 1)
+                if is_legal_move(board, player, opponent, move):
+                    moves.append(move)
+    return moves if moves else ["pass"]
+
+def make_move(board: np.ndarray, player: np.ndarray, opponent: np.ndarray, move: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Execute a move and return new board state."""
+    if move == "pass":
+        return player.copy(), opponent.copy()
+
+    new_player = player.copy()
+    new_opponent = opponent.copy()
+    r = int(move[1]) - 1
+    c = ord(move[0]) - ord('a')
+    new_player[r][c] = 1
+
+    for dr, dc in DIRECTIONS:
+        x, y = r + dr, c + dc
+        to_flip = []
+
+        while 0 <= x < 8 and 0 <= y < 8 and new_opponent[x][y] == 1:
+            to_flip.append((x, y))
+            x += dr
+            y += dc
+
+        if to_flip and 0 <= x < 8 and 0 <= y < 8 and new_player[x][y] == 1:
+            for fx, fy in to_flip:
+                new_player[fx][fy] = 1
+                new_opponent[fx][fy] = 0
+
+    return new_player, new_opponent
+
+def evaluate_board(player: np.ndarray, opponent: np.ndarray) -> float:
+    """Evaluate the board position with various heuristics."""
+    # Corner bonus
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    corner_score = sum(100 if player[r][c] == 1 else -100 if opponent[r][c] == 1 else 0
+                      for r, c in corners)
+
+    # Edge control (but penalize early edge moves)
+    edges = [(0,c) for c in range(1,7)] + [(7,c) for c in range(1,7)] + \
+            [(r,0) for r in range(1,7)] + [(r,7) for r in range(1,7)]
+    edge_score = sum(5 if player[r][c] == 1 else -5 if opponent[r][c] == 1 else 0
+                    for r, c in edges)
+
+    # Mobility (number of legal moves)
+    player_moves = len(get_legal_moves(None, player, opponent))
+    opponent_moves = len(get_legal_moves(None, opponent, player))
+    mobility_score = (player_moves - opponent_moves) * 10
+
+    # Disc count (more important in endgame)
+    player_count = np.sum(player)
+    opponent_count = np.sum(opponent)
+    disc_score = (player_count - opponent_count) * 2
+
+    # Stability (pieces that won't be flipped)
+    stability_score = 0
+    for r in range(8):
+        for c in range(8):
+            if player[r][c] == 1:
+                # Check if piece is stable (surrounded by player pieces or edges)
+                stable = True
+                for dr, dc in DIRECTIONS:
+                    x, y = r + dr, c + dc
+                    if 0 <= x < 8 and 0 <= y < 8 and opponent[x][y] == 1:
+                        stable = False
+                        break
+                if stable:
+                    stability_score += 3
+
+    return corner_score + edge_score + mobility_score + disc_score + stability_score
+
+def minimax(player: np.ndarray, opponent: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    """Minimax with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate_board(player, opponent)
+
+    legal_moves = get_legal_moves(None, player, opponent) if maximizing else get_legal_moves(None, opponent, player)
+
+    if not legal_moves or legal_moves == ["pass"]:
+        return evaluate_board(player, opponent)
+
+    if maximizing:
+        max_eval = -float('inf')
+        for move in legal_moves:
+            new_player, new_opponent = make_move(None, player, opponent, move)
+            eval = minimax(new_opponent, new_player, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_opponent, new_player = make_move(None, opponent, player, move)
+            eval = minimax(new_player, new_opponent, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """Main policy function that returns the best move."""
+    legal_moves = get_legal_moves(None, you, opponent)
+    if not legal_moves or legal_moves == ["pass"]:
+        return "pass"
+
+    # Check opening book
+    you_count = np.sum(you)
+    opponent_count = np.sum(opponent)
+    if you_count + opponent_count <= 8:  # Early game
+        key = (you_count, opponent_count)
+        if key in OPENING_BOOK:
+            for move in OPENING_BOOK[key]:
+                if move in legal_moves:
+                    return move
+
+    # Evaluate moves with minimax
+    best_move = None
+    best_score = -float('inf')
+    depth = 3  # Adjust depth based on game phase
+
+    # If endgame (few empty squares), increase depth and focus on disc count
+    empty_squares = 64 - (np.sum(you) + np.sum(opponent))
+    if empty_squares <= 12:
+        depth = 4
+
+    for move in legal_moves:
+        new_you, new_opponent = make_move(None, you, opponent, move)
+        score = minimax(new_you, new_opponent, depth, -float('inf'), float('inf'), False)
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move if best_move else legal_moves[0]

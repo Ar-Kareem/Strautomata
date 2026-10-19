@@ -1,0 +1,45 @@
+
+import random
+
+# Global state variables that persist across function calls
+hunt_mode = True
+priority_targets = set()
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    global hunt_mode, priority_targets
+    
+    # Compute fired cells: those with -1 (miss) or 1 (hit)
+    fired = set((r, c) for r in range(10) for c in range(10) if board[r][c] != 0)
+    
+    # Find all hit cells
+    hits = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    if hit:
+        hunt_mode = False
+        # Clear previous priority targets and regenerate around current hits
+        priority_targets = set()
+        for hr, hc in hits:
+            # Check possible directions: up, down, left, right
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = hr + dr, hc + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and (nr, nc) not in fired:
+                    priority_targets.add((nr, nc))
+        
+        if priority_targets:
+            # Choose a target: to make it deterministic and efficient, pick the one with smallest row and col
+            # Random could also be used if desired, but min is fine
+            target = min(priority_targets)
+            return target
+        else:
+            # No priority targets, switch back to hunt mode (ship likely sunk)
+            hunt_mode = True
+    
+    # Hunt mode: use parity pattern to fire at unfired cells
+    # Start with even parity (r + c even), but if all even are fired, switch to odd
+    candidates = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0 and (r + c) % 2 == 0]
+    if not candidates:
+        candidates = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 0 and (r + c) % 2 == 1]
+    
+    # Choose a candidate: pick the smallest by row and col for determinism
+    target = min(candidates)
+    return target

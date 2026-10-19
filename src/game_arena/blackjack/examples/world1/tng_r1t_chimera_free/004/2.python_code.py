@@ -1,0 +1,60 @@
+
+def policy(hand: list[str], target: int) -> str:
+    def calculate_total(hand, target):
+        total = 0
+        num_aces = 0
+        for card in hand:
+            if card == 'A':
+                num_aces += 1
+            elif card in {'J', 'Q', 'K'}:
+                total += 10
+            else:
+                total += int(card)
+        for _ in range(num_aces):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+        return total
+
+    current_total = calculate_total(hand, target)
+    if current_total == target:
+        return 'STAY'
+
+    all_cards = {'A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'}
+    remaining = all_cards - set(hand)
+    if not remaining:
+        return 'STAY'
+
+    bust_count = 0
+    safe_gain_total = 0
+    safe_count = 0
+    best_new_total = current_total
+
+    for card in remaining:
+        new_hand = hand + [card]
+        new_total = calculate_total(new_hand, target)
+        if new_total > target:
+            bust_count += 1
+        else:
+            safe_count += 1
+            safe_gain_total += (new_total - current_total)
+            if new_total > best_new_total:
+                best_new_total = new_total
+
+    if safe_count == 0:
+        return 'STAY'
+    
+    if best_new_total == target:
+        return 'HIT'
+
+    bust_prob = bust_count / len(remaining)
+    expected_gain = safe_gain_total / safe_count if safe_count else 0
+
+    if expected_gain > 0 and bust_prob < 0.5:
+        return 'HIT'
+    elif current_total < target and safe_count > 0:
+        # Favor hitting if still below target and safe cards available
+        return 'HIT'
+    else:
+        return 'STAY'

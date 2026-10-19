@@ -1,0 +1,38 @@
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    valid_moves = [i for i in range(6) if you[i] > 0]
+    best_score = -1
+    best_move = valid_moves[0]  # default to first valid move
+    
+    for i in valid_moves:
+        s = you[i]
+        last_pos = (s - 1) % 12
+        score = 0
+        
+        # Check for extra move (last seed in store)
+        if last_pos == (5 - i):
+            score = 1000
+        else:
+            house_index = -1
+            if last_pos < (5 - i):
+                house_index = i + 1 + last_pos
+            elif last_pos >= (12 - i):
+                house_index = last_pos - (12 - i)
+            
+            # Check for capture opportunity
+            if 0 <= house_index < 6 and you[house_index] == 0:
+                opp_house = 5 - house_index
+                if opponent[opp_house] > 0:
+                    capture = opponent[opp_house] + 1
+                    score = 100 + 10 * capture
+                else:
+                    score = 50  # Land in empty house but no capture
+            else:
+                score = you[i]  # Prefer houses with more seeds
+        
+        # Update best move if current score is higher or same score with lower index
+        if score > best_score or (score == best_score and i < best_move):
+            best_score = score
+            best_move = i
+    
+    return best_move

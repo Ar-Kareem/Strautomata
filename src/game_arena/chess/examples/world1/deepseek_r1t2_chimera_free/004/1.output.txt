@@ -1,0 +1,102 @@
+The strategy for this policy is to evaluate each legal move based on material gain, checks/mates, king safety through castling, pawn promotions to gain material advantage, and central control for pawns and minor pieces. Moves are scored with the following priorities:
+1. **Checkmate** is prioritized highest (+1000).
+2. **Material captures** add the captured piece's value (with en passant assumed as a pawn).
+3. **Promotions** to queen, rook, bishop/knight get +8, +4, +2 respectively.
+4. **Castling** grants a +2 bonus for king safety.
+5. **Checks** add +0.5 but are less than checkmate.
+6. **Pawns advancing to central squares** (d4/d5/e4/e5) get +0.3.
+7. **Knights/Bishops moving to central squares** (c3-f6) get +0.2.
+8. **King moves** (non-castling) are slightly penalized (-0.1) to avoid unnecessary exposure.
+
+<code>
+import re
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    our_color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if to_play == 'white' else 'w'
+    
+    # Piece values for material evaluation
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    move_scores = []
+    
+    for move in legal_moves:
+        score = 0.0
+        
+        # Highest priority: checkmate
+        if move.endswith('#'):
+            score += 1000
+        
+        # Capture evaluation
+        if 'x' in move:
+            # Extract destination square after 'x'
+            target_part = move.split('x', 1)[1]
+            clean_target = re.sub(r'[^a-h1-8]', '', target_part)
+            destination = clean_target[:2] if len(clean_target) >= 2 else None
+            
+            if destination and destination in pieces:
+                captured_piece = pieces[destination]
+                if captured_piece[0] == opponent_color:
+                    score += piece_values.get(captured_piece[1], 0)
+            else:
+                # En passant or ambiguous capture (assume pawn)
+                score += 1
+        
+        # Promotion bonuses
+        if '=Q' in move:
+            score += 8
+        elif '=R' in move:
+            score += 4
+        elif '=B' in move or '=N' in move:
+            score += 2
+        
+        # Castling bonus
+        if move == 'O-O' or move == 'O-O-O':
+            score += 2
+        
+        # Check bonus
+        if move.endswith('+'):
+            score += 0.5
+        
+        # Extract destination square for positional bonuses
+        destination = None
+        if move.startswith('O-O'):
+            pass  # Handled above
+        else:
+            if 'x' in move:
+                # Already extracted in capture section
+                pass
+            else:
+                clean_move = re.sub(r'[^a-h1-8]', '', move)
+                destination = clean_move[-2:] if len(clean_move) >= 2 else None
+        
+        # Determine moving piece type
+        if move.startswith('O-O'):
+            piece_type = 'K'
+        elif move[0] in {'K', 'Q', 'R', 'B', 'N'}:
+            piece_type = move[0]
+        else:
+            piece_type = 'P'  # Pawn
+        
+        # Positional bonuses
+        if destination:
+            # Pawn center control
+            if piece_type == 'P' and destination in {'d4', 'd5', 'e4', 'e5'}:
+                score += 0.3
+            # Minor piece center development
+            elif piece_type in {'N', 'B'}:
+                file, rank = destination[0], destination[1]
+                if file in {'c', 'd', 'e', 'f'} and rank in {'3', '4', '5', '6'}:
+                    score += 0.2
+        
+        # Penalize non-castling king moves
+        if piece_type == 'K' and not move.startswith('O-O'):
+            score -= 0.1
+        
+        move_scores.append(score)
+    
+    # Select move with highest score (first if ties)
+    max_score = max(move_scores)
+    best_index = move_scores.index(max_score)
+    return legal_moves[best_index]
+</code>

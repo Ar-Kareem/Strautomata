@@ -1,0 +1,97 @@
+
+from typing import List, Tuple, Set
+
+BOARD_SIZE = 19
+
+def neighbors(r, c):
+    for dr, dc in ((1,0),(-1,0),(0,1),(0,-1)):
+        nr, nc = r+dr, c+dc
+        if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+            yield nr, nc
+
+def group_and_liberties(board, start, color, removed: Set[Tuple[int,int]]=None):
+    if removed is None:
+        removed = set()
+    stack = [start]
+    group = set()
+    liberties = set()
+    while stack:
+        r, c = stack.pop()
+        if (r,c) in group:
+            continue
+        group.add((r,c))
+        for nr, nc in neighbors(r,c):
+            if (nr,nc) in removed:
+                liberties.add((nr,nc))
+            else:
+                v = board[nr-1][nc-1]
+                if v == 0:
+                    liberties.add((nr,nc))
+                elif v == color and (nr,nc) not in group:
+                    stack.append((nr,nc))
+    return group, liberties
+
+def policy(me: List[Tuple[int,int]], opponent: List[Tuple[int,int]]) -> Tuple[int,int]:
+    board = [[0]*BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for r,c in me:
+        board[r-1][c-1] = 1
+    for r,c in opponent:
+        board[r-1][c-1] = 2
+
+    best_move = None
+    best_score = -10**9
+
+    for r in range(1, BOARD_SIZE+1):
+        for c in range(1, BOARD_SIZE+1):
+            if board[r-1][c-1] != 0:
+                continue
+
+            # Check captures
+            captured = set()
+            capture_count = 0
+            for nr,nc in neighbors(r,c):
+                if board[nr-1][nc-1] == 2:
+                    group, libs = group_and_liberties(board, (nr,nc), 2)
+                    if len(libs) == 1 and (r,c) in libs:
+                        captured |= group
+            capture_count = len(captured)
+
+            # Check legality: either captures or has liberties
+            removed = captured
+            # own group liberties after move
+            board[r-1][c-1] = 1
+            own_group, own_libs = group_and_liberties(board, (r,c), 1, removed)
+            board[r-1][c-1] = 0
+
+            if len(own_libs) == 0 and capture_count == 0:
+                continue  # suicide
+
+            # Score move
+            score = 0
+            if capture_count > 0:
+                score += 100 * capture_count
+
+            adj_opp = 0
+            adj_me = 0
+            for nr,nc in neighbors(r,c):
+                if board[nr-1][nc-1] == 2:
+                    adj_opp += 1
+                elif board[nr-1][nc-1] == 1:
+                    adj_me += 1
+            score += adj_opp * 3 + adj_me
+
+            # prefer center
+            center_dist = abs(r-10) + abs(c-10)
+            score -= center_dist * 0.5
+
+            # avoid self-atari if no capture
+            if capture_count == 0 and len(own_libs) == 1:
+                score -= 5
+
+            if score > best_score:
+                best_score = score
+                best_move = (r,c)
+
+    if best_move is None:
+        return (0,0)
+    return best_move

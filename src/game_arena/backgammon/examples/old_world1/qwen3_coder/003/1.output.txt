@@ -1,0 +1,414 @@
+The logic for this policy is to create a strong backgammon player that follows these principles:
+
+1. **Priority Handling**:
+   - If there are checkers on the bar, prioritize re-entering them first.
+   - Otherwise, make smart moves based on board position and strategy.
+
+2. **Strategic Movement**:
+   - Prefer building anchors (points with 2+ checkers) to create safe positions.
+   - Prioritize moving checkers from high-risk positions (points that can be easily hit).
+   - Prefer moves that hit opponent blots when possible.
+   - When bearing off, do so efficiently while maintaining board control.
+
+3. **Move Ordering**:
+   - Always return moves in the proper format with H/L indicating which die is used first.
+   - Handle both single and double dice scenarios properly.
+   - Follow backgammon rules about using the higher die when only one can be played.
+
+4. **Legal Move Generation**:
+   - Generate all legal moves from the current position.
+   - Evaluate each move based on strategic value.
+   - Return the best move in the required format.
+
+```python
+import numpy as np
+from itertools import permutations
+
+def policy(state: dict) -> str:
+    # Extract state information
+    my_points = state['my_pts']
+    opp_points = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    # No dice means no move
+    if not dice:
+        return "H:P,P"
+    
+    # Helper to check if a point is open (not blocked by opponent's anchor)
+    def is_open(point):
+        return opp_points[point] < 2
+    
+    # Helper to check if we can bear off
+    def can_bear_off():
+        # All checkers must be in home board (points 18-23)
+        return sum(my_points[:18]) == 0
+    
+    # Helper to get all checkers' positions
+    def get_my_checkers():
+        positions = []
+        if my_bar > 0:
+            positions.append('B')
+        for i in range(24):
+            for _ in range(my_points[i]):
+                positions.append(i)
+        return positions
+    
+    # Helper to check if a move is legal
+    def is_legal_move(from_pos, die_value):
+        if from_pos == 'B':
+            # Re-entering from bar
+            target = die_value - 1
+            return is_open(target)
+        else:
+            # Regular move
+            target = from_pos + die_value
+            if target > 23:
+                # Bearing off
+                return can_bear_off()
+            else:
+                return is_open(target)
+    
+    # Generate all legal single moves
+    def generate_single_moves(die_value):
+        moves = []
+        checkers = get_my_checkers()
+        
+        if my_bar > 0:
+            # Must move from bar first
+            if is_legal_move('B', die_value):
+                moves.append(('B',))
+        else:
+            # Move other checkers
+            for i, point in enumerate(my_points):
+                if point > 0 and is_legal_move(i, die_value):
+                    moves.append((i,))
+        
+        return moves
+    
+    # Generate all legal double moves
+    def generate_double_moves(die1, die2):
+        moves = []
+        
+        # If we have checkers on the bar, we must move them first
+        if my_bar > 0:
+            # Try moving from bar with first die
+            if is_legal_move('B', die1):
+                # After moving from bar, see what else we can move with second die
+                temp_bar = my_bar - 1
+                temp_points = list(my_points)
+                target = die1 - 1
+                if target <= 23:
+                    temp_points[target] += 1
+                
+                # Check if we can make a second move
+                found_second = False
+                if temp_bar > 0:
+                    # Still have checkers on bar
+                    if is_legal_move('B', die2):
+                        moves.append(('B', 'B'))
+                        found_second = True
+                else:
+                    # Move from points
+                    for i in range(24):
+                        if temp_points[i] > 0 and is_legal_move(i, die2):
+                            moves.append(('B', i))
+                            found_second = True
+                
+                # If no second move found, we still have the single move
+                if not found_second:
+                    moves.append(('B', 'P'))
+            
+            # Try moving from bar with second die first
+            if is_legal_move('B', die2):
+                # After moving from bar, see what else we can move with first die
+                temp_bar = my_bar - 1
+                temp_points = list(my_points)
+                target = die2 - 1
+                if target <= 23:
+                    temp_points[target] += 1
+                
+                # Check if we can make a second move
+                found_second = False
+                if temp_bar > 0:
+                    # Still have checkers on bar
+                    if is_legal_move('B', die1):
+                        moves.append(('B', 'B'))
+                        found_second = True
+                else:
+                    # Move from points
+                    for i in range(24):
+                        if temp_points[i] > 0 and is_legal_move(i, die1):
+                            moves.append((i, 'B'))
+                            found_second = True
+                
+                # If no second move found, we still have the single move
+                if not found_second:
+                    moves.append(('P', 'B'))
+        else:
+            # No checkers on bar, normal movement
+            # Try all combinations of points
+            for i in range(24):
+                if my_points[i] == 0:
+                    continue
+                    
+                # Try moving checker from point i with die1 first
+                if is_legal_move(i, die1):
+                    # Temporarily make this move
+                    temp_points = list(my_points)
+                    temp_points[i] -= 1
+                    target1 = i + die1
+                    if target1 <= 23:
+                        temp_points[target1] += 1
+                    
+                    # Try second move
+                    found_second = False
+                    for j in range(24):
+                        if temp_points[j] > 0 and is_legal_move(j, die2):
+                            moves.append((i, j))
+                            found_second = True
+                    
+                    # If no second move, add single move
+                    if not found_second:
+                        moves.append((i, 'P'))
+                
+                # Try moving checker from point i with die2 first
+                if is_legal_move(i, die2):
+                    # Temporarily make this move
+                    temp_points = list(my_points)
+                    temp_points[i] -= 1
+                    target2 = i + die2
+                    if target2 <= 23:
+                        temp_points[target2] += 1
+                    
+                    # Try second move
+                    found_second = False
+                    for j in range(24):
+                        if temp_points[j] > 0 and is_legal_move(j, die1):
+                            moves.append((j, i))  # Since we're doing die1 second
+                            found_second = True
+                    
+                    # If no second move, add single move
+                    if not found_second:
+                        moves.append(('P', i))
+        
+        # If no legal moves found, pass
+        if not moves:
+            return [('P', 'P')]
+            
+        return moves
+    
+    # Evaluate a move for its strategic value
+    def evaluate_move(move):
+        score = 0
+        
+        # Prefer bearing off
+        if can_bear_off():
+            for m in move:
+                if isinstance(m, int) and m + max(dice) > 23:
+                    score += 10
+        
+        # Prefer hitting opponent blots
+        for m in move:
+            if m == 'B':
+                target = dice[0] - 1 if len(dice) == 1 else (dice[0] if move[0] == 'B' else dice[1]) - 1
+            elif isinstance(m, int):
+                target = m + (dice[0] if move[0] == m or (len(move) > 1 and move[1] == m and move[0] == 'P') else dice[1] if len(dice) > 1 else dice[0])
+                if target <= 23 and opp_points[target] == 1:
+                    score += 5
+        
+        # Prefer moving from dangerous positions (points with only 1 checker)
+        for m in move:
+            if isinstance(m, int) and my_points[m] == 1:
+                score += 3
+        
+        # Prefer creating anchors (points with 2 checkers)
+        for m in move:
+            if m == 'B':
+                target = dice[0] - 1 if len(dice) == 1 else (dice[0] if move[0] == 'B' else dice[1]) - 1
+                if target <= 23 and my_points[target] == 1:
+                    score += 4
+            elif isinstance(m, int):
+                target = m + (dice[0] if move[0] == m or (len(move) > 1 and move[1] == m and move[0] == 'P') else dice[1] if len(dice) > 1 else dice[0])
+                if target <= 23 and my_points[target] == 1:
+                    score += 4
+        
+        return score
+    
+    # Handle dice
+    if len(dice) == 1:
+        # Single die - must use it if possible
+        die = dice[0]
+        moves = generate_single_moves(die)
+        if not moves:
+            return f"H:P,P"
+        
+        # Evaluate moves and pick best
+        best_move = moves[0]
+        best_score = -9999
+        for move in moves:
+            score = evaluate_move(move)
+            if score > best_score:
+                best_score = score
+                best_move = move
+        
+        # Format move - single die always uses higher (and only) die
+        from_pos = best_move[0]
+        if from_pos == 'B':
+            return f"H:B,P"
+        else:
+            return f"H:A{from_pos},P"
+    
+    elif len(dice) == 2:
+        # Two dice
+        die1, die2 = dice[0], dice[1]
+        
+        # Generate all possible move combinations
+        # We need to consider both orders: die1 first or die2 first
+        moves_h_first = []  # Using higher die first
+        moves_l_first = []  # Using lower die first
+        
+        # Determine higher and lower die
+        higher_die = max(die1, die2)
+        lower_die = min(die1, die2)
+        
+        # Generate moves with higher die first
+        if my_bar > 0:
+            # Must move from bar first
+            if is_legal_move('B', higher_die):
+                # After moving from bar, see what else we can move with lower die
+                temp_bar = my_bar - 1
+                temp_points = list(my_points)
+                target = higher_die - 1
+                if target <= 23:
+                    temp_points[target] += 1
+                
+                if temp_bar > 0:
+                    # Still have checkers on bar
+                    if is_legal_move('B', lower_die):
+                        moves_h_first.append(('B', 'B'))
+                    else:
+                        moves_h_first.append(('B', 'P'))
+                else:
+                    # Move from points
+                    found_second = False
+                    for i in range(24):
+                        if temp_points[i] > 0 and is_legal_move(i, lower_die):
+                            moves_h_first.append(('B', i))
+                            found_second = True
+                    if not found_second:
+                        moves_h_first.append(('B', 'P'))
+            else:
+                # Can't move from bar with higher die, try lower first
+                pass
+        else:
+            # Normal moves
+            for i in range(24):
+                if my_points[i] == 0:
+                    continue
+                    
+                if is_legal_move(i, higher_die):
+                    # Temporarily make this move
+                    temp_points = list(my_points)
+                    temp_points[i] -= 1
+                    target1 = i + higher_die
+                    if target1 <= 23:
+                        temp_points[target1] += 1
+                    
+                    # Try second move
+                    found_second = False
+                    for j in range(24):
+                        if temp_points[j] > 0 and is_legal_move(j, lower_die):
+                            moves_h_first.append((i, j))
+                            found_second = True
+                    
+                    # If no second move, add single move
+                    if not found_second:
+                        moves_h_first.append((i, 'P'))
+        
+        # Generate moves with lower die first
+        if my_bar > 0:
+            # Must move from bar first
+            if is_legal_move('B', lower_die):
+                # After moving from bar, see what else we can move with higher die
+                temp_bar = my_bar - 1
+                temp_points = list(my_points)
+                target = lower_die - 1
+                if target <= 23:
+                    temp_points[target] += 1
+                
+                if temp_bar > 0:
+                    # Still have checkers on bar
+                    if is_legal_move('B', higher_die):
+                        moves_l_first.append(('B', 'B'))
+                    else:
+                        moves_l_first.append(('B', 'P'))
+                else:
+                    # Move from points
+                    found_second = False
+                    for i in range(24):
+                        if temp_points[i] > 0 and is_legal_move(i, higher_die):
+                            moves_l_first.append((i, 'B'))
+                            found_second = True
+                    if not found_second:
+                        moves_l_first.append(('P', 'B'))
+            else:
+                # Can't move from bar with lower die, try higher first
+                pass
+        else:
+            # Normal moves
+            for i in range(24):
+                if my_points[i] == 0:
+                    continue
+                    
+                if is_legal_move(i, lower_die):
+                    # Temporarily make this move
+                    temp_points = list(my_points)
+                    temp_points[i] -= 1
+                    target1 = i + lower_die
+                    if target1 <= 23:
+                        temp_points[target1] += 1
+                    
+                    # Try second move
+                    found_second = False
+                    for j in range(24):
+                        if temp_points[j] > 0 and is_legal_move(j, higher_die):
+                            moves_l_first.append((j, i))  # Note the order swap
+                            found_second = True
+                    
+                    # If no second move, add single move
+                    if not found_second:
+                        moves_l_first.append(('P', i))
+        
+        # Combine all moves
+        all_moves = []
+        for move in moves_h_first:
+            all_moves.append(('H', move))
+        for move in moves_l_first:
+            all_moves.append(('L', move))
+        
+        # If no moves found, must pass
+        if not all_moves:
+            return f"H:P,P"
+        
+        # Evaluate moves and pick best
+        best_move = all_moves[0]
+        best_score = -9999
+        for order, move in all_moves:
+            score = evaluate_move(move)
+            if score > best_score:
+                best_score = score
+                best_move = (order, move)
+        
+        # Format the best move
+        order, move = best_move
+        from1 = 'B' if move[0] == 'B' else f"A{move[0]}" if isinstance(move[0], int) else move[0]
+        from2 = 'B' if move[1] == 'B' else f"A{move[1]}" if isinstance(move[1], int) else move[1]
+        return f"{order}:{from1},{from2}"
+    
+    # Default fallback
+    return "H:P,P"
+```

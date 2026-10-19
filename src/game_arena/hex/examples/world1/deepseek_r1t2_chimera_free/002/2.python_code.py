@@ -1,0 +1,92 @@
+
+import heapq
+from collections import defaultdict
+
+def get_neighbors(i, j):
+    neighbors = []
+    if i > 0:
+        neighbors.append((i-1, j))
+        if j < 10:
+            neighbors.append((i-1, j+1))
+    if j > 0:
+        neighbors.append((i, j-1))
+    if j < 10:
+        neighbors.append((i, j+1))
+    if i < 10:
+        neighbors.append((i+1, j))
+        if j > 0:
+            neighbors.append((i+1, j-1))
+    return neighbors
+
+def dijkstra_distance(color, stones, opp_stones):
+    blocked = set(opp_stones)
+    stones_set = set(stones)
+    dist = defaultdict(lambda: float('inf'))
+    heap = []
+    
+    if color == 'b':
+        for j in range(11):
+            cell = (0, j)
+            if cell in stones_set:
+                dist[cell] = 0
+                heapq.heappush(heap, (0, cell))
+            elif cell not in blocked:
+                dist[cell] = 1
+                heapq.heappush(heap, (1, cell))
+    else:
+        for i in range(11):
+            cell = (i, 0)
+            if cell in stones_set:
+                dist[cell] = 0
+                heapq.heappush(heap, (0, cell))
+            elif cell not in blocked:
+                dist[cell] = 1
+                heapq.heappush(heap, (1, cell))
+    
+    visited = set()
+    
+    while heap:
+        d, cell = heapq.heappop(heap)
+        if cell in visited:
+            continue
+        visited.add(cell)
+        
+        if (color == 'b' and cell[0] == 10) or (color == 'w' and cell[1] == 10):
+            return d
+        
+        for ni, nj in get_neighbors(cell[0], cell[1]):
+            neighbor = (ni, nj)
+            if neighbor in blocked:
+                continue
+            cost = 0 if neighbor in stones_set else 1
+            new_dist = d + cost
+            if new_dist < dist[neighbor]:
+                dist[neighbor] = new_dist
+                heapq.heappush(heap, (new_dist, neighbor))
+    
+    return float('inf')
+
+def policy(me, opp, color):
+    opp_color = 'w' if color == 'b' else 'b'
+    all_cells = {(i, j) for i in range(11) for j in range(11)}
+    me_set = set(me)
+    opp_set = set(opp)
+    empty_cells = all_cells - me_set - opp_set
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    for cell in empty_cells:
+        new_me = me + [cell]
+        my_dist = dijkstra_distance(color, new_me, opp)
+        if my_dist == 0:
+            return cell
+        
+        opp_dist = dijkstra_distance(opp_color, opp, new_me)
+        score = opp_dist - my_dist
+        
+        if score > best_score or (score == best_score and cell < best_move):
+            best_score = score
+            best_move = cell
+    
+    return best_move if best_move is not None else next(iter(empty_cells))  # fallback

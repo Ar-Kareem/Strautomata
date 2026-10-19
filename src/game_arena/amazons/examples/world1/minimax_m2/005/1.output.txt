@@ -1,0 +1,140 @@
+The strategy implemented in this policy is a greedy approach that focuses on minimizing the opponent's mobility. The key idea is to choose a move that reduces the number of legal moves available to the opponent after the move is executed. This is based on the rule that the last player who can make a legal move wins. By limiting the opponent's options, the policy aims to eventually force the opponent into a position where no moves are available.
+
+The policy works as follows:
+1. Generate all legal moves for the current player (using a helper function that considers queen-like movement for both the amazon move and arrow shot).
+2. For each possible move, simulate the move on a copy of the board to get the resulting state.
+3. Compute the number of legal moves available to the opponent in the resulting board state.
+4. Select the move that minimizes the opponent's moves. If multiple moves achieve the same minimum, the first one encountered is chosen.
+5. If a move that leaves the opponent with zero moves is found, it is selected immediately as it guarantees a win.
+
+This heuristic is computationally feasible on a 6x6 board within the time constraints, as the number of moves is manageable and the board size is small.
+
+The code below implements this policy with helper functions for generating reachable squares and counting moves.
+<code>
+import numpy as np
+
+def get_reachable_squares(board, x, y):
+    """Returns a list of empty squares reachable from (x, y) by queen-like movement.
+    
+    Args:
+        board: 6x6 numpy array representing the board state.
+        x: integer, row index of the current position.
+        y: integer, column index of the current position.
+    
+    Returns:
+        List of tuples (i, j) representing reachable squares.
+    """
+    directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+    reachable = []
+    for dx, dy in directions:
+        i = x + dx
+        j = y + dy
+        while 0 <= i < 6 and 0 <= j < 6 and board[i, j] == 0:
+            reachable.append((i, j))
+            i += dx
+            j += dy
+    return reachable
+
+def count_moves(board, player):
+    """Counts the number of legal moves available to the player on the given board.
+    
+    Args:
+        board: 6x6 numpy array representing the board state.
+        player: integer, 1 for current player, 2 for opponent.
+    
+    Returns:
+        Integer representing the number of legal moves.
+    """
+    amazon_positions = [(i, j) for i in range(6) for j in range(6) if board[i, j] == player]
+    total_moves = 0
+    for x, y in amazon_positions:
+        move_dests = get_reachable_squares(board, x, y)
+        for to_x, to_y in move_dests:
+            temp_board = board.copy()
+            temp_board[x, y] = 0
+            temp_board[to_x, to_y] = player
+            arrow_targets = get_reachable_squares(temp_board, to_x, to_y)
+            total_moves += len(arrow_targets)
+    return total_moves
+
+def generate_moves(board, player):
+    """Generates all legal moves for the player on the given board.
+    
+    Args:
+        board: 6x6 numpy array representing the board state.
+        player: integer, 1 for current player, 2 for opponent.
+    
+    Returns:
+        List of moves, each as a tuple (from_x, from_y, to_x, to_y, arrow_x, arrow_y).
+    """
+    amazon_positions = [(i, j) for i in range(6) for j in range(6) if board[i, j] == player]
+    moves = []
+    for x, y in amazon_positions:
+        move_dests = get_reachable_squares(board, x, y)
+        for to_x, to_y in move_dests:
+            temp_board = board.copy()
+            temp_board[x, y] = 0
+            temp_board[to_x, to_y] = player
+            arrow_targets = get_reachable_squares(temp_board, to_x, to_y)
+            for arrow_x, arrow_y in arrow_targets:
+                moves.append((x, y, to_x, to_y, arrow_x, arrow_y))
+    return moves
+
+def policy(board):
+    """Determines the next move for the current player based on the board state.
+    
+    Args:
+        board: 6x6 numpy array representing the current board state.
+    
+    Returns:
+        String representing the move in the format "from_row,from_col:to_row,to_col:arrow_row,arrow_col".
+    """
+    my_moves = generate_moves(board, 1)
+    if not my_moves:
+        # According to the problem, this should not happen, but return a default move for safety.
+        # Use the first available amazon and move it to the first available destination.
+        # Find first amazon position
+        amazon_pos = None
+        for i in range(6):
+            for j in range(6):
+                if board[i, j] == 1:
+                    amazon_pos = (i, j)
+                    break
+            if amazon_pos:
+                break
+        # Find first move destination from amazon_pos
+        move_dests = get_reachable_squares(board, amazon_pos[0], amazon_pos[1])
+        if move_dests:
+            to_x, to_y = move_dests[0]
+            # Find first arrow target from to_x, to_y
+            temp_board = board.copy()
+            temp_board[amazon_pos[0], amazon_pos[1]] = 0
+            temp_board[to_x, to_y] = 1
+            arrow_targets = get_reachable_squares(temp_board, to_x, to_y)
+            if arrow_targets:
+                arrow_x, arrow_y = arrow_targets[0]
+                return f"{amazon_pos[0]},{amazon_pos[1]}:{to_x},{to_y}:{arrow_x},{arrow_y}"
+        # Fallback to a dummy move if no moves found
+        return "0,0:0,0:0,0"
+    
+    best_move = None
+    min_opponent_moves = float('inf')
+    for move in my_moves:
+        x, y, to_x, to_y, arrow_x, arrow_y = move
+        new_board = board.copy()
+        new_board[x, y] = 0
+        new_board[to_x, to_y] = 1
+        new_board[arrow_x, arrow_y] = -1
+        opponent_moves = count_moves(new_board, 2)
+        if opponent_moves < min_opponent_moves:
+            min_opponent_moves = opponent_moves
+            best_move = move
+            if opponent_moves == 0:
+                break
+    
+    if best_move is None:
+        best_move = my_moves[0]  # Fallback to first move
+    
+    from_row, from_col, to_row, to_col, arrow_row, arrow_col = best_move
+    return f"{from_row},{from_col}:{to_row},{to_col}:{arrow_row},{arrow_col}"
+</code>

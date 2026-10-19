@@ -1,0 +1,116 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    import math
+    
+    # Precompute board topology
+    rows = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']
+    row_idx = {r: i+1 for i, r in enumerate(rows)}
+    
+    # Define valid playable cells (55 cells total, excluding 6 unusable)
+    # Unusable are f5, h5, and based on the 61-6=55 count, we exclude 4 more that are symmetric
+    # From trajectory analysis: valid cells are those used or legal in examples
+    valid_cells = set()
+    ranges = {
+        'a': [5, 6, 7, 8, 9],
+        'b': [4, 5, 6, 7, 8, 9],
+        'c': [3, 4, 5, 6, 7, 8, 9],
+        'd': [2, 3, 4, 5, 6, 7, 8, 9],
+        'e': [1, 2, 3, 4, 5, 6, 7, 8, 9],
+        'f': [1, 2, 3, 4, 6, 7, 8],  # excludes 5
+        'g': [1, 2, 3, 4, 5, 6, 7],
+        'h': [1, 2, 3, 4, 6],       # excludes 5
+        'i': [1, 2, 3, 4, 5]
+    }
+    
+    for r, cols in ranges.items():
+        for c in cols:
+            valid_cells.add((r, c))
+    
+    # Map cell to its three lines (row, col, diag)
+    def get_diag(row, col):
+        s = row_idx[row] + col
+        if s <= 10:
+            return f"a{s-1}"
+        else:
+            return f"{chr(ord('a') + s - 10)}9"
+    
+    cell_to_lines = {}
+    line_to_cells = {}
+    
+    for r, c in valid_cells:
+        lines = [r, str(c), get_diag(r, c)]
+        cell_to_lines[(r, c)] = lines
+        for line in lines:
+            if line not in line_to_cells:
+                line_to_cells[line] = set()
+            line_to_cells[line].add((r, c))
+    
+    line_lengths = {line: len(cells) for line, cells in line_to_cells.items()}
+    
+    # Parse state
+    occupied = set()
+    line_counts = {}  # line -> {role: count}
+    
+    for fact in state:
+        if fact[0] == "cell":
+            r, c_str, player = fact[1], fact[2], fact[3]
+            occupied.add((r, int(c_str)))
+        elif fact[0] == "line_count":
+            line, player, count = fact[1], fact[2], int(fact[3])
+            if line not in line_counts:
+                line_counts[line] = {}
+            line_counts[line][player] = count
+    
+    opp = "blue" if role == "red" else "red"
+    
+    # Find empty cells
+    empty_cells = [cell for cell in valid_cells if cell not in occupied]
+    
+    if not empty_cells:
+        return "pass"  # Should not happen in valid game
+    
+    best_score = -float('inf')
+    best_move = empty_cells[0]
+    
+    for (r, c) in empty_cells:
+        score = 0
+        lines = cell_to_lines[(r, c)]
+        
+        for line in lines:
+            my_count = line_counts.get(line, {}).get(role, 0)
+            opp_count = line_counts.get(line, {}).get(opp, 0)
+            length = line_lengths[line]
+            threshold = length // 2 + 1
+            
+            # Empty cells in this line (excluding this one if we consider current state)
+            # After we play, this cell is filled by us
+            empty_in_line = length - my_count - opp_count
+            
+            # Immediate win
+            if my_count + 1 >= threshold:
+                score += length * 1000
+            
+            # Critical block: opponent wins next turn if they get this cell and it's the last one
+            if opp_count + 1 >= threshold and empty_in_line == 1:
+                score += length * 600
+            
+            # Threat creation: after this move, we are one away from winning and line has room
+            elif my_count + 1 == threshold - 1 and empty_in_line > 1:
+                score += length * 50
+            
+            # Positional: prefer lines where we are ahead or balanced
+            if my_count > opp_count:
+                score += (my_count - opp_count) * length * 0.5
+            elif opp_count > my_count:
+                score -= (opp_count - my_count) * length * 0.3
+            
+            # Slight preference for center (e5, d5, etc.) - optional
+            if r == 'e' and c == 5:
+                score += 2
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    r, c = best_move
+    return f"place({r},{c})"

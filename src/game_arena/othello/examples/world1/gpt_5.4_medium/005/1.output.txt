@@ -1,0 +1,542 @@
+The strategy for this policy is a timed alpha-beta search with strong Othello heuristics.
+
+It uses:
+- Correct legal move generation with guaranteed fallback to a legal move
+- Iterative deepening so it always has a move ready before timeout
+- Alpha-beta pruning plus a transposition table
+- Bitboard representation for speed
+- A heuristic that values:
+  - corners
+  - mobility
+  - avoiding dangerous X/C squares near empty corners
+  - frontier control
+  - edge stability approximation
+  - positional weights
+  - disc count more heavily in the late game
+
+In the endgame, it searches deeper automatically. If no move exists, it returns `"pass"`.
+
+<code>
+import time
+from functools import lru_cache
+import numpy as np
+
+FULL_MASK = (1 << 64) - 1
+INF = 10**18
+WIN_SCORE = 10**9
+
+DIRS = (
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1),
+)
+
+POSITION_WEIGHTS = (
+    100, -20, 10,  5,  5, 10, -20, 100,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+     10,  -2, -1, -1, -1, -1,  -2,  10,
+      5,  -2, -1, -1, -1, -1,  -2,   5,
+      5,  -2, -1, -1, -1, -1,  -2,   5,
+     10,  -2, -1, -1, -1, -1,  -2,  10,
+    -20, -50, -2, -2, -2, -2, -50, -20,
+    100, -20, 10,  5,  5, 10, -20, 100,
+)
+
+CORNERS = (0, 7, 56, 63)
+CORNER_MASK = sum(1 << i for i in CORNERS)
+CORNER_SET = set(CORNERS)
+
+X_TO_CORNER = {
+    9: 0,    # b2 -> a1
+    14: 7,   # g2 -> h1
+    49: 56,  # b7 -> a8
+    54: 63,  # g7 -> h8
+}
+
+C_TO_CORNER = {
+    1: 0, 8: 0,      # b1, a2 -> a1
+    6: 7, 15: 7,     # g1, h2 -> h1
+    48: 56, 57: 56,  # a7, b8 -> a8
+    55: 63, 62: 63,  # h7, g8 -> h8
+}
+
+EDGE_SET = {
+    i for i in range(64)
+    if i < 8 or i >= 56 or (i % 8 == 0) or (i % 8 == 7)
+}
+
+RAYS = []
+ADJ_MASK = [0] * 64
+
+for r in range(8):
+    for c in range(8):
+        idx = r * 8 + c
+        cell_rays = []
+        adj = 0
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < 8 and 0 <= cc < 8:
+                adj |= 1 << (rr * 8 + cc)
+            ray = []
+            while 0 <= rr < 8 and 0 <= cc < 8:
+                ray.append(rr * 8 + cc)
+                rr += dr
+                cc += dc
+            cell_rays.append(tuple(ray))
+        RAYS.append(tuple(cell_rays))
+        ADJ_MASK[idx] = adj
+
+RAYS = tuple(RAYS)
+ADJ_MASK = tuple(ADJ_MASK)
+
+TT = {}
+SEARCH_DEADLINE = 0.0
+NODE_COUNTER = 0
+
+EXACT = 0
+LOWER = 1
+UPPER = 2
+
+
+class SearchTimeout(Exception):
+    pass
+
+
+def _check_time():
+    global NODE_COUNTER
+    NODE_COUNTER += 1
+    if (NODE_COUNTER & 1023) == 0:
+        if time.perf_counter() >= SEARCH_DEADLINE:
+            raise SearchTimeout
+
+
+def _bb_from_array(arr: np.ndarray) -> int:
+    bb = 0
+    flat = np.asarray(arr, dtype=np.uint8).ravel()
+    for i, v in enumerate(flat):
+        if v:
+            bb |= 1 << i
+    return bb
+
+
+def _idx_to_move(idx: int) -> str:
+    return chr(ord('a') + (idx % 8)) + str((idx // 8) + 1)
+
+
+def _terminal_score(me: int, opp: int) -> int:
+    diff = me.bit_count() - opp.bit_count()
+    if diff > 0:
+        return WIN_SCORE + diff
+    if diff < 0:
+        return -WIN_SCORE + diff
+    return 0
+
+
+def _flips_for_move(me: int, opp: int, idx: int) -> int:
+    bit = 1 << idx
+    if (me | opp) & bit:
+        return 0
+
+    flips = 0
+    rays = RAYS[idx]
+    for ray in rays:
+        captured = 0
+        for j in ray:
+            b = 1 << j
+            if opp & b:
+                captured |= b
+            elif me & b:
+                if captured:
+                    flips |= captured
+                break
+            else:
+                break
+    return flips
+
+
+@lru_cache(maxsize=200000)
+def _legal_moves(me: int, opp: int):
+    occ = me | opp
+    empties = FULL_MASK ^ occ
+    moves = []
+    e = empties
+    while e:
+        bit = e & -e
+        idx = bit.bit_length() - 1
+        flips = _flips_for_move(me, opp, idx)
+        if flips:
+            moves.append((idx, flips))
+        e ^= bit
+    return tuple(moves)
+
+
+def _apply_move(me: int, opp: int, idx: int, flips: int):
+    bit = 1 << idx
+    new_me = me | bit | flips
+    new_opp = opp & ~flips
+    return new_me, new_opp
+
+
+@lru_cache(maxsize=200000)
+def _sum_weights(bb: int) -> int:
+    s = 0
+    x = bb
+    while x:
+        bit = x & -x
+        idx = bit.bit_length() - 1
+        s += POSITION_WEIGHTS[idx]
+        x ^= bit
+    return s
+
+
+@lru_cache(maxsize=200000)
+def _adj_union(bb: int) -> int:
+    mask = 0
+    x = bb
+    while x:
+        bit = x & -x
+        idx = bit.bit_length() - 1
+        mask |= ADJ_MASK[idx]
+        x ^= bit
+    return mask
+
+
+@lru_cache(maxsize=200000)
+def _approx_edge_stable(bb: int) -> int:
+    stable = 0
+
+    if bb & (1 << 0):
+        stable |= 1 << 0
+        for idx in (1, 2, 3, 4, 5, 6, 7):
+            b = 1 << idx
+            if bb & b:
+                stable |= b
+            else:
+                break
+        for idx in (8, 16, 24, 32, 40, 48, 56):
+            b = 1 << idx
+            if bb & b:
+                stable |= b
+            else:
+                break
+
+    if bb & (1 << 7):
+        stable |= 1 << 7
+        for idx in (6, 5, 4, 3, 2, 1, 0):
+            b = 1 << idx
+            if bb & b:
+                stable |= b
+            else:
+                break
+        for idx in (15, 23, 31, 39, 47, 55, 63):
+            b = 1 << idx
+            if bb & b:
+                stable |= b
+            else:
+                break
+
+    if bb & (1 << 56):
+        stable |= 1 << 56
+        for idx in (57, 58, 59, 60, 61, 62, 63):
+            b = 1 << idx
+            if bb & b:
+                stable |= b
+            else:
+                break
+        for idx in (48, 40, 32, 24, 16, 8, 0):
+            b = 1 << idx
+            if bb & b:
+                stable |= b
+            else:
+                break
+
+    if bb & (1 << 63):
+        stable |= 1 << 63
+        for idx in (62, 61, 60, 59, 58, 57, 56):
+            b = 1 << idx
+            if bb & b:
+                stable |= b
+            else:
+                break
+        for idx in (55, 47, 39, 31, 23, 15, 7):
+            b = 1 << idx
+            if bb & b:
+                stable |= b
+            else:
+                break
+
+    return stable.bit_count()
+
+
+@lru_cache(maxsize=200000)
+def _heuristic(me: int, opp: int) -> int:
+    occ = me | opp
+    empties = 64 - occ.bit_count()
+
+    disc_diff = me.bit_count() - opp.bit_count()
+    pos_score = _sum_weights(me) - _sum_weights(opp)
+
+    my_moves = len(_legal_moves(me, opp))
+    opp_moves = len(_legal_moves(opp, me))
+    mobility = my_moves - opp_moves
+
+    corner_diff = (me & CORNER_MASK).bit_count() - (opp & CORNER_MASK).bit_count()
+
+    bad_me = 0
+    bad_opp = 0
+    for sq, corner in X_TO_CORNER.items():
+        cbit = 1 << corner
+        if occ & cbit:
+            continue
+        b = 1 << sq
+        if me & b:
+            bad_me += 2
+        elif opp & b:
+            bad_opp += 2
+
+    for sq, corner in C_TO_CORNER.items():
+        cbit = 1 << corner
+        if occ & cbit:
+            continue
+        b = 1 << sq
+        if me & b:
+            bad_me += 1
+        elif opp & b:
+            bad_opp += 1
+
+    corner_closeness = bad_opp - bad_me
+
+    empty_mask = FULL_MASK ^ occ
+    frontier_mask = _adj_union(empty_mask)
+    my_frontier = (frontier_mask & me).bit_count()
+    opp_frontier = (frontier_mask & opp).bit_count()
+    frontier = opp_frontier - my_frontier
+
+    my_potential = (_adj_union(opp) & empty_mask).bit_count()
+    opp_potential = (_adj_union(me) & empty_mask).bit_count()
+    potential = my_potential - opp_potential
+
+    stable = _approx_edge_stable(me) - _approx_edge_stable(opp)
+
+    if empties > 44:
+        return (
+            3 * pos_score +
+            24 * mobility +
+            140 * corner_diff +
+            30 * corner_closeness +
+            10 * frontier +
+            8 * potential +
+            35 * stable
+        )
+    elif empties > 20:
+        return (
+            2 * pos_score +
+            26 * mobility +
+            170 * corner_diff +
+            28 * corner_closeness +
+            10 * frontier +
+            7 * potential +
+            40 * stable +
+            3 * disc_diff
+        )
+    else:
+        parity = 8 if (empties % 2 == 1) else -8
+        return (
+            1 * pos_score +
+            20 * mobility +
+            190 * corner_diff +
+            18 * corner_closeness +
+            8 * frontier +
+            4 * potential +
+            45 * stable +
+            22 * disc_diff +
+            parity
+        )
+
+
+def _move_order_score(me: int, opp: int, idx: int, flips: int, tt_best=None, empties=None) -> int:
+    occ = me | opp
+    score = 0
+
+    if tt_best is not None and idx == tt_best:
+        score += 1_000_000
+
+    if idx in CORNER_SET:
+        score += 200_000
+
+    if idx in EDGE_SET:
+        score += 2_000
+
+    score += 50 * POSITION_WEIGHTS[idx]
+
+    if idx in X_TO_CORNER and not (occ & (1 << X_TO_CORNER[idx])):
+        score -= 150_000
+
+    if idx in C_TO_CORNER and not (occ & (1 << C_TO_CORNER[idx])):
+        score -= 40_000
+
+    if empties is not None and empties <= 16:
+        score += 200 * flips.bit_count()
+    else:
+        score += 10 * flips.bit_count()
+
+    return score
+
+
+def _ordered_moves(me: int, opp: int, moves, tt_best=None):
+    empties = 64 - (me | opp).bit_count()
+    scored = []
+    for idx, flips in moves:
+        s = _move_order_score(me, opp, idx, flips, tt_best=tt_best, empties=empties)
+        scored.append((s, idx, flips))
+    scored.sort(reverse=True)
+    return [(idx, flips) for s, idx, flips in scored]
+
+
+def _negamax(me: int, opp: int, depth: int, alpha: int, beta: int) -> int:
+    _check_time()
+
+    key = (me, opp)
+    orig_alpha = alpha
+    tt_entry = TT.get(key)
+    tt_best = None
+    if tt_entry is not None:
+        tt_depth, tt_flag, tt_value, tt_best = tt_entry
+        if tt_depth >= depth:
+            if tt_flag == EXACT:
+                return tt_value
+            elif tt_flag == LOWER:
+                alpha = max(alpha, tt_value)
+            else:
+                beta = min(beta, tt_value)
+            if alpha >= beta:
+                return tt_value
+
+    moves = _legal_moves(me, opp)
+    if not moves:
+        opp_moves = _legal_moves(opp, me)
+        if not opp_moves:
+            return _terminal_score(me, opp)
+        return -_negamax(opp, me, depth, -beta, -alpha)
+
+    if depth <= 0:
+        return _heuristic(me, opp)
+
+    ordered = _ordered_moves(me, opp, moves, tt_best=tt_best)
+
+    best_val = -INF
+    best_move = ordered[0][0]
+
+    for idx, flips in ordered:
+        new_me, new_opp = _apply_move(me, opp, idx, flips)
+        val = -_negamax(new_opp, new_me, depth - 1, -beta, -alpha)
+        if val > best_val:
+            best_val = val
+            best_move = idx
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+
+    flag = EXACT
+    if best_val <= orig_alpha:
+        flag = UPPER
+    elif best_val >= beta:
+        flag = LOWER
+
+    TT[key] = (depth, flag, best_val, best_move)
+    return best_val
+
+
+def _search_root(me: int, opp: int, depth: int, prev_best=None):
+    moves = _legal_moves(me, opp)
+    if not moves:
+        return None, 0
+
+    tt_best = None
+    entry = TT.get((me, opp))
+    if entry is not None:
+        tt_best = entry[3]
+    if prev_best is not None:
+        tt_best = prev_best
+
+    ordered = _ordered_moves(me, opp, moves, tt_best=tt_best)
+
+    alpha = -INF
+    beta = INF
+    best_val = -INF
+    best_move = ordered[0][0]
+
+    for idx, flips in ordered:
+        _check_time()
+        new_me, new_opp = _apply_move(me, opp, idx, flips)
+        val = -_negamax(new_opp, new_me, depth - 1, -beta, -alpha)
+        if val > best_val:
+            best_val = val
+            best_move = idx
+        if val > alpha:
+            alpha = val
+
+    TT[(me, opp)] = (depth, EXACT, best_val, best_move)
+    return best_move, best_val
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    global SEARCH_DEADLINE, NODE_COUNTER, TT
+
+    me = _bb_from_array(you)
+    opp = _bb_from_array(opponent)
+
+    moves = _legal_moves(me, opp)
+    if not moves:
+        return "pass"
+
+    if len(moves) == 1:
+        return _idx_to_move(moves[0][0])
+
+    if len(TT) > 300000:
+        TT.clear()
+
+    # Safe fallback: static best legal move.
+    fallback_moves = _ordered_moves(me, opp, moves, tt_best=None)
+    best_move = fallback_moves[0][0]
+
+    empties = 64 - (me | opp).bit_count()
+
+    if empties <= 10:
+        max_depth = 64
+    elif empties <= 14:
+        max_depth = 12
+    elif empties <= 20:
+        max_depth = 10
+    elif empties <= 30:
+        max_depth = 8
+    elif empties <= 40:
+        max_depth = 7
+    elif empties <= 50:
+        max_depth = 6
+    else:
+        max_depth = 5
+
+    SEARCH_DEADLINE = time.perf_counter() + 0.92
+    NODE_COUNTER = 0
+
+    try:
+        for depth in range(1, max_depth + 1):
+            move, score = _search_root(me, opp, depth, prev_best=best_move)
+            if move is not None:
+                best_move = move
+            if abs(score) >= WIN_SCORE:
+                break
+    except SearchTimeout:
+        pass
+    except Exception:
+        # Never risk an illegal output.
+        pass
+
+    legal_idxs = {idx for idx, _ in moves}
+    if best_move not in legal_idxs:
+        best_move = moves[0][0]
+
+    return _idx_to_move(best_move)
+</code>

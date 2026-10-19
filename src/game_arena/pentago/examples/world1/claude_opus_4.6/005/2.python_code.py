@@ -1,0 +1,145 @@
+
+import numpy as np
+import time
+
+def policy(you, opponent) -> str:
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    QUAD_RANGES = [
+        (0, 3, 0, 3),
+        (0, 3, 3, 6),
+        (3, 6, 0, 3),
+        (3, 6, 3, 6),
+    ]
+    
+    def rotate_quad(board_you, board_opp, quad, direction):
+        r1, r2, c1, c2 = QUAD_RANGES[quad]
+        by = board_you.copy()
+        bo = board_opp.copy()
+        qy = board_you[r1:r2, c1:c2]
+        qo = board_opp[r1:r2, c1:c2]
+        if direction == 'L':
+            by[r1:r2, c1:c2] = np.rot90(qy, 1)
+            bo[r1:r2, c1:c2] = np.rot90(qo, 1)
+        else:
+            by[r1:r2, c1:c2] = np.rot90(qy, -1)
+            bo[r1:r2, c1:c2] = np.rot90(qo, -1)
+        return by, bo
+    
+    # All lines of 5 on a 6x6 board
+    LINES = []
+    for r in range(6):
+        for c in range(2):
+            LINES.append([(r, c+i) for i in range(5)])
+    for c in range(6):
+        for r in range(2):
+            LINES.append([(r+i, c) for i in range(5)])
+    for r in range(2):
+        for c in range(2):
+            LINES.append([(r+i, c+i) for i in range(5)])
+    for r in range(2):
+        for c in range(4, 6):
+            LINES.append([(r+i, c-i) for i in range(5)])
+    
+    LINES_ARR = np.array(LINES)  # shape (N, 5, 2)
+    
+    def check_win(board):
+        for line in LINES:
+            if all(board[r][c] == 1 for r, c in line):
+                return True
+        return False
+    
+    def evaluate(by, bo):
+        # Check wins
+        yw = check_win(by)
+        ow = check_win(bo)
+        if yw and ow:
+            return 0
+        if yw:
+            return 100000
+        if ow:
+            return -100000
+        
+        score = 0
+        for line in LINES:
+            yc = sum(by[r][c] for r, c in line)
+            oc = sum(bo[r][c] for r, c in line)
+            if oc == 0 and yc > 0:
+                if yc == 4: score += 1000
+                elif yc == 3: score += 50
+                elif yc == 2: score += 5
+                elif yc == 1: score += 1
+            if yc == 0 and oc > 0:
+                if oc == 4: score -= 800
+                elif oc == 3: score -= 40
+                elif oc == 2: score -= 4
+                elif oc == 1: score -= 1
+        
+        # Center bonus
+        centers = [(1,1),(1,4),(4,1),(4,4)]
+        for r,c in centers:
+            if by[r][c]: score += 3
+            if bo[r][c]: score -= 3
+        
+        return score
+    
+    empty_cells = [(r, c) for r in range(6) for c in range(6) if you[r][c] == 0 and opponent[r][c] == 0]
+    rotations = [(q, d) for q in range(4) for d in ['L', 'R']]
+    
+    best_move = None
+    best_score = -float('inf')
+    start = time.time()
+    
+    # First pass: check for immediate wins
+    for r, c in empty_cells:
+        by = you.copy()
+        by[r][c] = 1
+        for q, d in rotations:
+            by2, bo2 = rotate_quad(by, opponent, q, d)
+            if check_win(by2):
+                if not check_win(bo2):
+                    return f"{r+1},{c+1},{q},{d}"
+                elif best_move is None:
+                    best_move = f"{r+1},{c+1},{q},{d}"  # draw is ok as fallback
+    
+    # Evaluate all moves with depth-1 (place + rotate + evaluate)
+    for r, c in empty_cells:
+        if time.time() - start > 0.7:
+            break
+        by = you.copy()
+        by[r][c] = 1
+        for q, d in rotations:
+            by2, bo2 = rotate_quad(by, opponent, q, d)
+            sc = evaluate(by2, bo2)
+            
+            # Light depth-2: consider opponent's best response
+            if sc > -90000 and sc < 90000 and time.time() - start < 0.5:
+                opp_empty = [(rr, cc) for rr in range(6) for cc in range(6) if by2[rr][cc] == 0 and bo2[rr][cc] == 0]
+                worst = float('inf')
+                # Sample opponent moves if too many
+                sample = opp_empty if len(opp_empty) <= 8 else [opp_empty[i] for i in np.random.choice(len(opp_empty), 8, replace=False)]
+                for r2, c2 in sample:
+                    bo3 = bo2.copy()
+                    bo3[r2][c2] = 1
+                    best_opp_rot = float('inf')
+                    for q2, d2 in rotations:
+                        bo4, by4 = rotate_quad(bo3, by2, q2, d2)
+                        # Evaluate from our perspective
+                        ev = evaluate(by4, bo4)
+                        if ev < best_opp_rot:
+                            best_opp_rot = ev
+                    if best_opp_rot < worst:
+                        worst = best_opp_rot
+                if worst != float('inf'):
+                    sc = sc * 0.3 + worst * 0.7
+            
+            if sc > best_score:
+                best_score = sc
+                best_move = f"{r+1},{c+1},{q},{d}"
+    
+    if best_move is None:
+        r, c = empty_cells[0]
+        best_move = f"{r+1},{c+1},0,L"
+    
+    return best_move

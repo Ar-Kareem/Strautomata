@@ -1,0 +1,148 @@
+To solve this problem, we need to implement a policy function for the game Kalah (also known as Mancala) that selects a legal move for the current player. The solution involves using a minimax algorithm with alpha-beta pruning to efficiently search through possible moves, considering the game rules including extra moves and captures. The evaluation function assesses the board state to prioritize moves that maximize the player's store seeds while minimizing the opponent's.
+
+### Approach
+1. **Problem Analysis**: The game state is represented by two lists, `you` and `opponent`, each of length 7. Each list contains seed counts for six houses and one store. The current player must choose a non-empty house to make a move. The seeds are distributed counter-clockwise, skipping the opponent's store. Special rules include:
+   - **Extra Move**: If the last seed lands in the player's store, they get another move.
+   - **Capture**: If the last seed lands in an empty house and the opposite opponent's house has seeds, capture both the last seed and the opponent's seeds into the player's store.
+
+2. **Algorithm Selection**: We use a minimax algorithm with alpha-beta pruning to explore possible moves. The algorithm alternates between maximizing and minimizing players, where the maximizing player is the current player (root) and the minimizing player is the opponent. The depth of the search is limited to 5 levels to ensure efficiency.
+
+3. **Evaluation Function**: The evaluation function assesses the board state from the root player's perspective. If the game is over (one player has no seeds in their houses), it simulates moving remaining seeds to the respective store and calculates the score. For non-terminal nodes, it uses a heuristic combining store seeds and house seeds.
+
+4. **Move Simulation**: The `simulate_move` function processes a move by distributing seeds according to the game rules. It handles skipping the opponent's store and checks for extra moves and captures after distributing the seeds. The next player is determined based on whether an extra move was granted.
+
+### Solution Code
+```python
+def policy(you, opponent):
+    depth = 5
+    alpha = -float('inf')
+    beta = float('inf')
+    root_player = 0
+    moves = [i for i in range(6) if you[i] > 0]
+    best_move = moves[0]
+    best_score = -float('inf')
+    
+    def evaluate(you_state, opponent_state, current_player, root_player):
+        you_copy = you_state[:]
+        opponent_copy = opponent_state[:]
+        game_over = False
+        if all(x == 0 for x in you_copy[0:6]) or all(x == 0 for x in opponent_copy[0:6]):
+            game_over = True
+            if all(x == 0 for x in you_copy[0:6]):
+                opponent_copy[6] += sum(opponent_copy[0:6])
+                for i in range(6):
+                    opponent_copy[i] = 0
+            elif all(x == 0 for x in opponent_copy[0:6]):
+                you_copy[6] += sum(you_copy[0:6])
+                for i in range(6):
+                    you_copy[i] = 0
+        if game_over:
+            if current_player == root_player:
+                return you_copy[6] - opponent_copy[6]
+            else:
+                return opponent_copy[6] - you_copy[6]
+        else:
+            if current_player == root_player:
+                return you_state[6] - opponent_state[6] + 0.1 * (sum(you_state[0:6]) - sum(opponent_state[0:6]))
+            else:
+                return opponent_state[6] - you_state[6] + 0.1 * (sum(opponent_state[0:6]) - sum(you_state[0:6]))
+    
+    def minimax(you_state, opponent_state, depth_left, current_player, root_player, alpha, beta):
+        if depth_left == 0:
+            return evaluate(you_state, opponent_state, current_player, root_player)
+        
+        game_over = all(x == 0 for x in you_state[0:6]) or all(x == 0 for x in opponent_state[0:6])
+        if game_over:
+            return evaluate(you_state, opponent_state, current_player, root_player)
+            
+        moves = [i for i in range(6) if you_state[i] > 0]
+        
+        if current_player == root_player:
+            value = -float('inf')
+            for move in moves:
+                new_you, new_opponent, next_player = simulate_move(you_state, opponent_state, move, current_player)
+                score = minimax(new_you, new_opponent, depth_left - 1, next_player, root_player, alpha, beta)
+                if score > value:
+                    value = score
+                if value > beta:
+                    break
+                alpha = max(alpha, value)
+                if beta <= alpha:
+                    break
+            return value
+        else:
+            value = float('inf')
+            for move in moves:
+                new_you, new_opponent, next_player = simulate_move(you_state, opponent_state, move, current_player)
+                score = minimax(new_you, new_opponent, depth_left - 1, next_player, root_player, alpha, beta)
+                if score < value:
+                    value = score
+                if value < alpha:
+                    break
+                beta = min(beta, value)
+                if beta <= alpha:
+                    break
+            return value
+
+    def simulate_move(you_state, opponent_state, move, current_player):
+        you_copy = you_state[:]
+        opponent_copy = opponent_state[:]
+        seeds = you_copy[move]
+        you_copy[move] = 0
+        last_index = None
+        current_index = (move + 1) % 14
+        
+        while seeds > 0:
+            if current_index == 13:
+                current_index = 0
+                continue
+            if current_index < 6:
+                you_copy[current_index] += 1
+            elif current_index == 6:
+                you_copy[6] += 1
+            else:
+                opponent_copy[current_index - 7] += 1
+            last_index = current_index
+            seeds -= 1
+            current_index = (current_index + 1) % 14
+            if current_index == 13:
+                current_index = 0
+                
+        extra_move = False
+        capture_done = False
+        if last_index == 6:
+            extra_move = True
+        elif last_index in range(6):
+            if you_copy[last_index] == 1 and opponent_copy[5 - last_index] > 0:
+                capture_value = you_copy[last_index] + opponent_copy[5 - last_index]
+                you_copy[last_index] = 0
+                opponent_copy[5 - last_index] = 0
+                you_copy[6] += capture_value
+                capture_done = True
+                
+        if extra_move:
+            return you_copy, opponent_copy, current_player
+        else:
+            return opponent_copy, you_copy, 1 - current_player
+
+    for move in moves:
+        new_you, new_opponent, next_player = simulate_move(you, opponent, move, 0)
+        score = minimax(new_you, new_opponent, depth - 1, next_player, root_player, alpha, beta)
+        if score > best_score:
+            best_score = score
+            best_move = move
+            alpha = max(alpha, score)
+            if beta <= alpha:
+                break
+                
+    return best_move
+```
+
+### Explanation
+1. **Policy Function**: The main function that initiates the minimax search with a depth of 5. It iterates over all legal moves, evaluates each move using the minimax algorithm, and returns the best move.
+2. **Evaluate Function**: Assesses the board state. For terminal states (game over), it simulates moving remaining seeds to stores and computes the score. For non-terminal states, it uses a heuristic combining store and house seeds.
+3. **Minimax Function**: Recursively explores possible moves up to the specified depth. It alternates between maximizing and minimizing players based on the current player's turn, using alpha-beta pruning to skip unnecessary branches.
+4. **Simulate Move Function**: Processes a move by distributing seeds according to the game rules. It checks for extra moves and captures after distribution, returning the new game state and the next player.
+5. **Game Over Handling**: In the `evaluate` and `minimax` functions, game-over conditions are checked to simulate end-game moves and terminate the search appropriately.
+
+This approach efficiently explores the game tree, leveraging minimax with alpha-beta pruning and a heuristic evaluation to make optimal moves within the given constraints.

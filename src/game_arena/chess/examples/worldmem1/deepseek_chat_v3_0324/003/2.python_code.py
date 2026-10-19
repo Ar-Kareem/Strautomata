@@ -1,0 +1,192 @@
+
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'move_count': 0,
+            'last_move': None,
+            'piece_values': {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0},
+            'pawn_table': np.array([
+                [ 0,  0,  0,  0,  0,  0,  0,  0],
+                [50, 50, 50, 50, 50, 50, 50, 50],
+                [10, 10, 20, 30, 30, 20, 10, 10],
+                [ 5,  5, 10, 25, 25, 10,  5,  5],
+                [ 0,  0,  0, 20, 20,  0,  0,  0],
+                [ 5, -5,-10,  0,  0,-10, -5,  5],
+                [ 5, 10, 10,-20,-20, 10, 10,  5],
+                [ 0,  0,  0,  0,  0,  0,  0,  0]
+            ]),
+            'knight_table': np.array([
+                [-50,-40,-30,-30,-30,-30,-40,-50],
+                [-40,-20,  0,  0,  0,  0,-20,-40],
+                [-30,  0, 10, 15, 15, 10,  0,-30],
+                [-30,  5, 15, 20, 20, 15,  5,-30],
+                [-30,  0, 15, 20, 20, 15,  0,-30],
+                [-30,  5, 10, 15, 15, 10,  5,-30],
+                [-40,-20,  0,  5,  5,  0,-20,-40],
+                [-50,-40,-30,-30,-30,-30,-40,-50]
+            ]),
+            'bishop_table': np.array([
+                [-20,-10,-10,-10,-10,-10,-10,-20],
+                [-10,  0,  0,  0,  0,  0,  0,-10],
+                [-10,  0,  5, 10, 10,  5,  0,-10],
+                [-10,  5,  5, 10, 10,  5,  5,-10],
+                [-10,  0, 10, 10, 10, 10,  0,-10],
+                [-10, 10, 10, 10, 10, 10, 10,-10],
+                [-10,  5,  0,  0,  0,  0,  5,-10],
+                [-20,-10,-10,-10,-10,-10,-10,-20]
+            ]),
+            'king_table_mid': np.array([
+                [-30,-40,-40,-50,-50,-40,-40,-30],
+                [-30,-40,-40,-50,-50,-40,-40,-30],
+                [-30,-40,-40,-50,-50,-40,-40,-30],
+                [-30,-40,-40,-50,-50,-40,-40,-30],
+                [-20,-30,-30,-40,-40,-30,-30,-20],
+                [-10,-20,-20,-20,-20,-20,-20,-10],
+                [ 20, 20,  0,  0,  0,  0, 20, 20],
+                [ 20, 30, 10,  0,  0, 10, 30, 20]
+            ])
+        }
+        memory['move_count'] = 0
+    
+    # Determine color prefix
+    color_prefix = 'w' if to_play == 'white' else 'b'
+    opponent_prefix = 'b' if to_play == 'white' else 'w'
+    
+    # Evaluate all legal moves
+    best_move = legal_moves[0]
+    best_score = -9999
+    
+    for move in legal_moves:
+        # Make a temporary board to evaluate the move
+        temp_pieces = pieces.copy()
+        
+        # Parse the move
+        is_castle = move in ['O-O', 'O-O-O']
+        is_promotion = '=' in move
+        is_capture = 'x' in move
+        
+        # Handle castling
+        if is_castle:
+            score = 50  # Bonus for castling
+            if move == 'O-O':
+                # Kingside
+                if color_prefix == 'w':
+                    del temp_pieces['e1']
+                    temp_pieces['g1'] = color_prefix + 'K'
+                    del temp_pieces['h1']
+                    temp_pieces['f1'] = color_prefix + 'R'
+                else:
+                    del temp_pieces['e8']
+                    temp_pieces['g8'] = color_prefix + 'K'
+                    del temp_pieces['h8']
+                    temp_pieces['f8'] = color_prefix + 'R'
+            else:
+                # Queenside
+                if color_prefix == 'w':
+                    del temp_pieces['e1']
+                    temp_pieces['c1'] = color_prefix + 'K'
+                    del temp_pieces['a1']
+                    temp_pieces['d1'] = color_prefix + 'R'
+                else:
+                    del temp_pieces['e8']
+                    temp_pieces['c8'] = color_prefix + 'K'
+                    del temp_pieces['a8']
+                    temp_pieces['d8'] = color_prefix + 'R'
+        else:
+            # Handle normal moves
+            if is_capture:
+                # Find what piece is being captured
+                dest_square = move.split('x')[1][:2]
+                if dest_square in temp_pieces:
+                    captured_piece = temp_pieces[dest_square][1]
+                    score = memory['piece_values'].get(captured_piece, 0)
+                else:
+                    score = 0
+            else:
+                score = 0
+            
+            # Handle promotion
+            if is_promotion:
+                promoted_piece = move.split('=')[1][0]
+                score += memory['piece_values'].get(promoted_piece, 0)
+            
+            # Parse source and destination squares
+            if len(move) >= 4 and move[0].isupper() and not is_promotion and not is_capture:
+                # Piece move with disambiguation (e.g. Nbc3)
+                piece_type = move[0]
+                dest_square = move[-2:]
+                src_file_or_rank = move[1] if move[1].islower() else None
+            elif len(move) >= 3 and move[0].isupper() and not is_promotion and not is_capture:
+                # Piece move (e.g. Nc3)
+                piece_type = move[0]
+                dest_square = move[-2:]
+                src_file_or_rank = None
+            else:
+                # Pawn move
+                piece_type = 'P'
+                if is_capture:
+                    src_square = move.split('x')[0]
+                    dest_square = move.split('x')[1][:2]
+                else:
+                    dest_square = move[-2:]
+                    src_file = move[0] if move[0].islower() else None
+                    src_square = None
+            
+            # Find the moving piece (simplified - in a real implementation this would be more robust)
+            moving_piece = None
+            for square, piece in temp_pieces.items():
+                if piece[0] == color_prefix and piece[1] == piece_type:
+                    if piece_type == 'P' and is_capture:
+                        if square[0] == src_square[0] and square[1] == str(int(dest_square[1]) - (1 if color_prefix == 'w' else -1)):
+                            moving_piece = square
+                            break
+                    elif piece_type == 'P' and not is_capture:
+                        if square[0] == dest_square[0] and ((color_prefix == 'w' and int(dest_square[1]) - int(square[1]) in [1,2]) or 
+                                                          (color_prefix == 'b' and int(square[1]) - int(dest_square[1]) in [1,2])):
+                            moving_piece = square
+                            break
+                    elif piece_type != 'P':
+                        # Simple matching for non-pawn pieces
+                        if square[0] == move[1] if src_file_or_rank and src_file_or_rank.islower() else True:
+                            if square[1] == move[2] if src_file_or_rank and src_file_or_rank.isdigit() else True:
+                                moving_piece = square
+                                break
+            
+            if moving_piece:
+                # Update the board
+                piece_code = temp_pieces[moving_piece]
+                del temp_pieces[moving_piece]
+                temp_pieces[dest_square] = piece_code
+                
+                # Add piece-square table evaluation
+                rank, file = 8 - int(dest_square[1]), ord(dest_square[0]) - ord('a')
+                if piece_code[1] == 'P':
+                    score += memory['pawn_table'][rank, file]
+                elif piece_code[1] == 'N':
+                    score += memory['knight_table'][rank, file]
+                elif piece_code[1] == 'B':
+                    score += memory['bishop_table'][rank, file]
+                elif piece_code[1] == 'K':
+                    score += memory['king_table_mid'][rank, file]
+                
+                # Bonus for controlling center
+                if dest_square in ['e4', 'd4', 'e5', 'd5']:
+                    score += 10
+        
+        # Check if move gives check
+        if move[-1] == '+':
+            score += 5
+        
+        # Check if this is better than current best
+        if score > best_score or (score == best_score and np.random.rand() > 0.5):
+            best_score = score
+            best_move = move
+    
+    # Update move count in memory
+    memory['move_count'] += 1
+    memory['last_move'] = best_move
+    
+    return (best_move, memory)

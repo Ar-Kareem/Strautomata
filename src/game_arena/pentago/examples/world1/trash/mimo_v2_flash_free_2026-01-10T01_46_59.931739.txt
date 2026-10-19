@@ -1,0 +1,323 @@
+My strategy is to implement a shallow minimax search with alpha-beta pruning to evaluate potential moves. Since the state space is large, I will limit the search depth to 2 (current move + opponent's response).
+
+1.  **Representation**: The board is represented as two bitboards (integers), one for the player and one for the opponent. This allows for very fast checking of win conditions and move generation.
+2.  **Move Generation**: I will generate all legal moves. To prune the move list and stay within the 1-second time limit, I will prioritize moves that:
+    *   Create a winning line immediately.
+    *   Block an opponent's immediate win.
+    *   Occupy the center (where intersection of lines is highest).
+    *   Occupy lines that already have player marbles.
+3.  **Search**: I will use a recursive Minimax search with Alpha-Beta pruning.
+    *   **Depth**: 2 (Player moves, then Opponent moves).
+    *   **Evaluation**: A heuristic function based on line "weights". A line of 5 is a win (highest value). A line of 4 with open ends is highly valuable. Lines of 3 or 2 are weighted based on potential to grow.
+4.  **Execution**: The algorithm iterates through prioritized moves, evaluates the board state after the move, and selects the move that maximizes the worst-case outcome (maximizing our score while assuming the opponent minimizes it).
+
+```python
+def policy(you, opponent) -> str:
+    # --- Board Representation and Utilities ---
+    # Convert 6x6 list to bitboard (64-bit integer)
+    def to_bitboard(board):
+        b = 0
+        for r in range(6):
+            for c in range(6):
+                if board[r][c] == 1:
+                    idx = r * 6 + c
+                    b |= (1 << idx)
+        return b
+
+    me = to_bitboard(you)
+    opp = to_bitboard(opponent)
+    
+    # Precompute masks for checking lines
+    # We need to check lines of length 5 in a 6x6 grid
+    ROWS = [0x3E, 0x7C, 0xF8, 0x1F0, 0x3E0, 0x7C0] # 00111110, 5 bits shifted
+    # Transpose for columns by reversing index logic or generating specific masks
+    COLS = []
+    for c in range(6):
+        mask = 0
+        for r in range(6):
+            mask |= (1 << (r * 6 + c))
+        # Extract the first 5 bits of the column for the win check
+        # Actually, let's just use a generic sliding window approach for simplicity and robustness
+        # given the small board size.
+    
+    # Let's define a set of all winning line masks (5 consecutive bits)
+    # There are 12 horizontals, 12 verticals, 10 diagonals (down-right), 10 diagonals (down-left)
+    WIN_MASKS = []
+    
+    # Horizontal
+    for r in range(6):
+        for c in range(2): # Start col 0, 1
+            mask = 0
+            for k in range(5):
+                mask |= (1 << (r * 6 + c + k))
+            WIN_MASKS.append(mask)
+            
+    # Vertical
+    for c in range(6):
+        for r in range(2):
+            mask = 0
+            for k in range(5):
+                mask |= (1 << ((r + k) * 6 + c))
+            WIN_MASKS.append(mask)
+            
+    # Diagonal Down-Right
+    for r in range(2):
+        for c in range(2):
+            mask = 0
+            for k in range(5):
+                mask |= (1 << ((r + k) * 6 + c + k))
+            WIN_MASKS.append(mask)
+
+    # Diagonal Down-Left
+    for r in range(2):
+        for c in range(4):
+            mask = 0
+            for k in range(5):
+                mask |= (1 << ((r + k) * 6 + c - k))
+            WIN_MASKS.append(mask)
+                
+    def check_win(board):
+        for mask in WIN_MASKS:
+            if (board & mask) == mask:
+                return True
+        return False
+
+    # --- Move Generation ---
+
+    # Quadrant definitions (bit masks)
+    # 0: rows 0-2, cols 0-2
+    # 1: rows 0-2, cols 3-5
+    # 2: rows 3-5, cols 0-2
+    # 3: rows 3-5, cols 3-5
+    QUAD_MASKS = [
+        0x00000007, 0x00000038, 0x000001C0, 0x00000E00, # Row 0-1
+        0x00003800, 0x0001C000, 0x000E0000, 0x00700000, # Row 2-3
+        0x03800000, 0x1C000000, 0xE0000000, 0x00000000  # Row 4-5 (calculated manually or dynamically)
+    ]
+    # Actually, let's use coordinate logic for quadrants, it's cleaner for rotation
+    # Quad 0: (0,0)-(2,2), Quad 1: (0,3)-(2,5), Quad 2: (3,0)-(5,2), Quad 3: (3,3)-(5,5)
+    
+    def get_quadrant_mask(q):
+        mask = 0
+        r_start = 0 if q < 2 else 3
+        c_start = 0 if q % 2 == 0 else 3
+        for r in range(r_start, r_start + 3):
+            for c in range(c_start, c_start + 3):
+                mask |= (1 << (r * 6 + c))
+        return mask
+
+    QUAD_MASKS = [get_quadrant_mask(q) for q in range(4)]
+
+    # Rotation Logic
+    # Rotates bits within a 3x3 block
+    # Indices in 3x3 (local coords): 0,1,2 (row), 0,1,2 (col)
+    # Global index = 6*(r_start+r) + (c_start+c)
+    # CW: (r, c) -> (c, 2-r)
+    # CCW: (r, c) -> (2-c, r)
+    def rotate_quadrant(board, q, direction):
+        new_board = board & (~QUAD_MASKS[q]) # Clear quadrant bits
+        r_start = 0 if q < 2 else 3
+        c_start = 0 if q % 2 == 0 else 3
+        
+        # Extract bits from the quadrant
+        bits = []
+        for r in range(3):
+            for c in range(3):
+                idx = (r_start + r) * 6 + (c_start + c)
+                if board & (1 << idx):
+                    bits.append((r, c))
+        
+        # Rotate and set bits
+        for r, c in bits:
+            if direction == 'R': # Clockwise
+                nr, nc = c, 2 - r
+            else: # L, Counter-Clockwise
+                nr, nc = 2 - c, r
+            
+            idx = (r_start + nr) * 6 + (c_start + nc)
+            new_board |= (1 << idx)
+            
+        return new_board
+
+    # Heuristic Evaluation
+    # Weights: 5-in-row (Win), 4-in-row (Strong), 3-in-row (Medium), 2-in-row (Weak)
+    # Also consider Open vs Closed ends (connected by empty)
+    def evaluate(board, opp_board):
+        if check_win(board): return 1000000
+        if check_win(opp_board): return -1000000
+        
+        score = 0
+        # Analyze lines
+        for mask in WIN_MASKS:
+            # Count bits in mask for both players
+            # Only strictly count if no opponent bit is in the mask (blocked)
+            if (mask & opp_board) == 0:
+                # Calculate contiguous segments or just count
+                # For simplicity, count number of our marbles in the window
+                cnt = bin(board & mask).count('1')
+                if cnt > 0:
+                    if cnt == 4: score += 5000 # Threat to win
+                    elif cnt == 3: score += 100
+                    elif cnt == 2: score += 20
+                    elif cnt == 1: score += 5
+            
+            if (mask & board) == 0:
+                cnt = bin(opp_board & mask).count('1')
+                if cnt > 0:
+                    if cnt == 4: score -= 5000 # Threat to lose
+                    elif cnt == 3: score -= 100
+                    elif cnt == 2: score -= 20
+                    elif cnt == 1: score -= 5
+        
+        # Bonus for center control (intersection of many lines)
+        center = (1 << 15) | (1 << 16) | (1 << 17) | (1 << 21) | (1 << 22) | (1 << 23)
+        score += bin(board & center).count('1') * 10
+        score -= bin(opp_board & center).count('1') * 10
+        
+        return score
+
+    # Priority list of empty cells (static ordering)
+    # Center -> Corners -> Edges
+    def get_empty_cells(b1, b2):
+        empty = []
+        occupied = b1 | b2
+        # Prioritized positions
+        # Center ring (16, 17, 21, 22, 20, 26, 14, 8?) - let's use simple geometric priority
+        # Priority: Inner 2x2 -> Surrounding -> Corners -> Edges
+        # Coordinates (r, c) -> idx = r*6+c
+        priorities = [
+            # Center Cross
+            [2,2], [2,3], [3,2], [3,3],
+            # Inner ring
+            [1,1], [1,2], [1,3], [1,4],
+            [2,1], [2,4],
+            [3,1], [3,4],
+            [4,1], [4,2], [4,3], [4,4],
+            # Edges/Corners
+            [0,0], [0,5], [5,0], [5,5],
+            [0,1], [0,2], [0,3], [0,4],
+            [5,1], [5,2], [5,3], [5,4],
+            [1,0], [2,0], [3,0], [4,0],
+            [1,5], [2,5], [3,5], [4,5]
+        ]
+        
+        for r, c in priorities:
+            idx = r * 6 + c
+            if not (occupied & (1 << idx)):
+                empty.append((r, c))
+        return empty
+
+    # --- Search & Policy ---
+
+    # Helper to generate candidate moves (Place, Rotate) for root
+    # We filter moves to avoid evaluating all 1080 possibilities if possible
+    # Or just use simple pruning (e.g. only consider best placement positions)
+    def get_candidate_moves(root_me, root_opp):
+        candidates = []
+        empty_cells = get_empty_cells(root_me, root_opp)
+        
+        # To manage complexity, we will only process the top N empty cells
+        # We calculate a rough score for the placement (without rotation)
+        # to filter down to promising ones.
+        if len(empty_cells) > 20:
+            # Quick sort based on immediate heuristic gain
+            def rough_score(cell):
+                r, c = cell
+                idx = r * 6 + c
+                temp_me = root_me | (1 << idx)
+                return evaluate(temp_me, root_opp)
+            
+            empty_cells.sort(key=rough_score, reverse=True)
+            empty_cells = empty_cells[:20] # Top 20 placements
+        
+        for r, c in empty_cells:
+            idx = r * 6 + c
+            placed_me = root_me | (1 << idx)
+            
+            # Check immediate win after placement (before rotation)
+            # Note: Rules say rotate after placement.
+            # If placement creates win, we still rotate, but we win.
+            # We can pick any valid rotation.
+            
+            for q in range(4):
+                for d in ['L', 'R']:
+                    candidates.append((r, c, q, d, placed_me))
+        return candidates
+
+    # Alpha-Beta Search for the root (Maximizer)
+    best_score = -float('inf')
+    best_move = None
+    
+    # Root candidates
+    candidates = get_candidate_moves(me, opp)
+    
+    # If no candidates (should not happen based on problem statement), return fallback
+    if not candidates:
+        # Fallback: first empty cell, quad 0, L
+        for r in range(6):
+            for c in range(6):
+                if not (me & (1 << (r*6+c))) and not (opp & (1 << (r*6+c))):
+                    return f"{r+1},{c+1},0,L"
+
+    for r, c, q, d, placed_me in candidates:
+        # Apply rotation
+        after_me = rotate_quadrant(placed_me, q, d)
+        after_opp = rotate_quadrant(opp, q, d)
+        
+        # Check if we won immediately
+        if check_win(after_me):
+            score = float('inf')
+        # Check if opponent won immediately (bad move)
+        elif check_win(after_opp):
+            score = -float('inf') # Do not pick a move that lets opponent win
+        else:
+            # Now Opponent's turn: Min node
+            # We want to minimize the result of opponent's best response
+            # To speed up, we use a simple evaluation function for the opponent's depth
+            # effectively doing Depth 1 (Opponent) + Heuristic
+            
+            worst_opponent_score = float('inf')
+            
+            # Generate opponent's best counter moves (limited)
+            opp_candidates = get_candidate_moves(after_opp, after_me)
+            
+            for o_r, o_c, o_q, o_d, opp_placed in opp_candidates:
+                # Opponent places and rotates
+                opp_final_opp = rotate_quadrant(opp_placed, o_q, o_d)
+                opp_final_me = rotate_quadrant(after_me, o_q, o_d)
+                
+                # Check if opponent wins
+                if check_win(opp_final_opp):
+                    worst_opponent_score = -float('inf') # Disaster
+                    break
+                # Check if we win in response (good for us)
+                if check_win(opp_final_me):
+                    # This is actually good for us, but we are in Min node for Opponent.
+                    # If Opponent's move makes us win, Opponent wouldn't pick it.
+                    # So score is high, effectively ignoring this branch for Min calc
+                    val = float('inf')
+                else:
+                    # Heuristic evaluation
+                    val = evaluate(opp_final_me, opp_final_opp)
+                
+                if val < worst_opponent_score:
+                    worst_opponent_score = val
+                # Alpha-beta pruning for Min node
+                if worst_opponent_score <= best_score:
+                    break
+            
+            score = worst_opponent_score
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, q, d)
+            if best_score > 900000: # Good enough to win
+                break
+
+    if best_move:
+        r, c, q, d = best_move
+        return f"{r+1},{c+1},{q},{d}"
+    
+    # Fallback (should not be reached if candidates exist)
+    return "1,1,0,L"
+```

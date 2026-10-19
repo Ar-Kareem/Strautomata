@@ -1,0 +1,128 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    def get_legal_moves():
+        moves = []
+        for r in range(5):
+            for c in range(5):
+                if horizontal[r, c] == 0:
+                    moves.append((r, c, 'H'))
+                if vertical[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+
+    def count_captured_boxes(r, c, direction):
+        count = 0
+        if direction == 'H':
+            # Check boxes above and below the horizontal edge
+            if r - 1 >= 0 and c <= 3:
+                # Box above the edge
+                box_row, box_col = r - 1, c
+                top = horizontal[box_row, box_col]
+                right = vertical[box_row + 1, box_col + 1]
+                left = vertical[box_row, box_col]
+                if top != 0 and right != 0 and left != 0:
+                    count += 1
+            if r <= 3 and c <= 3:
+                # Box below the edge
+                box_row, box_col = r, c
+                bottom = horizontal[box_row + 1, box_col]
+                right = vertical[box_row + 1, box_col + 1]
+                left = vertical[box_row, box_col]
+                if bottom != 0 and right != 0 and left != 0:
+                    count += 1
+        else:  # Vertical edge
+            # Check boxes to the left and right of the vertical edge
+            if c - 1 >= 0 and r <= 3:
+                # Box to the left of the edge
+                box_row, box_col = r, c - 1
+                top = horizontal[box_row, box_col]
+                bottom = horizontal[box_row + 1, box_col]
+                left = vertical[box_row, box_col]
+                if top != 0 and bottom != 0 and left != 0:
+                    count += 1
+            if r <= 3 and c <= 3:
+                # Box to the right of the edge
+                box_row, box_col = r, c
+                top = horizontal[box_row, box_col]
+                bottom = horizontal[box_row + 1, box_col]
+                right = vertical[box_row + 1, box_col + 1]
+                if top != 0 and bottom != 0 and right != 0:
+                    count += 1
+        return count
+
+    def count_potential_triplets(r, c, direction):
+        count = 0
+        if direction == 'H':
+            # Check boxes above and below the horizontal edge
+            if r - 1 >= 0 and c <= 3:
+                box_row, box_col = r - 1, c
+                if capture[box_row, box_col] == 0:
+                    top = horizontal[box_row, box_col]
+                    right = vertical[box_row + 1, box_col + 1]
+                    left = vertical[box_row, box_col]
+                    total = (1 if top != 0 else 0) + (1 if right != 0 else 0) + (1 if left != 0 else 0) + 1
+                    if total == 3:
+                        count += 1
+            if r <= 3 and c <= 3:
+                box_row, box_col = r, c
+                if capture[box_row, box_col] == 0:
+                    bottom = horizontal[box_row + 1, box_col]
+                    right = vertical[box_row + 1, box_col + 1]
+                    left = vertical[box_row, box_col]
+                    total = 1 + (1 if bottom != 0 else 0) + (1 if right != 0 else 0) + (1 if left != 0 else 0)
+                    if total == 3:
+                        count += 1
+        else:  # Vertical edge
+            # Check boxes to the left and right of the vertical edge
+            if c - 1 >= 0 and r <= 3:
+                box_row, box_col = r, c - 1
+                if capture[box_row, box_col] == 0:
+                    top = horizontal[box_row, box_col]
+                    bottom = horizontal[box_row + 1, box_col]
+                    left = vertical[box_row, box_col]
+                    total = (1 if top != 0 else 0) + (1 if bottom != 0 else 0) + (1 if left != 0 else 0) + 1
+                    if total == 3:
+                        count += 1
+            if r <= 3 and c <= 3:
+                box_row, box_col = r, c
+                if capture[box_row, box_col] == 0:
+                    top = horizontal[box_row, box_col]
+                    bottom = horizontal[box_row + 1, box_col]
+                    right = vertical[box_row + 1, box_col + 1]
+                    total = (1 if top != 0 else 0) + (1 if bottom != 0 else 0) + (1 if right != 0 else 0) + 1
+                    if total == 3:
+                        count += 1
+        return count
+
+    legal_moves = get_legal_moves()
+
+    # Check for capturing moves
+    best_captures = []
+    max_captured = 0
+    for move in legal_moves:
+        r, c, d = move
+        captured = count_captured_boxes(r, c, d)
+        if captured > max_captured:
+            max_captured = captured
+            best_captures = [move]
+        elif captured == max_captured and captured > 0:
+            best_captures.append(move)
+
+    if best_captures:
+        return f"{best_captures[0][0]},{best_captures[0][1]},{best_captures[0][2]}"
+
+    # Defensive moves
+    min_triplets = float('inf')
+    best_defensive = None
+    for move in legal_moves:
+        r, c, d = move
+        triplet = count_potential_triplets(r, c, d)
+        if triplet < min_triplets:
+            min_triplets = triplet
+            best_defensive = move
+        elif triplet == min_triplets and best_defensive is None:
+            best_defensive = move
+
+    return f"{best_defensive[0]},{best_defensive[1]},{best_defensive[2]}"

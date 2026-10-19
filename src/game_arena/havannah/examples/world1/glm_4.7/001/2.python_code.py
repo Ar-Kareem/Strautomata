@@ -1,0 +1,246 @@
+
+import random
+import numpy as np
+from collections import deque
+
+# Global neighbor cache
+_NEIGHBORS = {}
+
+def get_neighbors(r, c):
+    """
+    Returns the list of neighbors for cell (r, c) based on the hexagonal 
+    offset coordinates inferred from the problem description.
+    Rule: 
+    - Same col: (r-1, c), (r+1, c)
+    - Side cols: 
+        - If r is even: (r, c+/-1) and (r-1, c+/-1)
+        - If r is odd:  (r, c+/-1) and (r+1, c+/-1)
+    """
+    if (r, c) in _NEIGHBORS:
+        return _NEIGHBORS[(r, c)]
+    
+    res = []
+    # Same column
+    res.append((r-1, c))
+    res.append((r+1, c))
+    
+    if r % 2 == 0:
+        # Even rows: connect to row above for side neighbors
+        res.append((r, c-1))
+        res.append((r-1, c-1))
+        res.append((r, c+1))
+        res.append((r-1, c+1))
+    else:
+        # Odd rows: connect to row below for side neighbors
+        res.append((r, c-1))
+        res.append((r+1, c-1))
+        res.append((r, c+1))
+        res.append((r+1, c+1))
+        
+    _NEIGHBORS[(r, c)] = res
+    return res
+
+def analyze_geometry(valid_mask):
+    """
+    Identifies corners and edge segments based on valid_mask.
+    Corners: cells with < 3 valid neighbors.
+    Edges: cells on the boundary (neighbors < 6), grouped by connectivity.
+    """
+    size = valid_mask.shape[0]
+    corners = []
+    boundary_cells = []
+    
+    # 1. Identify corners and boundary cells
+    for r in range(size):
+        for c in range(size):
+            if not valid_mask[r, c]:
+                continue
+            
+            # Count valid neighbors
+            valid_ns = [n for n in get_neighbors(r, c) 
+                        if 0 <= n[0] < size and 0 <= n[1] < size and valid_mask[n[0], n[1]]]
+            
+            deg = len(valid_ns)
+            
+            # In a hex grid, interior has degree 6.
+            # Corners typically have degree 2 or 3 depending on board size.
+            # With < 3, it's definitely a tip/corner.
+            if deg < 3:
+                corners.append((r, c))
+            
+            if deg < 6:
+                boundary_cells.append((r, c))
+                
+    # 2. Group boundary cells into edges (connected components)
+    edge_segments = []
+    visited_boundary = set()
+    
+    boundary_set = set(boundary_cells)
+    
+    for cell in boundary_cells:
+        if cell in visited_boundary:
+            continue
+        
+        # BFS to find this edge segment
+        q = deque([cell])
+        visited_boundary.add(cell)
+        segment = set()
+        
+        while q:
+            curr = q.popleft()
+            segment.add(curr)
+            
+            for n in get_neighbors(curr[0], curr[1]):
+                if n in boundary_set and n not in visited_boundary:
+                    visited_boundary.add(n)
+                    q.append(n)
+        
+        edge_segments.append(segment)
+        
+    return set(corners), edge_segments
+
+def check_win(stones, corners, edge_segments):
+    """
+    Checks if the set of 'stones' contains a Ring, Bridge, or Fork.
+    """
+    # 1. Find connected components
+    all_stones = set(stones)
+    visited = set()
+    
+    for stone in stones:
+        if stone in visited:
+            continue
+        
+        # BFS for component
+        q = deque([stone])
+        visited.add(stone)
+        component = [stone]
+        
+        while q:
+            curr = q.popleft()
+            for n in get_neighbors(curr[0], curr[1]):
+                if n in all_stones and n not in visited:
+                    visited.add(n)
+                    component.append(n)
+                    q.append(n)
+        
+        # Check Win Conditions on this component
+        comp_set = set(component)
+        
+        # A. Ring (Cycle Detection)
+        # DFS to detect cycle in undirected graph
+        stack = [(component[0], None)]
+        parent_map = {component[0]: None}
+        
+        found_cycle = False
+        while stack:
+            node, parent = stack.pop()
+            for n in get_neighbors(node[0], node[1]):
+                if n in comp_set:
+                    if n not in parent_map:
+                        parent_map[n] = node
+                        stack.append((n, node))
+                    elif n != parent:
+                        # Found a back edge -> Cycle
+                        # Ensure it's a real ring (length > 3 usually, but valid hex ring encloses something)
+                        # Simplification: Any cycle in a non-trivial component counts for this game logic
+                        found_cycle = True
+                        break
+            if found_cycle:
+                break
+        
+        if found_cycle:
+            return True
+            
+        # B. Bridge (Connects 2 corners)
+        touched_corners = 0
+        for s in component:
+            if s in corners:
+                touched_corners += 1
+                if touched_corners >= 2:
+                    return True
+        
+        # C. Fork (Connects 3 edges)
+        touched_edges = set()
+        for s in component:
+            for idx, edge in enumerate(edge_segments):
+                if s in edge:
+                    touched_edges.add(idx)
+                    if len(touched_edges) >= 3:
+                        return True
+                        
+    return False
+
+def policy(me, opp, valid_mask):
+    """
+    Main policy function.
+    """
+    size = valid_mask.shape[0]
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Identify geometry
+    corners, edge_segments = analyze_geometry(valid_mask)
+    
+    # Identify all valid moves
+    valid_moves = []
+    for r in range(size):
+        for c in range(size):
+            if valid_mask[r, c] and (r, c) not in me_set and (r, c) not in opp_set:
+                valid_moves.append((r, c))
+                
+    if not valid_moves:
+        return None # Should not happen if game is valid
+        
+    # Shuffle to add randomness to equal moves
+    random.shuffle(valid_moves)
+    
+    best_move = None
+    best_score = -999999
+    
+    center_r, center_c = 7, 7
+    
+    for move in valid_moves:
+        score = 0
+        r, c = move
+        
+        # 1. Check for Immediate Win
+        if check_win(me_set | {move}, corners, edge_segments):
+            return move # Winning immediately is priority
+            
+        # 2. Check for Block (Opponent would win here)
+        if check_win(opp_set | {move}, corners, edge_segments):
+            score += 50000 # High priority to block
+        
+        # 3. Heuristic Evaluation
+        
+        # Centrality (prefer center)
+        dist_sq = (r - center_r)**2 + (c - center_c)**2
+        score += (225 - dist_sq) # Max dist approx 14^2+14^2 ~ 392. Map to 0-200ish.
+        
+        # Connectivity (Neighbors)
+        neighbors = get_neighbors(r, c)
+        own_neighbors = 0
+        opp_neighbors = 0
+        
+        for n in neighbors:
+            if 0 <= n[0] < size and 0 <= n[1] < size:
+                if n in me_set:
+                    own_neighbors += 1
+                elif n in opp_set:
+                    opp_neighbors += 1
+        
+        # Connecting to own stones is good
+        score += own_neighbors * 20
+        
+        # Blocking opponent stones is good
+        score += opp_neighbors * 15
+        
+        # Random jitter
+        score += random.random()
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move

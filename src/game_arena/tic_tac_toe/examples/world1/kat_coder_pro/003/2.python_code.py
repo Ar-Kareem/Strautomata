@@ -1,0 +1,99 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Optimal Tic Tac Toe policy using minimax with alpha-beta pruning.
+    Returns the best move as (row, col).
+    """
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    def is_winner(board_state, player):
+        """Check if player has won"""
+        # Check rows, columns, and diagonals
+        for i in range(3):
+            if all(board_state[i, j] == player for j in range(3)) or \
+               all(board_state[j, i] == player for j in range(3)):
+                return True
+        if all(board_state[i, i] == player for i in range(3)) or \
+           all(board_state[i, 2-i] == player for i in range(3)):
+            return True
+        return False
+    
+    def is_game_over(board_state):
+        """Check if game is over (win or draw)"""
+        if is_winner(board_state, 1) or is_winner(board_state, -1):
+            return True
+        if not (board_state == 0).any():
+            return True
+        return False
+    
+    def get_score(board_state):
+        """Return score: 1 for my win, -1 for opponent win, 0 for draw"""
+        if is_winner(board_state, 1):
+            return 1
+        elif is_winner(board_state, -1):
+            return -1
+        return 0
+    
+    def get_valid_moves(board_state):
+        """Return list of valid moves as (row, col) tuples"""
+        return [(i, j) for i in range(3) for j in range(3) if board_state[i, j] == 0]
+    
+    def minimax(board_state, depth, alpha, beta, is_maximizing):
+        """
+        Minimax algorithm with alpha-beta pruning
+        Returns best score for current position
+        """
+        if is_game_over(board_state):
+            return get_score(board_state)
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            for move in get_valid_moves(board_state):
+                board_state[move] = 1  # My move
+                eval_score = minimax(board_state, depth + 1, alpha, beta, False)
+                board_state[move] = 0  # Undo move
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # Alpha-beta pruning
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in get_valid_moves(board_state):
+                board_state[move] = -1  # Opponent's move
+                eval_score = minimax(board_state, depth + 1, alpha, beta, True)
+                board_state[move] = 0  # Undo move
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # Alpha-beta pruning
+            return min_eval
+    
+    # Get all valid moves
+    valid_moves = get_valid_moves(board_array)
+    
+    # If first move, take center or corner
+    if len(valid_moves) == 9:
+        # Take center if available
+        if board_array[1, 1] == 0:
+            return (1, 1)
+        # Otherwise take a corner
+        return (0, 0)
+    
+    # Use minimax to find best move
+    best_score = -float('inf')
+    best_move = valid_moves[0]  # Default to first valid move
+    
+    for move in valid_moves:
+        board_array[move] = 1  # Try my move
+        score = minimax(board_array, 0, -float('inf'), float('inf'), False)
+        board_array[move] = 0  # Undo move
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

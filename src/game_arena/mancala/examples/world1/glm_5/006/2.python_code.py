@@ -1,0 +1,204 @@
+
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Board representation:
+    # Indices 0-5: Player's houses
+    # Index 6: Player's store
+    # Indices 7-12: Opponent's houses
+    # Index 13: Opponent's store
+    board = you[:6] + [you[6]] + opponent[:6] + [opponent[6]]
+    
+    start_time = time.time()
+    time_limit = 0.95  # seconds
+    
+    # Precompute valid moves (indices 0-5 where count > 0)
+    valid_moves = [i for i in range(6) if board[i] > 0]
+    
+    if not valid_moves:
+        return 0  # Fallback, though prompt says policy is never called with no legal move
+
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+
+    best_move = valid_moves[0]
+    
+    # Helper to advance position based on player
+    # P1 (us) skips 13, P2 (them) skips 6
+    def next_pos(p, is_p1):
+        p = (p + 1) % 14
+        if is_p1:
+            if p == 13: return 0
+        else:
+            if p == 6: return 7
+        return p
+
+    # Simulate a move
+    # Returns (new_board, next_is_p1)
+    def make_move(b, pit, is_p1):
+        new_b = b[:]
+        seeds = new_b[pit]
+        if seeds == 0:
+            return None, None
+        
+        new_b[pit] = 0
+        curr = pit
+        
+        while seeds > 0:
+            curr = next_pos(curr, is_p1)
+            new_b[curr] += 1
+            seeds -= 1
+            
+        # Capture logic
+        if is_p1:
+            # P1 lands in own house (0-5) and it was empty
+            if 0 <= curr <= 5 and new_b[curr] == 1:
+                opp_idx = 12 - curr
+                if new_b[opp_idx] > 0:
+                    # Capture
+                    new_b[6] += 1 + new_b[opp_idx]
+                    new_b[curr] = 0
+                    new_b[opp_idx] = 0
+            # Extra turn if lands in store (6)
+            return new_b, (curr == 6)
+        else:
+            # P2 lands in own house (7-12) and it was empty
+            if 7 <= curr <= 12 and new_b[curr] == 1:
+                opp_idx = 12 - curr
+                if new_b[opp_idx] > 0:
+                    # Capture
+                    new_b[13] += 1 + new_b[opp_idx]
+                    new_b[curr] = 0
+                    new_b[opp_idx] = 0
+            # Extra turn if lands in store (13)
+            return new_b, (curr == 13)
+
+    def evaluate(b):
+        return b[6] - b[13]
+
+    # Minimax with Alpha-Beta pruning
+    def minimax(b, depth, alpha, beta, is_p1):
+        # Check game end
+        p1_empty = sum(b[0:6]) == 0
+        p2_empty = sum(b[7:13]) == 0
+        
+        if p1_empty or p2_empty:
+            score = b[6] - b[13]
+            if p1_empty:
+                score -= sum(b[7:13])
+            else:
+                score += sum(b[0:6])
+            return score
+            
+        if depth == 0:
+            return evaluate(b)
+            
+        moves = []
+        if is_p1:
+            for i in range(6):
+                if b[i] > 0: moves.append(i)
+        else:
+            for i in range(7, 13):
+                if b[i] > 0: moves.append(i)
+        
+        if not moves:
+            return evaluate(b)
+            
+        # Move ordering: prioritize extra turns
+        # For P1, landing in 6 gives extra turn.
+        # This is a simple heuristic to improve pruning
+        if is_p1:
+            def key_func(i):
+                # Check if move ends in store
+                # Path length to store from i is (6 - i)
+                # Actually simpler: loop logic determines landing
+                # Avoid slow simulation in ordering, just use seed count heuristic?
+                # Or just run a quick check: (b[i] + i) % 13 == 6
+                # This works because cycle length is 13 for P1.
+                if (b[i] + i) % 13 == 6: return 0
+                return 1
+            moves.sort(key=key_func)
+        else:
+            # For P2, landing in 13 gives extra turn.
+            # Cycle is 0-5, 7-13. Total 13 spots.
+            # Map indices: 7->0, ..., 12->5, 13->6 (store)?
+            # Or simpler offset logic.
+            # Standard sowing: 7..12 -> 13 -> 0..5
+            # Distance to 13 from i (7..12): 13 - i.
+            # Check if (b[i] - (13 - i)) % 13 == 0
+            # Wait, seeds count b[i].
+            # Spots to traverse to hit 13: 13 - i.
+            # If b[i] % 13 == (13 - i) ? No.
+            # Let's just rely on depth, sorting complexity might slow down shallow depths.
+            pass
+
+        if is_p1:
+            max_eval = -float('inf')
+            for move in moves:
+                nb, same_turn = make_move(b, move, True)
+                # Depth logic: if same_turn, it's still our turn, depth only decreases on turn switch?
+                # Strict depth decrement per move is safer for time.
+                # We use depth-1 for simplicity and breadth coverage.
+                eval_val = minimax(nb, depth - 1, alpha, beta, same_turn)
+                if eval_val > max_eval:
+                    max_eval = eval_val
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                nb, same_turn = make_move(b, move, False)
+                # If same_turn (is_p1=False), minimax called with False again
+                eval_val = minimax(nb, depth - 1, alpha, beta, not same_turn)
+                if eval_val < min_eval:
+                    min_eval = eval_val
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Iterative Deepening
+    current_depth = 6
+    best_score = -float('inf')
+    
+    # Initial ordering for root moves
+    def root_key(i):
+        if (board[i] + i) % 13 == 6: return 0
+        return 1
+    valid_moves.sort(key=root_key)
+
+    # We assume initial call is for P1 (us)
+    while True:
+        if time.time() - start_time > time_limit:
+            break
+            
+        current_best_move = -1
+        current_best_score = -float('inf')
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        for move in valid_moves:
+            if time.time() - start_time > time_limit:
+                break
+                
+            nb, same_turn = make_move(board, move, True)
+            # If same_turn is True, next is P1 (True)
+            score = minimax(nb, current_depth - 1, alpha, beta, same_turn)
+            
+            if score > current_best_score:
+                current_best_score = score
+                current_best_move = move
+            
+            alpha = max(alpha, score)
+            
+        # If we finished the depth
+        if time.time() - start_time <= time_limit:
+            best_move = current_best_move
+            best_score = current_best_score
+            current_depth += 2
+        else:
+            break
+
+    return best_move

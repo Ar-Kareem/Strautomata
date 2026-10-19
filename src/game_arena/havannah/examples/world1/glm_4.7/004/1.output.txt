@@ -1,0 +1,223 @@
+The strategy for this policy is to play defensively, prioritizing the prevention of opponent wins, while also seeking immediate winning opportunities. It uses a Union-Find (Disjoint Set Union) data structure to efficiently track connected components of stones and detect winning structures (Bridge, Fork, Ring). The policy first analyzes the board geometry to identify corners and edges. On each turn, it simulates placing a stone in every valid cell to check for an immediate win. If no immediate win is found, it checks if the opponent can win on their next turn and blocks such threats. If there are no immediate threats or wins, it selects a move based on a heuristic that favors the center, connectivity to existing stones, and blocking opponent stones.
+
+```python
+import random
+import math
+
+# Neighbor offsets based on the example: (4,1) touches (3,0), (3,1), (3,2), (4,0), (4,2), (5,1)
+# Directions: (dr, dc)
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0)]
+
+def get_neighbors(r, c):
+    return [(r + dr, c + dc) for dr, dc in DIRECTIONS]
+
+def analyze_geometry(valid_mask):
+    """Identifies the 6 corners and 6 edges of the Havannah board."""
+    N = len(valid_mask)
+    boundary_cells = []
+    degrees = {}
+    
+    # Find boundary cells (cells with < 6 valid neighbors)
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c]:
+                neighbors = [nr for nr, nc in get_neighbors(r, c) 
+                             if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]]
+                deg = len(neighbors)
+                if deg < 6:
+                    boundary_cells.append((r, c))
+                    degrees[(r, c)] = deg
+
+    # Corners are boundary cells with the minimum degree (usually 2 for a hexagon)
+    # We assume the board is a hexagon, so we pick the 6 cells with the lowest degree.
+    sorted_boundary = sorted(boundary_cells, key=lambda p: degrees[p])
+    corners = sorted_boundary[:6]
+    
+    # Sort corners clockwise to define edge order
+    cx, cy = N // 2, N // 2
+    corners.sort(key=lambda p: math.atan2(p[0] - cx, p[1] - cy))
+    
+    # Identify edges as the boundary segments between consecutive corners
+    edges = [set() for _ in range(6)]
+    boundary_set = set(boundary_cells)
+    corner_set = set(corners)
+    
+    for i in range(6):
+        start_c = corners[i]
+        target_c = corners[(i + 1) % 6]
+        
+        # BFS/DFS along boundary from start_c to target_c
+        stack = [start_c]
+        visited = {start_c}
+        edge_cells = set()
+        
+        while stack:
+            curr = stack.pop()
+            if curr == target_c:
+                continue
+            
+            # Add to edge if it's a boundary cell and not a corner
+            if curr in boundary_set and curr not in corner_set:
+                edge_cells.add(curr)
+            
+            for nr, nc in get_neighbors(*curr):
+                if (nr, nc) in boundary_set and (nr, nc) not in visited and (nr, nc) not in corner_set:
+                    # Note: Connectivity on boundary implies path following the perimeter.
+                    # We must ensure we don't cut across the interior.
+                    # A simple neighbor check on valid boundary cells works if the boundary is "thick" enough
+                    # or if we only accept neighbors that are also on the boundary.
+                    # Since we iterate boundary cells, this effectively walks the rim.
+                    visited.add((nr, nc))
+                    stack.append((nr, nc))
+        
+        edges[i] = edge_cells
+        
+    return corners, edges
+
+def check_win(stone_set, corners, edges):
+    """
+    Checks if the stones in stone_set form a winning structure (Ring, Bridge, Fork).
+    """
+    if not stone_set:
+        return False
+        
+    parent = {}
+    rank = {}
+    
+    # DSU helpers
+    def find(i):
+        if parent[i] == i: return i
+        parent[i] = find(parent[i])
+        return parent[i]
+    
+    def union(x, y):
+        xroot = find(x)
+        yroot = find(y)
+        if xroot == yroot: return False # Cycle detected or already same set
+        if rank[xroot] < rank[yroot]:
+            parent[xroot] = yroot
+        elif rank[xroot] > rank[yroot]:
+            parent[yroot] = xroot
+        else:
+            parent[yroot] = xroot
+            rank[xroot] += 1
+        return True
+
+    # Initialize DSU
+    for s in stone_set:
+        parent[s] = s
+        rank[s] = 0
+        
+    has_ring = False
+    
+    # Track properties per component
+    # We need to map component root to corners and edges touched
+    comp_corners = {}  # root -> set of corner indices
+    comp_edges = {}    # root -> set of edge indices
+    
+    for s in stone_set:
+        # Check if s is a corner
+        try:
+            c_idx = corners.index(s)
+            root = find(s)
+            if root not in comp_corners: comp_corners[root] = set()
+            comp_corners[root].add(c_idx)
+        except ValueError:
+            pass
+            
+        # Check if s is on an edge
+        for i in range(6):
+            if s in edges[i]:
+                root = find(s)
+                if root not in comp_edges: comp_edges[root] = set()
+                comp_edges[root].add(i)
+
+        # Union with neighbors and check for Ring (Cycle)
+        for ns in get_neighbors(*s):
+            if ns in stone_set:
+                # Check cycle before union to detect ring closure
+                # If s and ns are already connected, adding this link forms a cycle
+                if find(s) == find(ns):
+                    has_ring = True
+                else:
+                    union(s, ns)
+    
+    if has_ring:
+        return True
+        
+    # Check Bridge (2 corners in same component)
+    for c_set in comp_corners.values():
+        if len(c_set) >= 2:
+            return True
+            
+    # Check Fork (3 edges in same component)
+    for e_set in comp_edges.values():
+        if len(e_set) >= 3:
+            return True
+            
+    return False
+
+def policy(me, opp, valid_mask):
+    """
+    Determines the next move based on the current board state.
+    """
+    # Convert lists to sets for fast lookups
+    my_stones = set(me)
+    opp_stones = set(opp)
+    all_stones = my_stones | opp_stones
+    
+    # Analyze board geometry (corners and edges)
+    corners, edges = analyze_geometry(valid_mask)
+    
+    # Generate all valid moves
+    N = len(valid_mask)
+    valid_moves = []
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and (r, c) not in all_stones:
+                valid_moves.append((r, c))
+                
+    if not valid_moves:
+        return (-1, -1) # Should not happen in standard game
+
+    # 1. Check for immediate win
+    for move in valid_moves:
+        if check_win(my_stones | {move}, corners, edges):
+            return move
+            
+    # 2. Check for opponent threats (must block)
+    threats = []
+    for move in valid_moves:
+        if check_win(opp_stones | {move}, corners, edges):
+            threats.append(move)
+            
+    if threats:
+        return random.choice(threats)
+        
+    # 3. Heuristic Selection
+    # Prioritize center, connecting to own stones, and blocking opponent
+    best_score = -1
+    best_move = None
+    center = (7, 7)
+    
+    for move in valid_moves:
+        score = random.random() * 5  # Add noise for variety
+        
+        # Distance to center
+        dist_to_center = abs(move[0] - center[0]) + abs(move[1] - center[1])
+        score += (15 - dist_to_center) * 2
+        
+        # Connectivity to own stones
+        my_neighbors = sum(1 for n in get_neighbors(*move) if n in my_stones)
+        score += my_neighbors * 10
+        
+        # Connectivity to opponent stones (blocking)
+        opp_neighbors = sum(1 for n in get_neighbors(*move) if n in opp_stones)
+        score += opp_neighbors * 6
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move if best_move else random.choice(valid_moves)
+```

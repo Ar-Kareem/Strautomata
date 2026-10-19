@@ -1,0 +1,204 @@
+
+import time
+import functools
+
+# Board dimensions
+ROWS, COLS = 5, 6
+N = ROWS * COLS
+INF = 10 ** 9
+
+# Direction mapping: (char, delta_row, delta_col)
+DIRS = [('U', -1, 0), ('R', 0, 1), ('D', 1, 0), ('L', 0, -1)]
+
+# Pre‑compute orthogonal neighbours for every cell
+NEIGHBORS = [[] for _ in range(N)]
+for idx in range(N):
+    r, c = divmod(idx, COLS)
+    for dchar, dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < ROWS and 0 <= nc < COLS:
+            nidx = nr * COLS + nc
+            NEIGHBORS[idx].append((nidx, dchar))
+
+# ----------------------------------------------------------------------
+# Utility functions
+# ----------------------------------------------------------------------
+def board_to_mask(board):
+    """Convert a 5x6 list of lists (0/1) into a 30‑bit integer mask."""
+    mask = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            if board[r][c]:
+                mask |= 1 << (r * COLS + c)
+    return mask
+
+def move_to_string(start_idx, end_idx, dchar):
+    """Convert internal move representation to the required string format."""
+    row, col = divmod(start_idx, COLS)
+    return f"{row},{col},{dchar}"
+
+def generate_moves(my_mask, opp_mask):
+    """Yield all legal captures for the player whose pieces are in my_mask."""
+    moves = []
+    m = my_mask
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        for nidx, dchar in NEIGHBORS[idx]:
+            if opp_mask & (1 << nidx):
+                moves.append((idx, nidx, dchar))
+        m ^= lsb
+    return moves
+
+def count_mobility(my_mask, opp_mask):
+    """Count the number of legal captures for the given side."""
+    total = 0
+    m = my_mask
+    while m:
+        lsb = m & -m
+        idx = (lsb.bit_length() - 1)
+        for nidx, _ in NEIGHBORS[idx]:
+            if opp_mask & (1 << nidx):
+                total += 1
+        m ^= lsb
+    return total
+
+def evaluate(us_mask, opp_mask):
+    """Static evaluation from the perspective of the player to move (us)."""
+    us_cnt = us_mask.bit_count()
+    opp_cnt = opp_mask.bit_count()
+    us_mob = count_mobility(us_mask, opp_mask)
+    opp_mob = count_mobility(opp_mask, us_mask)
+    # Weighted sum: piece advantage is dominant, mobility provides finer detail
+    score = (us_cnt - opp_cnt) * 100 + (us_mob - opp_mob) * 10
+    return score
+
+def apply_move(move, us_mask, opp_mask, turn):
+    """Apply a move and return the new masks.
+    turn == 0 → us (our) move; turn == 1 → opponent move."""
+    start, end, _ = move
+    if turn == 0:  # our move
+        new_us = (us_mask ^ (1 << start)) | (1 << end)
+        new_opp = opp_mask & ~(1 << end)
+    else:  # opponent move
+        new_opp = (opp_mask ^ (1 << start)) | (1 << end)
+        new_us = us_mask & ~(1 << end)
+    return new_us, new_opp
+
+# ----------------------------------------------------------------------
+# Minimax with transposition table (dictionary) and alpha‑beta pruning
+# ----------------------------------------------------------------------
+def solve_state(us_mask, opp_mask, depth, turn, alpha=-INF, beta=INF, cache=None):
+    """Return the optimal evaluation for the given state (player to move = turn)."""
+    if cache is None:
+        cache = {}
+    key = (us_mask, opp_mask, depth, turn)
+    if key in cache:
+        # Cached value is independent of alpha/beta
+        return cache[key]
+
+    # Generate moves for the player whose turn it is
+    moves = generate_moves(us_mask if turn == 0 else opp_mask,
+                           opp_mask if turn == 0 else us_mask)
+
+    # Terminal: no legal moves → loss for the player to move
+    if not moves:
+        result = -INF if turn == 0 else INF
+        cache[key] = result
+        return result
+
+    # Depth limit reached → use static evaluation
+    if depth == 0:
+        result = evaluate(us_mask, opp_mask)
+        cache[key] = result
+        return result
+
+    if turn == 0:  # Maximizing (our turn)
+        best = -INF
+        for mv in moves:
+            new_us, new_opp = apply_move(mv, us_mask, opp_mask, turn)
+            val = solve_state(new_us, new_opp, depth - 1, 1, alpha, beta, cache)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        cache[key] = best
+        return best
+    else:  # Minimizing (opponent turn)
+        best = INF
+        for mv in moves:
+            new_us, new_opp = apply_move(mv, us_mask, opp_mask, turn)
+            val = solve_state(new_us, new_opp, depth - 1, 0, alpha, beta, cache)
+            if val < best:
+                best = val
+            if best < beta:
+                beta = best
+            if alpha >= beta:
+                break
+        cache[key] = best
+        return best
+
+# ----------------------------------------------------------------------
+# Policy entry point
+# ----------------------------------------------------------------------
+def policy(you, opponent):
+    start_time = time.time()
+    TIME_LIMIT = 0.95  # seconds
+
+    us_mask = board_to_mask(you)
+    opp_mask = board_to_mask(opponent)
+
+    # Quick check for any legal move (should always be true)
+    legal_moves = generate_moves(us_mask, opp_mask)
+    if not legal_moves:
+        # Defensive fallback – should never happen in a valid game state
+        return "0,0,U"
+
+    # Iterative deepening
+    best_move = None
+    depth = 1
+    while time.time() - start_time < TIME_LIMIT:
+        cache = {}  # Fresh cache for each depth to keep memory reasonable
+        # Order moves using a fast static evaluation of the resulting position
+        scored = []
+        for mv in legal_moves:
+            new_us, new_opp = apply_move(mv, us_mask, opp_mask, turn=0)
+            # Simple score: piece diff after move + mobility diff after move
+            piece_diff = (new_us.bit_count() - new_opp.bit_count()) * 100
+            mob_diff = (count_mobility(new_us, new_opp) - count_mobility(new_opp, new_us)) * 10
+            score = piece_diff + mob_diff
+            scored.append((score, mv))
+        # Maximizing player (us) → sort descending
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Alpha‑beta search from this depth
+        best_value = -INF
+        best_at_depth = None
+        for _, mv in scored:
+            new_us, new_opp = apply_move(mv, us_mask, opp_mask, turn=0)
+            # After our move, it's opponent's turn (turn=1)
+            val = solve_state(new_us, new_opp, depth - 1, 1, -INF, INF, cache)
+            if val > best_value:
+                best_value = val
+                best_at_depth = mv
+                # Early exit if we find a winning move
+                if best_value == INF:
+                    break
+
+        if best_at_depth is not None:
+            best_move = best_at_depth
+        else:
+            # No move found at this depth (should not happen)
+            break
+
+        depth += 1
+        # Prepare legal_moves for the next iteration (board hasn't changed)
+        legal_moves = generate_moves(us_mask, opp_mask)
+
+    # Final safety: if best_move still None, pick the first legal move
+    if best_move is None:
+        best_move = legal_moves[0]
+
+    return move_to_string(*best_move)

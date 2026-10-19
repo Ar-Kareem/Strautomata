@@ -1,0 +1,193 @@
+# Strategy
+
+My Go AI uses a **heuristic-based tactical approach** with the following priorities:
+
+1. **Capture (Priority 1000+)**: Immediately capture opponent stones when possible - this is the highest priority
+2. **Defend (Priority 500+)**: Save our own groups that are in atari (down to 1 liberty)
+3. **Attack (Priority 200+)**: Put opponent groups into atari to create threats
+4. **Opening Strategy (Priority 100)**: In the early game (first ~40 moves), favor traditional strong points like the 4-4 (hoshi), 10-10 (tengen), and corner positions
+5. **Connection (Priority 15+)**: Prefer moves that connect to existing stones to build strong groups
+6. **Liberties (Priority 1+)**: Favor moves that leave groups with more breathing room
+
+The AI uses efficient move generation by only considering:
+- Points adjacent to existing stones (where tactical play happens)
+- Key opening points in the early game
+- Full board search as a fallback if needed
+
+The implementation pre-computes groups for efficiency and always guarantees a legal move or pass. This balanced approach handles both tactical situations (captures/threats) and strategic positioning (opening play, connections).
+
+<code>
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """
+    Heuristic Go AI with tactical awareness and strategic opening play.
+    """
+    BOARD_SIZE = 19
+    
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones | opp_stones
+    
+    def get_neighbors(r, c):
+        """Get valid adjacent positions."""
+        neighbors = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    def get_group(pos, stones):
+        """Get all stones connected to pos."""
+        if pos not in stones:
+            return set()
+        
+        group = {pos}
+        frontier = [pos]
+        
+        while frontier:
+            current = frontier.pop()
+            for neighbor in get_neighbors(*current):
+                if neighbor in stones and neighbor not in group:
+                    group.add(neighbor)
+                    frontier.append(neighbor)
+        
+        return group
+    
+    def count_liberties(group, occupied):
+        """Count liberties of a group."""
+        liberties = set()
+        for stone in group:
+            for neighbor in get_neighbors(*stone):
+                if neighbor not in occupied:
+                    liberties.add(neighbor)
+        return liberties
+    
+    def get_all_groups(stones):
+        """Get all distinct groups."""
+        groups = []
+        seen = set()
+        for stone in stones:
+            if stone not in seen:
+                group = get_group(stone, stones)
+                groups.append(group)
+                seen.update(group)
+        return groups
+    
+    def would_capture(pos, target_stones, occupied):
+        """Check which groups would be captured."""
+        captured_groups = []
+        for neighbor in get_neighbors(*pos):
+            if neighbor in target_stones:
+                group = get_group(neighbor, target_stones)
+                libs = count_liberties(group, occupied)
+                if pos in libs and len(libs) == 1:
+                    captured_groups.append(group)
+        return captured_groups
+    
+    def is_legal(pos):
+        """Check legality."""
+        if pos in all_stones:
+            return False
+        
+        if would_capture(pos, opp_stones, all_stones):
+            return True
+        
+        new_occupied = all_stones | {pos}
+        my_group = get_group(pos, my_stones | {pos})
+        my_libs = count_liberties(my_group, new_occupied)
+        
+        return len(my_libs) > 0
+    
+    # Pre-compute groups for efficiency
+    my_groups = get_all_groups(my_stones)
+    opp_groups = get_all_groups(opp_stones)
+    
+    def score_move(pos):
+        """Score a move."""
+        if not is_legal(pos):
+            return -1e9
+        
+        r, c = pos
+        score = 0.0
+        
+        # CAPTURE
+        captured = would_capture(pos, opp_stones, all_stones)
+        if captured:
+            score += 1000 * sum(len(g) for g in captured)
+        
+        # DEFEND
+        saved_stones = set()
+        for group in my_groups:
+            libs = count_liberties(group, all_stones)
+            if len(libs) == 1 and pos in libs:
+                saved_stones.update(group)
+        score += 500 * len(saved_stones)
+        
+        # ATTACK
+        threatened_stones = set()
+        for group in opp_groups:
+            libs = count_liberties(group, all_stones)
+            if pos in libs and len(libs) == 2:
+                threatened_stones.update(group)
+        score += 200 * len(threatened_stones)
+        
+        # OPENING
+        if len(all_stones) < 40:
+            key_points = [(4, 4), (4, 10), (4, 16),
+                         (10, 4), (10, 10), (10, 16),
+                         (16, 4), (16, 10), (16, 16)]
+            
+            min_dist = min(abs(r - kr) + abs(c - kc) for kr, kc in key_points)
+            if min_dist == 0:
+                score += 100
+            elif min_dist <= 2:
+                score += 30 - min_dist * 10
+        
+        # CONNECTION
+        adjacent_friendly = sum(1 for n in get_neighbors(*pos) if n in my_stones)
+        score += adjacent_friendly * 15
+        
+        # LIBERTIES
+        new_group = get_group(pos, my_stones | {pos})
+        libs = count_liberties(new_group, all_stones | {pos})
+        score += len(libs)
+        
+        # Randomness
+        score += random.random() * 0.1
+        
+        return score
+    
+    # Generate candidates
+    candidates = set()
+    
+    for stone in all_stones:
+        for neighbor in get_neighbors(*stone):
+            if neighbor not in all_stones:
+                candidates.add(neighbor)
+    
+    if len(all_stones) < 20:
+        candidates.update([
+            (4, 4), (4, 10), (4, 16),
+            (10, 4), (10, 10), (10, 16),
+            (16, 4), (16, 10), (16, 16),
+            (3, 3), (3, 17), (17, 3), (17, 17)
+        ])
+    
+    legal_moves = [pos for pos in candidates if is_legal(pos)]
+    
+    if not legal_moves:
+        for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                pos = (r, c)
+                if is_legal(pos):
+                    legal_moves.append(pos)
+    
+    if not legal_moves:
+        return (0, 0)
+    
+    best_move = max(legal_moves, key=score_move)
+    
+    return best_move
+</code>

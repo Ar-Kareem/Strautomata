@@ -1,0 +1,247 @@
+
+import time
+import random
+import math
+
+# Board dimension
+SIZE = 11
+
+# Virtual nodes for DSU connectivity check
+TOP_NODE = SIZE * SIZE
+BOTTOM_NODE = SIZE * SIZE + 1
+LEFT_NODE = SIZE * SIZE + 2
+RIGHT_NODE = SIZE * SIZE + 3
+
+# Hex neighbor offsets based on the provided connectivity definition
+# (r, c) neighbors: (r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c-1), (r+1, c)
+MOVES = [
+    (0, -1), (0, 1),
+    (-1, 0), (-1, 1),
+    (1, -1), (1, 0)
+]
+
+def get_neighbor_indices(idx):
+    """Precompute neighbor indices for a given cell index."""
+    r, c = divmod(idx, SIZE)
+    neighbors = []
+    for dr, dc in MOVES:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < SIZE and 0 <= nc < SIZE:
+            neighbors.append(nr * SIZE + nc)
+    return neighbors
+
+# Precompute adjacency list for all board cells
+ADJ = [get_neighbor_indices(i) for i in range(SIZE * SIZE)]
+
+class DSU:
+    """Efficient Disjoint Set Union with path compression."""
+    def __init__(self, n):
+        self.parent = list(range(n))
+    
+    def find(self, i):
+        root = i
+        while root != self.parent[root]:
+            root = self.parent[root]
+        curr = i
+        while curr != root:
+            nxt = self.parent[curr]
+            self.parent[curr] = root
+            curr = nxt
+        return root
+
+    def union(self, i, j):
+        root_i = self.find(i)
+        root_j = self.find(j)
+        if root_i != root_j:
+            self.parent[root_i] = root_j
+            return True
+        return False
+
+class MCTSNode:
+    """Node in the Monte Carlo Search Tree."""
+    def __init__(self, move, parent, player_color, available_moves):
+        self.move = move
+        self.parent = parent
+        self.player_color = player_color  # The player who made the move to reach this state
+        self.children = []
+        self.visits = 0
+        self.wins = 0
+        
+        # Moves available from this state to be tried as children
+        self.available_moves = available_moves
+        self.untried_moves = available_moves[:]
+        # Randomize order to reduce bias
+        random.shuffle(self.untried_moves)
+
+    def uct_select_child(self):
+        """Select a child node using UCB1 formula."""
+        log_visits = math.log(self.visits)
+        best_score = -1.0
+        best_child = None
+        
+        for child in self.children:
+            # UCB1: Exploitation + Exploration
+            # We view stats from the perspective of the parent's player.
+            # child.wins counts wins for the player who made the move (parent's player).
+            score = (child.wins / child.visits) + 1.41 * math.sqrt(log_visits / child.visits)
+            if score > best_score:
+                best_score = score
+                best_child = child
+        return best_child
+
+def check_win(board_set, color):
+    """Check if the given stones connect the requisite sides."""
+    dsu = DSU(SIZE * SIZE + 4)
+    
+    # Define targets
+    if color == 'b':
+        start_node, end_node = TOP_NODE, BOTTOM_NODE
+    else:
+        start_node, end_node = LEFT_NODE, RIGHT_NODE
+    
+    # Build connectivity graph
+    for idx in board_set:
+        r, c = divmod(idx, SIZE)
+        
+        # Connect to virtual edges
+        if color == 'b':
+            if r == 0: dsu.union(idx, TOP_NODE)
+            if r == SIZE - 1: dsu.union(idx, BOTTOM_NODE)
+        else:
+            if c == 0: dsu.union(idx, LEFT_NODE)
+            if c == SIZE - 1: dsu.union(idx, RIGHT_NODE)
+            
+        # Connect to neighbors if they are also occupied
+        for n_idx in ADJ[idx]:
+            if n_idx in board_set:
+                dsu.union(idx, n_idx)
+                
+    return dsu.find(start_node) == dsu.find(end_node)
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    """
+    MCTS Policy for Hex.
+    me: List of (row, col) for my stones.
+    opp: List of (row, col) for opponent's stones.
+    color: 'b' (Top-Bottom) or 'w' (Left-Right).
+    """
+    start_time = time.time()
+    
+    # 0. State Representation
+    me_indices = {r * SIZE + c for r, c in me}
+    opp_indices = {r * SIZE + c for r, c in opp}
+    all_indices = set(range(SIZE * SIZE))
+    
+    # Identify empty cells
+    empty_indices = list(all_indices - me_indices - opp_indices)
+    
+    # 1. Opening Heuristic: always take center if available
+    center_idx = 5 * SIZE + 5
+    if center_idx in empty_indices and center_idx not in me_indices and center_idx not in opp_indices:
+        return (5, 5)
+
+    if not empty_indices:
+        return (0, 0) # Fallback, should not happen
+
+    # 2. MCTS Root Setup
+    # The root represents the state *before* I make my move.
+    # Effectively, the last move was made by the opponent.
+    opp_color = 'w' if color == 'b' else 'b'
+    root = MCTSNode(None, None, opp_color, empty_indices)
+    
+    # 3. MCTS Loop
+    # Run for ~0.95 seconds to leave buffer for overhead
+    while time.time() - start_time < 0.95:
+        # Optimization: batch iterations to avoid excessive time checks
+        for _ in range(20):
+            node = root
+            
+            # Maintain temporary board state for this iteration
+            curr_me = me_indices.copy()
+            curr_opp = opp_indices.copy()
+            
+            # Track whose turn it is in the descent
+            # Start with my turn (since I am at root deciding a move)
+            turn_color = color 
+            
+            # --- Selection ---
+            # Traverse fully expanded nodes
+            while not node.untried_moves and node.children:
+                node = node.uct_select_child()
+                # Update temporary state based on move in node
+                if node.player_color == color:
+                    curr_me.add(node.move)
+                else:
+                    curr_opp.add(node.move)
+                # Flip turn
+                turn_color = 'w' if turn_color == 'b' else 'b'
+
+            # --- Expansion ---
+            if node.untried_moves:
+                move = node.untried_moves.pop()
+                
+                # Determine new lists for child
+                # Filter move from parent's available moves
+                # Doing list comprehension is cleaner than remove for immutability logic, usually
+                child_available = [m for m in node.available_moves if m != move]
+
+                child = MCTSNode(move, node, turn_color, child_available)
+                node.children.append(child)
+                node = child
+                
+                if turn_color == color:
+                    curr_me.add(move)
+                else:
+                    curr_opp.add(move)
+                
+                # Turn passes after expansion
+                turn_color = 'w' if turn_color == 'b' else 'b'
+            
+            # --- Simulation ---
+            # Fill the rest of the board randomly
+            # Remaining moves are in the leaf node's available_moves
+            sim_empties = node.available_moves[:]
+            random.shuffle(sim_empties)
+            
+            sim_me_extra = []
+            # Determine who moves next in simulation
+            # 'turn_color' is the player whose turn it is now
+            next_is_me = (turn_color == color)
+            
+            for i, idx in enumerate(sim_empties):
+                if (i % 2 == 0) == next_is_me:
+                    sim_me_extra.append(idx)
+            
+            # Check if 'me' wins. In Hex, if board is full, one player must have won.
+            # If I don't win, opponent wins.
+            sim_final_me = curr_me.union(sim_me_extra)
+            # We only check 'me' connectivity for efficiency
+            win_me = check_win(sim_final_me, color)
+            
+            # --- Backpropagation ---
+            while node is not None:
+                node.visits += 1
+                # If 'me' won the sim, nodes where 'me' moved get a win.
+                # If 'me' lost (opp won), nodes where 'opp' moved get a win.
+                if win_me:
+                    if node.player_color == color:
+                        node.wins += 1
+                else:
+                    if node.player_color != color:
+                        node.wins += 1
+                node = node.parent
+                
+        # Loop safety break
+        if time.time() - start_time > 0.95:
+            break
+
+    # 4. Select best move (most visited child is the robust standard)
+    if not root.children:
+        # Backup random if no search happened
+        move = random.choice(empty_indices)
+    else:
+        best_child = max(root.children, key=lambda c: c.visits)
+        move = best_child.move
+
+    r, c = divmod(move, SIZE)
+    return (r, c)

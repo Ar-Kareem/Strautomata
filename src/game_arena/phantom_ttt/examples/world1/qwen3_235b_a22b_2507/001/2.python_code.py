@@ -1,0 +1,130 @@
+
+import numpy as np
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> tuple[int, int]:
+    # Convert board to numpy for easier manipulation
+    board = np.array(board)
+    
+    # Map move index (0-8) to (row, col)
+    def idx_to_rc(idx):
+        return divmod(idx, 3)
+    
+    def rc_to_idx(r, c):
+        return 3 * r + c
+
+    # Get list of legal move coordinates
+    legal_coords = [idx_to_rc(idx) for idx in legal_moves]
+    
+    # Remove moves where we already have a confirmed mark
+    truly_legal = []
+    for r, c in legal_coords:
+        if board[r, c] != 1:  # We avoid cells that are confirmed ours
+            truly_legal.append((r, c))
+    
+    # If no legal moves, return center (shouldn't happen)
+    if not truly_legal:
+        return 1, 1
+    
+    # 1. Win: Check if we can complete a line
+    for r in range(3):
+        for c in range(3):
+            if board[r, c] == 1:
+                continue
+            if (r, c) not in truly_legal:
+                continue
+            # Try placing in (r, c) and see if we win
+            temp_board = board.copy()
+            temp_board[r, c] = 1
+            if check_win(temp_board, 1):
+                return r, c
+
+    # 2. Block: We can't see opponent, but we can assume they may be close to winning.
+    # We do this by checking: for each possible opponent-winning line, how many of our moves are in it?
+    # Actually, we use the idea: if a line has no mark of ours and two or more "unknowns", opponent might be close.
+    # We instead simulate: suppose opponent has marks in the unobserved cells. How many lines are one away from opponent completion?
+    # But we can't distinguish opponent from empty.
+
+    # Alternative heuristic: prefer moves that are in lines where we have few marks.
+    # We instead go for mobility and high-line coverage.
+
+    # Count our confirmed marks
+    my_marks = np.count_nonzero(board == 1)
+    total_moves = my_marks * 2  # rough estimate: each player has moved about my_marks times
+    opponent_moves = total_moves - my_marks  # same as my_marks
+
+    # Create a score for each legal move
+    scores = {}
+    lines = [
+        # rows
+        [(0,0), (0,1), (0,2)],
+        [(1,0), (1,1), (1,2)],
+        [(2,0), (2,1), (2,2)],
+        # cols
+        [(0,0), (1,0), (2,0)],
+        [(0,1), (1,1), (2,1)],
+        [(0,2), (1,2), (2,2)],
+        # diag
+        [(0,0), (1,1), (2,2)],
+        [(0,2), (1,1), (2,0)],
+    ]
+
+    for (r, c) in truly_legal:
+        score = 0
+        
+        # Base preference: center, then corners, then edges
+        if (r, c) == (1, 1):
+            score += 3
+        elif (r, c) in [(0,0), (0,2), (2,0), (2,2)]:
+            score += 2
+        else:
+            score += 1
+            
+        # Count how many of our lines this move contributes to that are promising
+        for line in lines:
+            if (r, c) not in line:
+                continue
+            our_count = 0
+            unknown_count = 0
+            for (lr, lc) in line:
+                if board[lr, lc] == 1:
+                    our_count += 1
+                elif (lr, lc) == (r, c) or board[lr, lc] == 0:
+                    unknown_count += 1
+            # If we already have 2 in this line, we could win — already checked above
+            # But we can reward being close to completing
+            if our_count == 2 and unknown_count == 1:
+                score += 10  # high reward for completing a line
+            elif our_count == 1 and unknown_count == 2:
+                score += 2
+            elif our_count == 0 and unknown_count == 3:
+                score += 1
+
+            # For blocking: how many opponent "threats" does this cell cover?
+            # We assume opponent marks are hidden in the 0s.
+            # For this line, if all other cells are not ours, opponent might have 2 there
+            other_cells = [pos for pos in line if pos != (r, c)]
+            our_in_others = sum(1 for (lr, lc) in other_cells if board[lr, lc] == 1)
+            if our_in_others == 0:
+                # Opponent could potentially have marks in both other cells? So blocking here is valuable
+                score += 4  # value of blocking a potential opponent win
+            elif our_in_others == 1:
+                score += 1
+
+        scores[(r, c)] = score
+
+    # Choose move with highest score
+    best_move = max(truly_legal, key=lambda x: scores[x])
+    return best_move
+
+def check_win(board, player):
+    # Check rows, cols, diagonals for three in a row
+    for i in range(3):
+        if board[i, 0] == board[i, 1] == board[i, 2] == player:
+            return True
+        if board[0, i] == board[1, i] == board[2, i] == player:
+            return True
+    if board[0,0] == board[1,1] == board[2,2] == player:
+        return True
+    if board[0,2] == board[1,1] == board[2,0] == player:
+        return True
+    return False

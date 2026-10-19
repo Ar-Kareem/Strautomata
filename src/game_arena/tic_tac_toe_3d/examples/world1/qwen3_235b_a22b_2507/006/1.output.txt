@@ -1,0 +1,172 @@
+<thinking>
+I need to implement a strategy for 3x3x3 3D Tic Tac Toe. Since this is a competitive game against an opponent, I'll use the minimax algorithm with alpha-beta pruning to look ahead and find the best move.
+
+The key aspects:
+1. Evaluate board states with a heuristic function
+2. Use minimax with alpha-beta pruning to search the game tree
+3. Handle the 3D nature of the board (27 cells total)
+4. Return the best available move
+
+For the heuristic evaluation, I'll score each possible winning line (there are 49 winning lines in 3D Tic Tac Toe: 3x3 rows, 3x3 columns, 3x3 pillars, 6 diagonals on each layer, and 4 space diagonals). I'll assign scores based on how favorable the position is for me (player 1).
+
+I'll limit the search depth to avoid timeouts, and include a simple move ordering to improve alpha-beta pruning efficiency.
+</thinking>
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Get all empty positions
+    empty_positions = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board_array[i, j, k] == 0:
+                    empty_positions.append((i, j, k))
+    
+    # If board is empty, take center position (most strategic)
+    if len(empty_positions) == 27:
+        return (1, 1, 1)
+    
+    # If only one empty position, take it
+    if len(empty_positions) == 1:
+        return empty_positions[0]
+    
+    def evaluate_board(board, player):
+        """Evaluate the board state from player's perspective"""
+        score = 0
+        # All possible winning lines in 3D tic tac toe
+        lines = []
+        
+        # Rows (fixed y, z varies)
+        for i in range(3):
+            for j in range(3):
+                lines.append([(i, j, k) for k in range(3)])
+        
+        # Columns (fixed x, z varies)
+        for i in range(3):
+            for k in range(3):
+                lines.append([(i, j, k) for j in range(3)])
+        
+        # Pillars (fixed x, y varies)
+        for j in range(3):
+            for k in range(3):
+                lines.append([(i, j, k) for i in range(3)])
+        
+        # Face diagonals on XY planes (fixed z)
+        for k in range(3):
+            lines.append([(i, i, k) for i in range(3)])
+            lines.append([(i, 2-i, k) for i in range(3)])
+        
+        # Face diagonals on XZ planes (fixed y)
+        for j in range(3):
+            lines.append([(i, j, i) for i in range(3)])
+            lines.append([(i, j, 2-i) for i in range(3)])
+        
+        # Face diagonals on YZ planes (fixed x)
+        for i in range(3):
+            lines.append([(i, j, j) for j in range(3)])
+            lines.append([(i, j, 2-j) for j in range(3)])
+        
+        # Space diagonals
+        lines.append([(i, i, i) for i in range(3)])
+        lines.append([(i, i, 2-i) for i in range(3)])
+        lines.append([(i, 2-i, i) for i in range(3)])
+        lines.append([(i, 2-i, 2-i) for i in range(3)])
+        
+        for line in lines:
+            player_count = 0
+            opponent_count = 0
+            for x, y, z in line:
+                if board[x, y, z] == 1:
+                    player_count += 1
+                elif board[x, y, z] == -1:
+                    opponent_count += 1
+            
+            # If the line is not blocked, score it
+            if player_count > 0 and opponent_count == 0:
+                # Award points based on how close to winning
+                if player_count == 3:  # Win
+                    score += 1000
+                elif player_count == 2:  # One away from winning
+                    score += 100
+                else:  # Just has pieces here
+                    score += 10
+            elif opponent_count > 0 and player_count == 0:
+                # Penalize opponent's progress
+                if opponent_count == 3:  # Opponent wins
+                    score -= 1000
+                elif opponent_count == 2:  # Opponent one away
+                    score -= 100
+                else:
+                    score -= 10
+        
+        return score
+    
+    def minimax(board, depth, alpha, beta, is_maximizing):
+        # Check if game is over or max depth reached
+        if depth == 0:
+            return evaluate_board(board, 1)
+        
+        # Check for terminal states
+        score = evaluate_board(board, 1)
+        if abs(score) >= 1000:  # Someone can win
+            return score
+        
+        if is_maximizing:
+            max_eval = -np.inf
+            # Sort moves to try center first (better pruning)
+            moves = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board[i, j, k] == 0]
+            # Prioritize center and corners for move ordering
+            moves.sort(key=lambda pos: -(abs(pos[0]-1) + abs(pos[1]-1) + abs(pos[2]-1)))
+            
+            for i, j, k in moves:
+                board[i, j, k] = 1  # Player 1's turn
+                eval_score = minimax(board, depth - 1, alpha, beta, False)
+                board[i, j, k] = 0  # Undo move
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # Beta cutoff
+            return max_eval
+        else:
+            min_eval = np.inf
+            moves = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board[i, j, k] == 0]
+            for i, j, k in moves:
+                board[i, j, k] = -1  # Player 2's turn
+                eval_score = minimax(board, depth - 1, alpha, beta, True)
+                board[i, j, k] = 0  # Undo move
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # Alpha cutoff
+            return min_eval
+    
+    # Find best move using minimax
+    best_score = -np.inf
+    best_move = empty_positions[0]  # Default to first empty
+    
+    # Adjust depth based on game phase
+    empty_count = len(empty_positions)
+    if empty_count >= 20:
+        depth = 4  # Early game, can search deeper
+    elif empty_count >= 10:
+        depth = 5
+    else:
+        depth = 6  # Late game, need deeper search
+    
+    # Try each possible move
+    for i, j, k in empty_positions:
+        board_array[i, j, k] = 1  # Make move
+        score = minimax(board_array, depth, -np.inf, np.inf, False)
+        board_array[i, j, k] = 0  # Undo move
+        
+        if score > best_score:
+            best_score = score
+            best_move = (i, j, k)
+    
+    return best_move
+</code>

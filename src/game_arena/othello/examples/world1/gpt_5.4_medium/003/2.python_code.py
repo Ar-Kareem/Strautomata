@@ -1,0 +1,454 @@
+
+import time
+import numpy as np
+
+FULL = (1 << 64) - 1
+
+FILE_A = 0x0101010101010101
+FILE_H = 0x8080808080808080
+NOT_A = FULL ^ FILE_A
+NOT_H = FULL ^ FILE_H
+
+CORNERS = (1 << 0) | (1 << 7) | (1 << 56) | (1 << 63)
+EDGES = 0xFF | (0xFF << 56) | FILE_A | FILE_H
+
+POS_WEIGHTS = [
+    120, -20,  20,   5,   5,  20, -20, 120,
+    -20, -40,  -5,  -5,  -5,  -5, -40, -20,
+     20,  -5,  15,   3,   3,  15,  -5,  20,
+      5,  -5,   3,   3,   3,   3,  -5,   5,
+      5,  -5,   3,   3,   3,   3,  -5,   5,
+     20,  -5,  15,   3,   3,  15,  -5,  20,
+    -20, -40,  -5,  -5,  -5,  -5, -40, -20,
+    120, -20,  20,   5,   5,  20, -20, 120,
+]
+
+ROW_WEIGHT = [[0] * 256 for _ in range(8)]
+for r in range(8):
+    base = 8 * r
+    for mask in range(256):
+        s = 0
+        m = mask
+        c = 0
+        while m:
+            if m & 1:
+                s += POS_WEIGHTS[base + c]
+            m >>= 1
+            c += 1
+        ROW_WEIGHT[r][mask] = s
+
+ORDER_BASE = []
+for i, w in enumerate(POS_WEIGHTS):
+    r, c = divmod(i, 8)
+    bonus = 80 if (r in (0, 7) or c in (0, 7)) else 0
+    ORDER_BASE.append(w * 10 + bonus)
+
+DANGER = {
+    1:  (1 << 0, 2500),   8:  (1 << 0, 2500),   9:  (1 << 0, 4500),
+    6:  (1 << 7, 2500),   15: (1 << 7, 2500),   14: (1 << 7, 4500),
+    48: (1 << 56, 2500),  57: (1 << 56, 2500),  49: (1 << 56, 4500),
+    55: (1 << 63, 2500),  62: (1 << 63, 2500),  54: (1 << 63, 4500),
+}
+
+CORNER_ADJ = [
+    (1 << 0,  (1 << 1) | (1 << 8) | (1 << 9)),
+    (1 << 7,  (1 << 6) | (1 << 14) | (1 << 15)),
+    (1 << 56, (1 << 48) | (1 << 49) | (1 << 57)),
+    (1 << 63, (1 << 54) | (1 << 55) | (1 << 62)),
+]
+
+_deadline = 0.0
+_nodes = 0
+_legal_cache = {}
+_search_cache = {}
+_move_hint = {}
+
+
+def _shift_n(x):
+    return x >> 8
+
+
+def _shift_s(x):
+    return (x << 8) & FULL
+
+
+def _shift_e(x):
+    return ((x & NOT_H) << 1) & FULL
+
+
+def _shift_w(x):
+    return (x & NOT_A) >> 1
+
+
+def _shift_ne(x):
+    return (x & NOT_H) >> 7
+
+
+def _shift_nw(x):
+    return (x & NOT_A) >> 9
+
+
+def _shift_se(x):
+    return ((x & NOT_H) << 9) & FULL
+
+
+def _shift_sw(x):
+    return ((x & NOT_A) << 7) & FULL
+
+
+def _ray_moves(p, o, empty, shift):
+    t = shift(p) & o
+    t |= shift(t) & o
+    t |= shift(t) & o
+    t |= shift(t) & o
+    t |= shift(t) & o
+    t |= shift(t) & o
+    return shift(t) & empty
+
+
+def _legal_moves(p, o):
+    key = (p, o)
+    v = _legal_cache.get(key)
+    if v is not None:
+        return v
+    empty = FULL ^ (p | o)
+    moves = 0
+    moves |= _ray_moves(p, o, empty, _shift_n)
+    moves |= _ray_moves(p, o, empty, _shift_s)
+    moves |= _ray_moves(p, o, empty, _shift_e)
+    moves |= _ray_moves(p, o, empty, _shift_w)
+    moves |= _ray_moves(p, o, empty, _shift_ne)
+    moves |= _ray_moves(p, o, empty, _shift_nw)
+    moves |= _ray_moves(p, o, empty, _shift_se)
+    moves |= _ray_moves(p, o, empty, _shift_sw)
+    _legal_cache[key] = moves
+    return moves
+
+
+def _apply_move(p, o, m):
+    flips = 0
+
+    for shift in (_shift_n, _shift_s, _shift_e, _shift_w, _shift_ne, _shift_nw, _shift_se, _shift_sw):
+        x = shift(m)
+        captured = 0
+        while x and (x & o):
+            captured |= x
+            x = shift(x)
+        if x & p:
+            flips |= captured
+
+    p2 = p | m | flips
+    o2 = o & ~flips
+    return p2, o2
+
+
+def _weighted_sum(bb):
+    return (
+        ROW_WEIGHT[0][bb & 0xFF] +
+        ROW_WEIGHT[1][(bb >> 8) & 0xFF] +
+        ROW_WEIGHT[2][(bb >> 16) & 0xFF] +
+        ROW_WEIGHT[3][(bb >> 24) & 0xFF] +
+        ROW_WEIGHT[4][(bb >> 32) & 0xFF] +
+        ROW_WEIGHT[5][(bb >> 40) & 0xFF] +
+        ROW_WEIGHT[6][(bb >> 48) & 0xFF] +
+        ROW_WEIGHT[7][(bb >> 56) & 0xFF]
+    )
+
+
+def _neighborhood(bb):
+    return (
+        _shift_n(bb) | _shift_s(bb) | _shift_e(bb) | _shift_w(bb) |
+        _shift_ne(bb) | _shift_nw(bb) | _shift_se(bb) | _shift_sw(bb)
+    )
+
+
+def _corner_closeness(p, o):
+    s = 0
+    occ = p | o
+    for corner, adj in CORNER_ADJ:
+        if not (occ & corner):
+            s += (o & adj).bit_count() - (p & adj).bit_count()
+    return s
+
+
+def _stable_edge_count(bb):
+    c = 0
+
+    if bb & (1 << 0):
+        i = 0
+        while i < 8 and ((bb >> i) & 1):
+            c += 1
+            i += 1
+        i = 8
+        while i < 64 and ((bb >> i) & 1):
+            c += 1
+            i += 8
+
+    if bb & (1 << 7):
+        i = 7
+        while i >= 0 and ((bb >> i) & 1):
+            c += 1
+            i -= 1
+        i = 15
+        while i < 64 and ((bb >> i) & 1):
+            c += 1
+            i += 8
+
+    if bb & (1 << 56):
+        i = 56
+        while i < 64 and ((bb >> i) & 1):
+            c += 1
+            i += 1
+        i = 48
+        while i >= 0 and ((bb >> i) & 1):
+            c += 1
+            i -= 8
+
+    if bb & (1 << 63):
+        i = 63
+        while i >= 56 and ((bb >> i) & 1):
+            c += 1
+            i -= 1
+        i = 55
+        while i >= 0 and ((bb >> i) & 1):
+            c += 1
+            i -= 8
+
+    return c
+
+
+def _terminal_score(p, o):
+    return 10000 * (p.bit_count() - o.bit_count())
+
+
+def _evaluate(p, o, pm=None):
+    empty = FULL ^ (p | o)
+    empties = empty.bit_count()
+
+    if pm is None:
+        pm = _legal_moves(p, o).bit_count()
+    om = _legal_moves(o, p).bit_count()
+
+    pos = _weighted_sum(p) - _weighted_sum(o)
+    corners = (p & CORNERS).bit_count() - (o & CORNERS).bit_count()
+    close = _corner_closeness(p, o)
+    frontier_mask = _neighborhood(empty)
+    frontier = (o & frontier_mask).bit_count() - (p & frontier_mask).bit_count()
+    stable = _stable_edge_count(p) - _stable_edge_count(o)
+    disc = p.bit_count() - o.bit_count()
+    mobility = pm - om
+
+    if empties > 44:
+        return (
+            2 * pos +
+            180 * corners +
+            22 * close +
+            18 * mobility +
+            8 * frontier +
+            10 * stable -
+            disc
+        )
+    elif empties > 20:
+        return (
+            pos +
+            220 * corners +
+            18 * close +
+            20 * mobility +
+            10 * frontier +
+            12 * stable +
+            2 * disc
+        )
+    else:
+        parity = 6 if (empties & 1) else -6
+        return (
+            pos +
+            260 * corners +
+            14 * close +
+            14 * mobility +
+            8 * frontier +
+            12 * stable +
+            18 * disc +
+            parity
+        )
+
+
+def _ordered_moves(moves, occupied, hint=0):
+    arr = []
+    while moves:
+        m = moves & -moves
+        moves ^= m
+        idx = m.bit_length() - 1
+        score = ORDER_BASE[idx]
+
+        if m & CORNERS:
+            score += 100000
+        elif m & EDGES:
+            score += 200
+
+        danger = DANGER.get(idx)
+        if danger is not None:
+            corner_bit, pen = danger
+            if not (occupied & corner_bit):
+                score -= pen
+
+        if m == hint:
+            score += 200000
+
+        arr.append((score, m))
+
+    arr.sort(reverse=True)
+    return [m for _, m in arr]
+
+
+def _negamax(p, o, depth, alpha, beta):
+    global _nodes
+
+    _nodes += 1
+    if (_nodes & 2047) == 0 and time.perf_counter() >= _deadline:
+        raise TimeoutError
+
+    key = (p, o, depth)
+    cached = _search_cache.get(key)
+    if cached is not None:
+        return cached[0]
+
+    moves = _legal_moves(p, o)
+    if moves == 0:
+        opp_moves = _legal_moves(o, p)
+        if opp_moves == 0:
+            val = _terminal_score(p, o)
+        else:
+            val = -_negamax(o, p, depth, -beta, -alpha)
+        _search_cache[key] = (val, 0)
+        _move_hint[(p, o)] = 0
+        return val
+
+    if depth == 0:
+        val = _evaluate(p, o, moves.bit_count())
+        _search_cache[key] = (val, 0)
+        return val
+
+    best = -10**18
+    best_move = 0
+    hint = _move_hint.get((p, o), 0)
+    occupied = p | o
+
+    for m in _ordered_moves(moves, occupied, hint):
+        p2, o2 = _apply_move(p, o, m)
+        val = -_negamax(o2, p2, depth - 1, -beta, -alpha)
+
+        if val > best:
+            best = val
+            best_move = m
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    _search_cache[key] = (best, best_move)
+    _move_hint[(p, o)] = best_move
+    return best
+
+
+def _search_root(p, o, depth, fallback_move):
+    moves = _legal_moves(p, o)
+    if moves == 0:
+        return 0, 0
+
+    best = -10**18
+    best_move = fallback_move
+    alpha = -10**18
+    beta = 10**18
+
+    hint = _move_hint.get((p, o), fallback_move)
+    occupied = p | o
+
+    for m in _ordered_moves(moves, occupied, hint):
+        p2, o2 = _apply_move(p, o, m)
+        val = -_negamax(o2, p2, depth - 1, -beta, -alpha)
+        if val > best:
+            best = val
+            best_move = m
+        if best > alpha:
+            alpha = best
+
+    _move_hint[(p, o)] = best_move
+    return best, best_move
+
+
+def _bit_to_move(m):
+    idx = m.bit_length() - 1
+    return chr(ord('a') + (idx % 8)) + str((idx // 8) + 1)
+
+
+def _board_to_bits(arr):
+    bb = 0
+    flat = arr.reshape(-1)
+    for i in np.flatnonzero(flat):
+        bb |= 1 << int(i)
+    return bb
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    global _deadline, _nodes, _legal_cache, _search_cache, _move_hint
+
+    _deadline = time.perf_counter() + 0.95
+    _nodes = 0
+    _legal_cache = {}
+    _search_cache = {}
+    _move_hint = {}
+
+    p = _board_to_bits(you)
+    o = _board_to_bits(opponent)
+
+    moves = _legal_moves(p, o)
+    if moves == 0:
+        return "pass"
+
+    fallback_move = moves & -moves
+
+    empties = 64 - (p | o).bit_count()
+    move_count = moves.bit_count()
+
+    if empties <= 10:
+        target = empties
+    elif empties <= 14:
+        target = 8
+    elif empties <= 20:
+        target = 6
+    elif empties <= 48:
+        target = 5
+    else:
+        target = 4
+
+    if move_count <= 4 and target < empties:
+        target += 1
+    if move_count <= 2 and target < empties:
+        target += 1
+
+    target = min(target, max(1, empties))
+
+    depths = []
+    d = 2 if target > 1 else 1
+    while d < target:
+        depths.append(d)
+        d += 2
+    if not depths or depths[-1] != target:
+        depths.append(target)
+
+    best_move = fallback_move
+
+    try:
+        for depth in depths:
+            _, mv = _search_root(p, o, depth, best_move)
+            if mv:
+                best_move = mv
+            if time.perf_counter() >= _deadline:
+                break
+    except TimeoutError:
+        pass
+
+    if not (best_move & _legal_moves(p, o)):
+        best_move = fallback_move
+
+    return _bit_to_move(best_move)

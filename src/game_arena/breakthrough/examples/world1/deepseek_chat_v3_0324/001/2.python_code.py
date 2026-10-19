@@ -1,0 +1,87 @@
+
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    # Constants based on player color
+    forward = 1 if color == 'w' else -1
+    home_row = 7 if color == 'w' else 0
+    
+    # Precompute opponent positions for faster lookup
+    opp_set = set(opp)
+    opp_dict = defaultdict(list)
+    for r, c in opp:
+        opp_dict[r].append(c)
+    
+    # Evaluate all possible legal moves
+    best_move = None
+    best_score = -float('inf')
+    
+    for (r, c) in me:
+        # Generate possible moves for this piece
+        moves = []
+        
+        # Forward move
+        new_r = r + forward
+        if 0 <= new_r <= 7:
+            # Straight forward
+            if (new_r, c) not in opp_set and (new_r, c) not in me:
+                moves.append((new_r, c))
+            
+            # Diagonal captures and moves
+            for dc in [c-1, c+1]:
+                if 0 <= dc <= 7:
+                    if (new_r, dc) in opp_set:
+                        # Capture move
+                        moves.append((new_r, dc))
+                    elif (new_r, dc) not in me:
+                        # Regular diagonal move
+                        moves.append((new_r, dc))
+        
+        # Evaluate each possible move
+        for (new_r, new_c) in moves:
+            # Immediate win check
+            if new_r == home_row:
+                return ((r, c), (new_r, new_c))
+            
+            # Calculate score for this move
+            score = 0
+            
+            # Advancement score (closer to home is better)
+            advancement = new_r if color == 'w' else 7 - new_r
+            score += 2 * advancement
+            
+            # Check if we're capturing
+            is_capture = (new_r, new_c) in opp_set
+            if is_capture:
+                score += 15  # Material bonus
+            
+            # Check if move leaves piece vulnerable (bad)
+            # Check if opponent can capture us next move
+            vulnerable = False
+            opp_behind_r = new_r + forward  # direction opponent would come from
+            if 0 <= opp_behind_r <= 7:
+                for opp_dc in [new_c-1, new_c+1]:
+                    if 0 <= opp_dc <= 7 and (opp_behind_r, opp_dc) in opp_set:
+                        vulnerable = True
+                        break
+            if vulnerable:
+                score -= 10
+            else:
+                # Bonus for protected positions (our piece behind)
+                our_behind_r = new_r - forward
+                if 0 <= our_behind_r <= 7:
+                    for our_dc in [new_c-1, new_c+1]:
+                        if 0 <= our_dc <= 7 and (our_behind_r, our_dc) in me:
+                            score += 5
+            
+            # Prefer center columns (3-4) slightly
+            if new_c in {3,4}:
+                score += 1
+            
+            # Update best move
+            if score > best_score or (score == best_score and abs(new_c - 3.5) < abs(best_move[1][1] - 3.5)):
+                best_score = score
+                best_move = ((r, c), (new_r, new_c))
+    
+    # Return the best move found (guaranteed to find at least one legal move)
+    return best_move

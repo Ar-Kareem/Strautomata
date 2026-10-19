@@ -1,0 +1,273 @@
+The strategy for this policy is based on a **Mobility-based Greedy Search with Safety Checks**.
+
+1.  **Bitboard Representation**: The 6x6 board state is converted into three 64-bit integers representing my amazons, opponent amazons, and arrows. This allows for very fast move generation and state manipulation using bitwise operations.
+2.  **Precomputed Attack Tables**: To avoid expensive boundary checks and loops during the search, all potential moves (Queen moves and Arrow shots) are precomputed for every square on the board before the game starts.
+3.  **Primary Heuristic (Mobility)**: The core metric for evaluating a board state is the difference in available legal moves: `(My Legal Moves) - (Opponent Legal Moves)`. In Amazons, mobility is directly correlated to winning potential, as the game ends when a player cannot move.
+4.  **Greedy Search with Instant Win**: The algorithm generates all legal moves for the current turn. If any move results in the opponent having zero legal moves, it is played immediately (Instant Win). Otherwise, moves are scored based on the resulting mobility difference.
+5.  **Safety Verification (Lookahead)**: Pure greedy play can walk into traps. To mitigate this, the top-scoring moves undergo a 1-ply lookahead safety check. The algorithm simulates the opponent's best responses to these moves. If an opponent response leaves the player with zero moves, the move is discarded as "unsafe".
+6.  **Performance**: By using bitboards and precomputed tables, the move generation and counting are extremely fast, allowing the policy to evaluate hundreds of scenarios within the 1-second limit comfortably.
+
+```python
+import numpy as np
+import time
+import random
+
+# --- Constants and Precomputed Tables ---
+
+# Board dimensions
+SIZE = 6
+TOTAL_SQUARES = SIZE * SIZE
+
+# Bit masks
+FULL_MASK = (1 << TOTAL_SQUARES) - 1
+
+# Directions for Queen movement: (dr, dc)
+# Order: N, NE, E, SE, S, SW, W, NW
+DIRECTIONS = [
+    (-1, 0), (-1, 1), (0, 1), (1, 1),
+    (1, 0), (1, -1), (0, -1), (-1, -1)
+]
+
+# Precomputed moves for every square.
+# MOVES[sq_index][direction_index] = list of target square indices
+MOVES = [[[] for _ in range(8)] for _ in range(TOTAL_SQUARES)]
+
+for r in range(SIZE):
+    for c in range(SIZE):
+        sq = r * SIZE + c
+        for d_idx, (dr, dc) in enumerate(DIRECTIONS):
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < SIZE and 0 <= nc < SIZE:
+                MOVES[sq][d_idx].append(nr * SIZE + nc)
+                nr += dr
+                nc += dc
+
+# --- Bitboard Utility Functions ---
+
+def board_to_bitboards(board):
+    """Converts numpy board to three bitboards: me, opp, arrows."""
+    me = 0
+    opp = 0
+    arrows = 0
+    for r in range(SIZE):
+        for c in range(SIZE):
+            idx = r * SIZE + c
+            val = board[r, c]
+            if val == 1:
+                me |= (1 << idx)
+            elif val == 2:
+                opp |= (1 << idx)
+            elif val == -1:
+                arrows |= (1 << idx)
+    return me, opp, arrows
+
+def count_moves(current_bits, opponent_bits, arrow_bits):
+    """
+    Counts the total number of legal move sequences (Amazon move + Arrow shot)
+    for a player given the board state.
+    Uses precomputed MOVES table for speed.
+    """
+    occupied = current_bits | opponent_bits | arrow_bits
+    count = 0
+    
+    # Iterate over each Amazon
+    queens = current_bits
+    while queens:
+        q_bit = queens & -queens  # Isolate least significant bit
+        q_idx = (q_bit.bit_length() - 1)
+        queens ^= q_bit
+        
+        # Iterate over directions for Amazon movement
+        for d_idx in range(8):
+            # Iterate over destination squares in this direction
+            for dest_idx in MOVES[q_idx][d_idx]:
+                dest_bit = 1 << dest_idx
+                
+                # Check path obstruction
+                if occupied & dest_bit:
+                    break
+                
+                # Amazon moves to dest_idx. 
+                # For shooting arrows, the occupied state is:
+                # 1. Original occupied squares
+                # 2. MINUS the starting square (since Amazon left)
+                # 3. PLUS the destination square (since Amazon arrived)
+                occ_arrow = (occupied & ~q_bit) | dest_bit
+                
+                # Iterate over directions for Arrow shot
+                for arr_d_idx in range(8):
+                    # Iterate over arrow landing squares
+                    for arr_idx in MOVES[dest_idx][arr_d_idx]:
+                        arr_bit = 1 << arr_idx
+                        
+                        # Check arrow path obstruction
+                        if occ_arrow & arr_bit:
+                            break
+                        
+                        # Found a legal move (Amazon move + Arrow shot)
+                        count += 1
+    
+    return count
+
+def generate_moves(current_bits, opponent_bits, arrow_bits):
+    """
+    Generates a list of all legal moves.
+    Each move is a tuple: (from_sq, to_sq, arrow_sq)
+    """
+    occupied = current_bits | opponent_bits | arrow_bits
+    moves = []
+    
+    queens = current_bits
+    while queens:
+        q_bit = queens & -queens
+        q_idx = (q_bit.bit_length() - 1)
+        queens ^= q_bit
+        
+        for d_idx in range(8):
+            for dest_idx in MOVES[q_idx][d_idx]:
+                dest_bit = 1 << dest_idx
+                if occupied & dest_bit:
+                    break
+                
+                occ_arrow = (occupied & ~q_bit) | dest_bit
+                
+                for arr_d_idx in range(8):
+                    for arr_idx in MOVES[dest_idx][arr_d_idx]:
+                        arr_bit = 1 << arr_idx
+                        if occ_arrow & arr_bit:
+                            break
+                        moves.append((q_idx, dest_idx, arr_idx))
+    return moves
+
+# --- Policy Logic ---
+
+def policy(board):
+    """
+    Main policy function.
+    1. Convert to bitboards.
+    2. Generate all legal moves.
+    3. Check for instant win (opponent mobility = 0).
+    4. Score moves based on Mobility Diff.
+    5. Safety check top moves.
+    """
+    
+    # Start time to ensure robustness (though we aim to be fast)
+    start_time = time.time()
+    
+    # 1. State Conversion
+    me, opp, arrows = board_to_bitboards(board)
+    
+    # 2. Generate all legal moves for current player
+    # Returns list of (from_idx, to_idx, arrow_idx)
+    all_moves = generate_moves(me, opp, arrows)
+    
+    if not all_moves:
+        # Should not happen based on prompt, but return dummy just in case
+        return "0,0:0,0:0,0" 
+
+    # 3. Instant Win Check & Scoring
+    best_score = -float('inf')
+    candidates = [] # List of (score, move_tuple)
+    
+    # Move ordering optimization: None needed for first pass, but we score everything
+    for move in all_moves:
+        from_sq, to_sq, arr_sq = move
+        
+        # Update bitboards for simulation
+        # Move amazon: clear from, set to
+        new_me = (me & ~(1 << from_sq)) | (1 << to_sq)
+        # Add arrow
+        new_arrows = arrows | (1 << arr_sq)
+        
+        # Count opponent mobility resulting from this move
+        opp_mobility = count_moves(opp, new_me, new_arrows)
+        
+        # Instant Win?
+        if opp_mobility == 0:
+            # This move wins immediately. Return it.
+            # Construct string
+            r1, c1 = divmod(from_sq, SIZE)
+            r2, c2 = divmod(to_sq, SIZE)
+            r3, c3 = divmod(arr_sq, SIZE)
+            return f"{r1},{c1}:{r2},{c2}:{r3},{c3}"
+        
+        # Otherwise, score by (My_Mobility - Opp_Mobility)
+        my_mobility = count_moves(new_me, opp, new_arrows)
+        score = my_mobility - opp_mobility
+        
+        candidates.append((score, move))
+        
+        if score > best_score:
+            best_score = score
+
+    # 4. Sort candidates by score descending
+    # We want to try the best moves first
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    
+    # 5. Safety Check (1-ply lookahead)
+    # We verify that for the top K moves, the opponent doesn't have a reply 
+    # that leaves us with 0 moves.
+    # Top K candidates to check
+    top_k = 5 
+    safe_best_move = None
+    
+    # If we have few moves, check all
+    limit = min(top_k, len(candidates))
+    
+    for score, move in candidates[:limit]:
+        from_sq, to_sq, arr_sq = move
+        
+        # Simulate my move
+        new_me = (me & ~(1 << from_sq)) | (1 << to_sq)
+        new_arrows = arrows | (1 << arr_sq)
+        
+        # Check opponent's possible replies
+        # We don't need to generate ALL opponent moves to find a fatal one?
+        # Actually, we need to be sure there is NO fatal reply.
+        # So we must iterate all opponent moves.
+        
+        opp_moves = generate_moves(opp, new_me, new_arrows)
+        is_safe = True
+        
+        # Optimization: If opponent has no moves, it's a win (handled above, but safe)
+        if not opp_moves:
+            is_safe = True
+        else:
+            # Check if any opponent move leaves me with 0 mobility
+            # We can optimize by checking opponent moves that block my queens?
+            # Just iterating is safer. 500 moves * 5 checks = 2500 ops. Fast.
+            for o_move in opp_moves:
+                o_from, o_to, o_arr = o_move
+                
+                # Simulate opponent move
+                new_opp = (opp & ~(1 << o_from)) | (1 << o_to)
+                final_arrows = new_arrows | (1 << o_arr)
+                
+                # Check my mobility in this resulting state
+                my_final_mobility = count_moves(new_me, new_opp, final_arrows)
+                
+                if my_final_mobility == 0:
+                    # This opponent move traps me. The original move is unsafe.
+                    is_safe = False
+                    break
+        
+        if is_safe:
+            # This move is safe. Since we sorted by score, the first safe one is the best safe move.
+            safe_best_move = move
+            break
+            
+    # If we found a safe move among top candidates, play it.
+    # If all top candidates were unsafe (rare), fallback to the absolute best score (greedy).
+    # This assumes a "death by checkmate" is inevitable or better than passing.
+    if safe_best_move:
+        selected = safe_best_move
+    else:
+        selected = candidates[0][1]
+
+    # Format output
+    r1, c1 = divmod(selected[0], SIZE)
+    r2, c2 = divmod(selected[1], SIZE)
+    r3, c3 = divmod(selected[2], SIZE)
+    
+    return f"{r1},{c1}:{r2},{c2}:{r3},{c3}"
+```

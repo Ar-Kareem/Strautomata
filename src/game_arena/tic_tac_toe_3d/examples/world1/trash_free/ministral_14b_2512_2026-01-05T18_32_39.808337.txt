@@ -1,0 +1,238 @@
+Here's a Python implementation for a 3D Tic Tac Toe policy function that uses a combination of heuristic evaluation and minimax search with alpha-beta pruning to determine the best move. This implementation includes optimizations like move ordering and transposition tables for efficiency.
+
+```python
+import numpy as np
+from typing import List, Tuple, Optional
+
+# Constants
+EMPTY = 0
+PLAYER = 1
+OPPONENT = -1
+
+# Directions for 3D Tic Tac Toe (all possible lines)
+DIRECTIONS = [
+    # Rows in each layer
+    [(0, 0, 0), (1, 0, 0), (2, 0, 0)],
+    [(0, 1, 0), (1, 1, 0), (2, 1, 0)],
+    [(0, 2, 0), (1, 2, 0), (2, 2, 0)],
+    [(0, 0, 1), (1, 0, 1), (2, 0, 1)],
+    [(0, 1, 1), (1, 1, 1), (2, 1, 1)],
+    [(0, 2, 1), (1, 2, 1), (2, 2, 1)],
+    [(0, 0, 2), (1, 0, 2), (2, 0, 2)],
+    [(0, 1, 2), (1, 1, 2), (2, 1, 2)],
+    [(0, 2, 2), (1, 2, 2), (2, 2, 2)],
+    # Columns in each layer
+    [(0, 0, 0), (0, 1, 0), (0, 2, 0)],
+    [(1, 0, 0), (1, 1, 0), (1, 2, 0)],
+    [(2, 0, 0), (2, 1, 0), (2, 2, 0)],
+    [(0, 0, 1), (0, 1, 1), (0, 2, 1)],
+    [(1, 0, 1), (1, 1, 1), (1, 2, 1)],
+    [(2, 0, 1), (2, 1, 1), (2, 2, 1)],
+    [(0, 0, 2), (0, 1, 2), (0, 2, 2)],
+    [(1, 0, 2), (1, 1, 2), (1, 2, 2)],
+    [(2, 0, 2), (2, 1, 2), (2, 2, 2)],
+    # Planes (3x3 in each dimension)
+    [(0, 0, 0), (0, 1, 0), (0, 2, 0), (1, 0, 0), (1, 1, 0), (1, 2, 0), (2, 0, 0), (2, 1, 0), (2, 2, 0)],
+    [(0, 0, 1), (0, 1, 1), (0, 2, 1), (1, 0, 1), (1, 1, 1), (1, 2, 1), (2, 0, 1), (2, 1, 1), (2, 2, 1)],
+    [(0, 0, 2), (0, 1, 2), (0, 2, 2), (1, 0, 2), (1, 1, 2), (1, 2, 2), (2, 0, 2), (2, 1, 2), (2, 2, 2)],
+    [(0, 0, 0), (0, 0, 1), (0, 0, 2), (1, 0, 0), (1, 0, 1), (1, 0, 2), (2, 0, 0), (2, 0, 1), (2, 0, 2)],
+    [(0, 1, 0), (0, 1, 1), (0, 1, 2), (1, 1, 0), (1, 1, 1), (1, 1, 2), (2, 1, 0), (2, 1, 1), (2, 1, 2)],
+    [(0, 2, 0), (0, 2, 1), (0, 2, 2), (1, 2, 0), (1, 2, 1), (1, 2, 2), (2, 2, 0), (2, 2, 1), (2, 2, 2)],
+    # Space diagonals
+    [(0, 0, 0), (1, 1, 1), (2, 2, 2)],
+    [(0, 0, 2), (1, 1, 1), (2, 2, 0)],
+    [(0, 2, 0), (1, 1, 1), (2, 0, 2)],
+    [(0, 2, 2), (1, 1, 1), (2, 0, 0)],
+    # Face diagonals (within each layer)
+    [(0, 0, 0), (1, 0, 1), (2, 0, 2)],
+    [(0, 0, 2), (1, 0, 1), (2, 0, 0)],
+    [(0, 2, 0), (1, 2, 1), (2, 2, 2)],
+    [(0, 2, 2), (1, 2, 1), (2, 2, 0)],
+    [(0, 0, 0), (0, 1, 1), (0, 2, 2)],
+    [(0, 0, 2), (0, 1, 1), (0, 2, 0)],
+    [(2, 0, 0), (1, 1, 1), (0, 2, 2)],
+    [(2, 0, 2), (1, 1, 1), (0, 2, 0)],
+]
+
+# Precompute all possible lines (3 in a row)
+ALL_LINES = DIRECTIONS
+
+class TranspositionTable:
+    def __init__(self):
+        self.table = {}
+
+    def get(self, key):
+        return self.table.get(key, None)
+
+    def store(self, key, value):
+        self.table[key] = value
+
+def board_to_key(board: List[List[List[int]]]) -> str:
+    """Convert the board to a hashable key for the transposition table."""
+    return str(board)
+
+def evaluate_board(board: List[List[List[int]]], player: int) -> int:
+    """Evaluate the board position from the perspective of the player."""
+    score = 0
+    opponent = -player
+
+    for line in ALL_LINES:
+        line_values = [board[x][y][z] for (x, y, z) in line]
+        if all(v == player for v in line_values):
+            score += 1000  # Win
+        elif all(v == opponent for v in line_values):
+            score -= 1000  # Opponent win
+        elif line_values.count(player) == 2 and line_values.count(EMPTY) == 1:
+            score += 100  # Two in a row
+        elif line_values.count(opponent) == 2 and line_values.count(EMPTY) == 1:
+            score -= 100  # Opponent two in a row
+        elif line_values.count(player) == 1 and line_values.count(EMPTY) == 2:
+            score += 10  # One in a row
+        elif line_values.count(opponent) == 1 and line_values.count(EMPTY) == 2:
+            score -= 10  # Opponent one in a row
+
+    # Center control bonus
+    if board[1][1][1] == player:
+        score += 50
+    elif board[1][1][1] == opponent:
+        score -= 50
+
+    return score
+
+def is_terminal(board: List[List[List[int]]]) -> bool:
+    """Check if the game is over (win or draw)."""
+    # Check for a winner
+    for line in ALL_LINES:
+        line_values = [board[x][y][z] for (x, y, z) in line]
+        if all(v == PLAYER for v in line_values):
+            return True
+        if all(v == OPPONENT for v in line_values):
+            return True
+
+    # Check for a draw (no empty cells)
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == EMPTY:
+                    return False
+    return True
+
+def minimax(board: List[List[List[int]]], depth: int, alpha: float, beta: float, maximizing_player: bool, player: int, tt: Optional[TranspositionTable] = None) -> Tuple[int, int]:
+    """Minimax algorithm with alpha-beta pruning and transposition table."""
+    key = board_to_key(board)
+    if tt and key in tt.table:
+        return tt.table[key]
+
+    if is_terminal(board):
+        score = evaluate_board(board, player)
+        return (score, None)
+
+    if maximizing_player:
+        max_eval = -float('inf')
+        best_move = None
+        # Try moves in order of heuristic value (center first, then corners, then edges)
+        moves = []
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board[x][y][z] == EMPTY:
+                        moves.append((x, y, z))
+        # Sort moves by heuristic (center first, then corners, then edges)
+        moves.sort(key=lambda m: (1 if m == (1, 1, 1) else 0,
+                                  1 if (m[0] in {0, 2} and m[1] in {0, 2} and m[2] in {0, 2}) else 0,
+                                  -1 if (m[0] in {0, 2} or m[1] in {0, 2} or m[2] in {0, 2}) else 0))
+
+        for move in moves:
+            x, y, z = move
+            board[x][y][z] = player
+            eval, _ = minimax(board, depth - 1, alpha, beta, False, player, tt)
+            board[x][y][z] = EMPTY
+            if eval > max_eval:
+                max_eval = eval
+                best_move = move
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        if tt:
+            tt.store(key, (max_eval, best_move))
+        return (max_eval, best_move)
+    else:
+        min_eval = float('inf')
+        best_move = None
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board[x][y][z] == EMPTY:
+                        board[x][y][z] = -player
+                        eval, _ = minimax(board, depth - 1, alpha, beta, True, player, tt)
+                        board[x][y][z] = EMPTY
+                        if eval < min_eval:
+                            min_eval = eval
+                            best_move = (x, y, z)
+                        beta = min(beta, eval)
+                        if beta <= alpha:
+                            break
+        if tt:
+            tt.store(key, (min_eval, best_move))
+        return (min_eval, best_move)
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """Determine the best move for the player using minimax with alpha-beta pruning."""
+    # Convert to numpy array for easier manipulation (optional)
+    np_board = np.array(board)
+
+    # Initialize transposition table
+    tt = TranspositionTable()
+
+    # Determine the current player (1 or -1)
+    player = PLAYER
+    opponent = OPPONENT
+
+    # Find all empty cells
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == EMPTY:
+                    empty_cells.append((x, y, z))
+
+    # If no empty cells, return any (shouldn't happen in normal play)
+    if not empty_cells:
+        return (0, 0, 0)
+
+    # Try to find a winning move
+    for x, y, z in empty_cells:
+        board[x][y][z] = player
+        if is_terminal(board):
+            board[x][y][z] = EMPTY
+            return (x, y, z)
+        board[x][y][z] = EMPTY
+
+    # Try to block opponent's winning move
+    for x, y, z in empty_cells:
+        board[x][y][z] = opponent
+        if is_terminal(board):
+            board[x][y][z] = EMPTY
+            return (x, y, z)
+        board[x][y][z] = EMPTY
+
+    # Use minimax with alpha-beta pruning to find the best move
+    _, best_move = minimax(board, depth=5, alpha=-float('inf'), beta=float('inf'), maximizing_player=True, player=player, tt=tt)
+
+    if best_move is None:
+        # Fallback: pick a random empty cell
+        import random
+        return random.choice(empty_cells)
+    else:
+        return best_move
+```
+
+### Explanation:
+1. **Board Representation**: The board is a 3x3x3 list of lists, where `0` is empty, `1` is the player, and `-1` is the opponent.
+2. **Lines in 3D Tic Tac Toe**: The `ALL_LINES` list contains all possible winning lines (rows, columns, planes, diagonals, etc.).
+3. **Evaluation Function**: `evaluate_board` scores the board position based on potential wins, two-in-a-rows, and center control.
+4. **Minimax with Alpha-Beta Pruning**: The `minimax` function recursively evaluates all possible moves, pruning branches that cannot improve the current best score.
+5. **Transposition Table**: A simple transposition table (`TranspositionTable`) is used to cache previously evaluated board positions for efficiency.
+6. **Policy Function**: The `policy` function first checks for immediate winning or blocking moves, then uses minimax to find the best move. If no move is found (unlikely), it defaults to a random move.
+
+This implementation balances efficiency and effectiveness, making it suitable for competitive play in a 3D Tic Tac Toe arena.

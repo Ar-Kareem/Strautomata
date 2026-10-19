@@ -1,0 +1,182 @@
+
+from typing import List
+
+ROWS = 6
+COLS = 7
+ME = 1
+OPP = -1
+
+def copy_board(board: List[List[int]]) -> List[List[int]]:
+    return [row.copy() for row in board]
+
+def get_drop_row(board: List[List[int]], col: int) -> int:
+    """Return the row index where a disc would land in column col, or -1 if full."""
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return -1
+
+def make_move(board: List[List[int]], col: int, player: int) -> List[List[int]]:
+    b = copy_board(board)
+    r = get_drop_row(b, col)
+    if r != -1:
+        b[r][col] = player
+    return b
+
+def is_win(board: List[List[int]], player: int) -> bool:
+    # horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if all(board[r][c + i] == player for i in range(4)):
+                return True
+    # vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if all(board[r + i][c] == player for i in range(4)):
+                return True
+    # diag down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r + i][c + i] == player for i in range(4)):
+                return True
+    # diag up-right
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            if all(board[r - i][c + i] == player for i in range(4)):
+                return True
+    return False
+
+def score_window(window: List[int]) -> int:
+    """Score a length-4 window for heuristic."""
+    score = 0
+    me_count = window.count(ME)
+    opp_count = window.count(OPP)
+    empty = window.count(0)
+    if me_count > 0 and opp_count == 0:
+        # purely ours
+        if me_count == 4:
+            score += 100000
+        elif me_count == 3 and empty == 1:
+            score += 100
+        elif me_count == 2 and empty == 2:
+            score += 10
+        elif me_count == 1 and empty == 3:
+            score += 1
+    if opp_count > 0 and me_count == 0:
+        # purely opponent
+        if opp_count == 4:
+            score -= 100000
+        elif opp_count == 3 and empty == 1:
+            score -= 200  # defend 3-in-a-row more strongly
+        elif opp_count == 2 and empty == 2:
+            score -= 20
+        elif opp_count == 1 and empty == 3:
+            score -= 1
+    return score
+
+def evaluate_board(board: List[List[int]]) -> int:
+    """Heuristic evaluation of board from current player's perspective."""
+    score = 0
+    # center column preference
+    center_col = COLS // 2
+    center_count = sum(1 for r in range(ROWS) if board[r][center_col] == ME)
+    score += center_count * 6
+
+    # score all windows of length 4
+    # horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = [board[r][c + i] for i in range(4)]
+            score += score_window(window)
+    # vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r + i][c] for i in range(4)]
+            score += score_window(window)
+    # diag down-right
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += score_window(window)
+    # diag up-right
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            score += score_window(window)
+    return score
+
+def legal_moves(board: List[List[int]]) -> List[int]:
+    moves = []
+    for c in range(COLS):
+        if board[0][c] == 0:
+            moves.append(c)
+    return moves
+
+def opponent_immediate_wins(board: List[List[int]]) -> List[int]:
+    wins = []
+    for c in legal_moves(board):
+        b = make_move(board, c, OPP)
+        if is_win(b, OPP):
+            wins.append(c)
+    return wins
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Choose a column (0-6) to drop the disc into.
+    Strategy:
+    1) If any move wins immediately, play it.
+    2) If opponent has immediate winning moves next turn, block one (choose the best blocking move).
+    3) Otherwise pick move with best heuristic evaluation (including center bias).
+    """
+    moves = legal_moves(board)
+    if not moves:
+        return 3  # arbitrary if no moves
+
+    # 1) immediate winning move
+    for c in moves:
+        b = make_move(board, c, ME)
+        if is_win(b, ME):
+            return c
+
+    # 2) block opponent immediate wins
+    opp_wins = opponent_immediate_wins(board)
+    if opp_wins:
+        # If multiple columns give opponent an immediate win, try to block by playing one of those columns.
+        # Choose the blocking move that leaves us with the best heuristic score.
+        best_col = None
+        best_score = -10**9
+        for c in moves:
+            # Only consider moves that block at least one immediate opponent winning column:
+            # A move blocks if it fills the slot the opponent would use.
+            if c in opp_wins:
+                b = make_move(board, c, ME)
+                sc = evaluate_board(b)
+                if sc > best_score:
+                    best_score = sc
+                    best_col = c
+        if best_col is not None:
+            return best_col
+        # Fallback: if none of our moves are directly in opp_wins (shouldn't happen), just pick best heuristic
+    # 3) heuristic choice among legal moves
+    best_col = None
+    best_score = -10**9
+    # center proximity tie-breaker: prefer nearer to center
+    center = COLS // 2
+    for c in moves:
+        b = make_move(board, c, ME)
+        sc = evaluate_board(b)
+        # small tie-breaker for center
+        sc -= abs(c - center) * 0.5
+        if sc > best_score:
+            best_score = sc
+            best_col = c
+
+    if best_col is None:
+        return moves[0]
+    return best_col
+
+# If this file is executed directly, a small example could be placed here for manual testing.
+if __name__ == "__main__":
+    # empty board test
+    empty_board = [[0] * COLS for _ in range(ROWS)]
+    print(policy(empty_board))  # expect center (3)

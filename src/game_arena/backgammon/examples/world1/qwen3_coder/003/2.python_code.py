@@ -1,0 +1,239 @@
+
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    # No dice to play
+    if not dice:
+        return "H:P,P"
+    
+    # Sort dice
+    dice_sorted = sorted(dice, reverse=True)
+    d1, d2 = dice_sorted[0], dice_sorted[-1] if len(dice_sorted) > 1 else None
+    
+    # Check if all checkers are in home board (points 0-5)
+    all_home = all(my_pts[i] == 0 for i in range(6, 24))
+    
+    # Handle case with two dice
+    if d2 is not None:
+        # If we have checkers on bar, must enter them first
+        if my_bar > 0:
+            # Try to enter from bar with both dice
+            enter1_pos = 24 - d1
+            enter2_pos = 24 - d2
+            
+            can_enter1 = opp_pts[enter1_pos] <= 1
+            can_enter2 = opp_pts[enter2_pos] <= 1
+            
+            if can_enter1 and can_enter2:
+                return f"H:B,B"
+            elif can_enter1:
+                # After entering with d1, try to move another checker with d2
+                moves = []
+                for start in range(24):
+                    if my_pts[start] > 0:
+                        end = start - d2
+                        if end >= 0 and opp_pts[end] <= 1:
+                            moves.append((start, end))
+                
+                if moves:
+                    # Pick a strategic move - prefer moving from higher points
+                    moves.sort(key=lambda x: x[0], reverse=True)
+                    best_move = moves[0]
+                    return f"H:B,A{best_move[0]}"
+                else:
+                    return f"H:B,P"
+            elif can_enter2:
+                # After entering with d2, try to move another checker with d1
+                moves = []
+                for start in range(24):
+                    if my_pts[start] > 0:
+                        end = start - d1
+                        if end >= 0 and opp_pts[end] <= 1:
+                            moves.append((start, end))
+                
+                if moves:
+                    # Pick a strategic move - prefer moving from higher points
+                    moves.sort(key=lambda x: x[0], reverse=True)
+                    best_move = moves[0]
+                    return f"L:B,A{best_move[0]}"
+                else:
+                    return f"L:B,P"
+            else:
+                return "H:P,P"
+        
+        # No checkers on bar - normal play
+        # If all home, prioritize bearing off
+        if all_home:
+            # Try bearing off with both dice
+            can_bear1 = my_pts[d1-1] > 0
+            can_bear2 = my_pts[d2-1] > 0
+            
+            if can_bear1 and can_bear2:
+                return f"H:A{d1-1},A{d2-1}"
+            elif can_bear1:
+                # Bear off with d1, move with d2
+                moves = []
+                for start in range(6):
+                    if my_pts[start] > 0:
+                        end = start - d2
+                        if end >= 0 and opp_pts[end] <= 1:
+                            moves.append(start)
+                        elif end < 0 and all_home:
+                            # Can bear off with larger die when all home
+                            moves.append(start)
+                
+                if moves:
+                    moves.sort(reverse=True)
+                    return f"H:A{d1-1},A{moves[0]}"
+                else:
+                    return f"H:A{d1-1},P"
+            elif can_bear2:
+                # Bear off with d2, move with d1
+                moves = []
+                for start in range(6):
+                    if my_pts[start] > 0:
+                        end = start - d1
+                        if end >= 0 and opp_pts[end] <= 1:
+                            moves.append(start)
+                        elif end < 0 and all_home:
+                            # Can bear off with larger die when all home
+                            moves.append(start)
+                
+                if moves:
+                    moves.sort(reverse=True)
+                    return f"L:A{d2-1},A{moves[0]}"
+                else:
+                    return f"L:A{d2-1},P"
+        
+        # Normal moves - evaluate possible combinations
+        moves1 = []  # Moves using first die
+        moves2 = []  # Moves using second die
+        
+        # Find all legal moves for d1
+        for start in range(24):
+            if my_pts[start] > 0:
+                end = start - d1
+                if end >= 0 and opp_pts[end] <= 1:
+                    moves1.append((start, end))
+                elif end < 0 and all_home:
+                    moves1.append((start, -1))  # -1 indicates bearing off
+        
+        # Find all legal moves for d2
+        for start in range(24):
+            if my_pts[start] > 0:
+                end = start - d2
+                if end >= 0 and opp_pts[end] <= 1:
+                    moves2.append((start, end))
+                elif end < 0 and all_home:
+                    moves2.append((start, -1))  # -1 indicates bearing off
+        
+        # Try to play both dice
+        best_move = None
+        best_score = -float('inf')
+        
+        for start1, end1 in moves1:
+            temp_pts = list(my_pts)
+            temp_pts[start1] -= 1
+            if end1 >= 0:
+                temp_pts[end1] += 1
+            
+            # Find moves for d2 after making move with d1
+            for start2, end2 in moves2:
+                if start1 == start2 and my_pts[start1] < 2:
+                    continue  # Can't move same checker twice if we don't have 2 there
+                
+                temp_pts2 = list(temp_pts)
+                if temp_pts2[start2] > 0:  # Check if we still have a checker at start2
+                    temp_pts2[start2] -= 1
+                    if end2 >= 0:
+                        temp_pts2[end2] += 1
+                    
+                    # Evaluate this position
+                    score = evaluate_position(temp_pts2, opp_pts)
+                    if score > best_score:
+                        best_score = score
+                        best_move = (start1, start2)
+        
+        if best_move:
+            return f"H:A{best_move[0]},A{best_move[1]}"
+        
+        # If we can't play both, play the higher die if possible
+        if moves1:
+            moves1.sort(key=lambda x: x[0], reverse=True)
+            best_single = moves1[0]
+            return f"H:A{best_single[0]},P"
+        elif moves2:
+            moves2.sort(key=lambda x: x[0], reverse=True)
+            best_single = moves2[0]
+            return f"L:A{best_single[0]},P"
+        
+        return "H:P,P"
+    
+    # Handle case with one die
+    else:
+        d = d1
+        # If checker on bar, must enter
+        if my_bar > 0:
+            enter_pos = 24 - d
+            if opp_pts[enter_pos] <= 1:
+                return f"H:B,P"
+            else:
+                return "H:P,P"
+        
+        # If all home, try to bear off
+        if all_home:
+            if my_pts[d-1] > 0:
+                return f"H:A{d-1},P"
+            # Check if we can bear off with a higher die
+            for i in range(d, 6):
+                if my_pts[i] > 0:
+                    return f"H:A{i},P"
+        
+        # Normal move
+        moves = []
+        for start in range(24):
+            if my_pts[start] > 0:
+                end = start - d
+                if end >= 0 and opp_pts[end] <= 1:
+                    moves.append(start)
+                elif end < 0 and all_home:
+                    moves.append(start)
+        
+        if moves:
+            moves.sort(reverse=True)
+            return f"H:A{moves[0]},P"
+        
+        return "H:P,P"
+
+def evaluate_position(my_pts, opp_pts):
+    # Simple evaluation function - prefer:
+    # 1. Moving checkers closer to home
+    # 2. Safe points (not blots)
+    # 3. Occupying higher points when possible
+    score = 0
+    
+    # Pip count (lower is better for us)
+    my_pip = sum((i+1) * my_pts[i] for i in range(24))
+    opp_pip = sum((24-i) * opp_pts[i] for i in range(24))
+    score += (opp_pip - my_pip) * 0.1
+    
+    # Prefer safe points
+    for i in range(24):
+        if my_pts[i] >= 2:
+            score += 2  # Safe point
+        elif my_pts[i] == 1:
+            score -= 1  # Blot
+    
+    # Prefer advancing checkers
+    home_count = sum(my_pts[i] for i in range(6))
+    score += home_count * 0.5
+    
+    return score

@@ -1,0 +1,184 @@
+
+import numpy as np
+import random
+from typing import List, Tuple, Dict, Any
+
+# Constants
+BOARD_SIZE = 19
+PASS = (0, 0)
+
+# Directions: up, right, down, left
+DIRS = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+
+def in_bounds(r: int, c: int) -> bool:
+    return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+    return [(r + dr, c + dc) for dr, dc in DIRS if in_bounds(r + dr, c + dc)]
+
+def get_group(board: np.ndarray, r: int, c: int, color: int) -> List[Tuple[int, int]]:
+    """Returns the list of stones in the connected group of given color at (r, c)."""
+    if board[r-1, c-1] != color:
+        return []
+    seen = set()
+    stack = [(r, c)]
+    group = []
+    while stack:
+        pr, pc = stack.pop()
+        if (pr, pc) in seen:
+            continue
+        seen.add((pr, pc))
+        if board[pr-1, pc-1] == color:
+            group.append((pr, pc))
+            for nr, nc in get_neighbors(pr, pc):
+                if (nr, nc) not in seen:
+                    stack.append((nr, nc))
+    return group
+
+def count_liberties(board: np.ndarray, r: int, c: int) -> int:
+    """Counts liberties of the group at (r, c)."""
+    group = get_group(board, r, c, board[r-1, c-1])
+    if not group:
+        return 0
+    libs = set()
+    for gr, gc in group:
+        for nr, nc in get_neighbors(gr, gc):
+            if board[nr-1, nc-1] == 0:
+                libs.add((nr, nc))
+    return len(libs)
+
+def would_have_liberties(board: np.ndarray, r: int, c: int, color: int) -> bool:
+    """Simulate placing a stone and check if the group has liberties."""
+    board = board.copy()
+    board[r-1, c-1] = color
+    return count_liberties(board, r, c) > 0
+
+def is_legal_move(board: np.ndarray, r: int, c: int, color: int, last_ko: Tuple[int, int]) -> bool:
+    """Check if a move is legal (not suicide and not ko)."""
+    if board[r-1, c-1] != 0:
+        return False
+    if (r, c) == last_ko:
+        return False
+    # Place the stone
+    board = board.copy()
+    board[r-1, c-1] = color
+    # Check for captures
+    opp_color = 3 - color
+    captured = []
+    for nr, nc in get_neighbors(r, c):
+        if board[nr-1, nc-1] == opp_color and count_liberties(board, nr, nc) == 0:
+            captured.extend(get_group(board, nr, nc, opp_color))
+    # Remove captured stones
+    for cr, cc in captured:
+        board[cr-1, cc-1] = 0
+    # Check own group has liberties
+    if count_liberties(board, r, c) == 0:
+        return False
+    return True
+
+def get_legal_moves(board: np.ndarray, last_ko: Tuple[int, int]) -> List[Tuple[int, int]]:
+    """Get all legal moves on the board."""
+    moves = []
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if is_legal_move(board, r, c, 1, last_ko):
+                moves.append((r, c))
+    return moves
+
+def score_move(board: np.ndarray, r: int, c: int, me_stones: List[Tuple[int, int]], opp_stones: List[Tuple[int, int]]) -> float:
+    score = 0.0
+
+    # Feature 1: Immediate capture
+    board_sim = board.copy()
+    board_sim[r-1, c-1] = 1  # Assume we play here
+    for nr, nc in get_neighbors(r, c):
+        if board_sim[nr-1, nc-1] == 2 and count_liberties(board_sim, nr, nc) == 0:
+            captured = get_group(board_sim, nr, nc, 2)
+            score += 10 * len(captured)
+
+    # Feature 2: Avoid self-atari, prefer escape
+    if count_liberties(board_sim, r, c) == 1:
+        score -= 5  # Avoid self-atari
+
+    # Feature 3: Connect to own stones
+    for nr, nc in get_neighbors(r, c):
+        if board[nr-1, nc-1] == 1:
+            score += 2
+
+    # Feature 4: Reduce opponent liberties (atari)
+    for nr, nc in get_neighbors(r, c):
+        if board[nr-1, nc-1] == 2:
+            old_libs = count_liberties(board, nr, nc)
+            # Simulate: placing our stone reduces their liberty
+            if old_libs == 2:
+                score += 1  # Close in
+            elif old_libs == 1:
+                score += 3  # Immediate threat
+
+    # Feature 5: Board control (encourage center and edge balance)
+    center_r, center_c = 10, 10
+    dist_to_center = abs(r - center_r) + abs(c - center_c)
+    # Prefer moves not too far from center, but also opening plays
+    if len(me_stones) < 10:  # Early game
+        if (r, c) in [(4,4), (4,10), (4,16), (10,4), (10,16), (16,4), (16,10), (16,16)]:
+            score += 8
+    score += max(0, 15 - dist_to_center) * 0.1
+
+    # Feature 6: Avoid playing too close to edge early
+    if min(r, c, 19 - r + 1, 19 - c + 1) == 1 and len(me_stones) < 30:
+        score -= 2
+
+    return score
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict[str, Any]) -> Tuple[Tuple[int, int], Dict[str, Any]]:
+    # Build board representation: 0=empty, 1=me, 2=opponent
+    board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.int8)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+
+    # Retrieve last ko move from memory
+    last_ko = memory.get('last_ko', (0, 0))
+
+    # Get all legal moves
+    legal_moves = get_legal_moves(board, last_ko)
+    if not legal_moves:
+        return PASS, memory
+
+    # If only one legal move, take it
+    if len(legal_moves) == 1:
+        return legal_moves[0], memory
+
+    # Score all legal moves
+    move_scores = []
+    for move in legal_moves:
+        score = score_move(board, move[0], move[1], me, opponent)
+        move_scores.append((score, move))
+
+    # Sort by score descending
+    move_scores.sort(reverse=True, key=lambda x: x[0])
+
+    # Pick the best move
+    best_move = move_scores[0][1]
+
+    # Update memory: check if this move causes a capture that might lead to ko
+    # Simulate the move
+    board_next = board.copy()
+    board_next[best_move[0]-1, best_move[1]-1] = 1
+    captured = []
+    for nr, nc in get_neighbors(best_move[0], best_move[1]):
+        if board_next[nr-1, nc-1] == 2 and count_liberties(board_next, nr, nc) == 0:
+            captured_group = get_group(board_next, nr, nc, 2)
+            if len(captured_group) == 1:
+                captured.extend(captured_group)
+    # If exactly one stone is captured, it might be a ko
+    new_ko = (0, 0)
+    if len(captured) == 1:
+        # After removal, if my move has only one liberty, it could be recaptured
+        board_next[captured[0][0]-1, captured[0][1]-1] = 0
+        if count_liberties(board_next, best_move[0], best_move[1]) == 1:
+            new_ko = captured[0]  # Opponent could recapture here
+    memory['last_ko'] = new_ko
+
+    return best_move, memory

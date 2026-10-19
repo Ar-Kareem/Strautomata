@@ -1,0 +1,155 @@
+
+import math
+from functools import lru_cache
+
+# Precompute all winning lines in 3x3x3
+LINES = []
+# Straight lines along axes
+for i in range(3):
+    for j in range(3):
+        LINES.append([(i, j, k) for k in range(3)])  # along z
+for i in range(3):
+    for k in range(3):
+        LINES.append([(i, j, k) for j in range(3)])  # along y
+for j in range(3):
+    for k in range(3):
+        LINES.append([(i, j, k) for i in range(3)])  # along x
+
+# Diagonals in planes
+for i in range(3):
+    LINES.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+    LINES.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+for j in range(3):
+    LINES.append([(0, j, 0), (1, j, 1), (2, j, 2)])
+    LINES.append([(0, j, 2), (1, j, 1), (2, j, 0)])
+for k in range(3):
+    LINES.append([(0, 0, k), (1, 1, k), (2, 2, k)])
+    LINES.append([(0, 2, k), (1, 1, k), (2, 0, k)])
+
+# Space diagonals
+LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+LINES.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+# Count how many lines each cell is part of (for move ordering)
+CELL_LINE_COUNT = [[[0]*3 for _ in range(3)] for _ in range(3)]
+for line in LINES:
+    for (i,j,k) in line:
+        CELL_LINE_COUNT[i][j][k] += 1
+
+def check_winner(board):
+    for line in LINES:
+        s = 0
+        for (i,j,k) in line:
+            s += board[i][j][k]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+def evaluate(board, player):
+    score = 0
+    for line in LINES:
+        p = 0
+        o = 0
+        for (i,j,k) in line:
+            v = board[i][j][k]
+            if v == player:
+                p += 1
+            elif v == -player:
+                o += 1
+        if p > 0 and o > 0:
+            continue
+        if p > 0:
+            score += 10 ** p
+        elif o > 0:
+            score -= 10 ** o
+    return score
+
+def board_to_tuple(board):
+    return tuple(tuple(tuple(row) for row in plane) for plane in board)
+
+def get_empty_cells(board):
+    empties = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    empties.append((i,j,k))
+    return empties
+
+def move_order(moves):
+    # sort by number of lines the cell participates in, descending
+    return sorted(moves, key=lambda m: CELL_LINE_COUNT[m[0]][m[1]][m[2]], reverse=True)
+
+def negamax(board, player, depth, alpha, beta, memo):
+    key = (board_to_tuple(board), player, depth)
+    if key in memo:
+        return memo[key]
+    winner = check_winner(board)
+    if winner != 0:
+        val = 1000000 * winner * player
+        memo[key] = val
+        return val
+    empties = get_empty_cells(board)
+    if depth == 0 or not empties:
+        val = evaluate(board, player)
+        memo[key] = val
+        return val
+    best = -math.inf
+    for (i,j,k) in move_order(empties):
+        board[i][j][k] = player
+        val = -negamax(board, -player, depth-1, -beta, -alpha, memo)
+        board[i][j][k] = 0
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    memo[key] = best
+    return best
+
+def policy(board):
+    empties = get_empty_cells(board)
+    if not empties:
+        return (0,0,0)
+    # immediate win
+    for (i,j,k) in empties:
+        board[i][j][k] = 1
+        if check_winner(board) == 1:
+            board[i][j][k] = 0
+            return (i,j,k)
+        board[i][j][k] = 0
+    # immediate block
+    for (i,j,k) in empties:
+        board[i][j][k] = -1
+        if check_winner(board) == -1:
+            board[i][j][k] = 0
+            return (i,j,k)
+        board[i][j][k] = 0
+
+    # choose depth
+    empty_count = len(empties)
+    if empty_count <= 8:
+        depth = empty_count
+    elif empty_count <= 14:
+        depth = 5
+    else:
+        depth = 4
+
+    best_move = None
+    best_val = -math.inf
+    memo = {}
+    for (i,j,k) in move_order(empties):
+        board[i][j][k] = 1
+        val = -negamax(board, -1, depth-1, -math.inf, math.inf, memo)
+        board[i][j][k] = 0
+        if val > best_val:
+            best_val = val
+            best_move = (i,j,k)
+    if best_move is None:
+        return empties[0]
+    return best_move

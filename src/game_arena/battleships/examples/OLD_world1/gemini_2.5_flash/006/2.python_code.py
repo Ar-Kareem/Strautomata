@@ -1,0 +1,85 @@
+
+import random
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    board_arr = np.array(board)
+    n = board_arr.shape[0]
+
+    # 1. Hunt mode (no active hits) or Sunk ship cleanup
+    # Check for actively hit cells
+    hit_cells = np.argwhere(board_arr == 1)
+
+    if len(hit_cells) == 0:
+        # No current hits on ships, go into hunting mode
+
+        # Prioritize checkerboard pattern to quickly find ships
+        # Iterate through cells in a checkerboard pattern
+        # This is a basic form of checkerboard. A more advanced one might shift
+        # or use multiple patterns.
+        for r in range(n):
+            for c in range(n):
+                # Only target squares where (r+c) is even (or odd depending on desired pattern)
+                # and that haven't been shot yet.
+                if (r + c) % 2 == 0 and board_arr[r, c] == 0:
+                    return r, c
+
+        # If checkerboard is exhausted (unlikely early on), fall back to random
+        # (This part might not be strictly needed if checkerboard continues)
+        available_cells = np.argwhere(board_arr == 0)
+        if len(available_cells) > 0:
+            return tuple(random.choice(available_cells))
+
+    # 2. Target mode (at least one active hit)
+    # If we have hits, try to sink the ship
+    else:
+        # Find adjacent unknown cells to existing hits
+        potential_targets = []
+        for r_hit, c_hit in hit_cells:
+            # Check neighbors
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r_hit + dr, c_hit + dc
+                if 0 <= nr < n and 0 <= nc < n and board_arr[nr, nc] == 0:
+                    potential_targets.append((nr, nc))
+
+        if len(potential_targets) > 0:
+            # If multiple potential contiguous hits, prioritize aligning with existing hits
+            # This is a heuristic: if we have multiple 1s in a line, try to extend that line
+            
+            # Simple approach: if we have two hits, extend the line
+            if len(hit_cells) >= 2:
+                # Try to determine direction
+                r1, c1 = hit_cells[0]
+                r2, c2 = hit_cells[1]
+
+                dr, dc = r2 - r1, c2 - c1
+
+                # If horizontal
+                if dr == 0:
+                    # Extend left
+                    if c1 > 0 and board_arr[r1, c1 - 1] == 0:
+                        return r1, c1 - 1
+                    # Extend right
+                    if c2 < n - 1 and board_arr[r2, c2 + 1] == 0:
+                        return r2, c2 + 1
+                # If vertical
+                elif dc == 0:
+                    # Extend up
+                    if r1 > 0 and board_arr[r1 - 1, c1] == 0:
+                        return r1 - 1, c1
+                    # Extend down
+                    if r2 < n - 1 and board_arr[r2 + 1, c2] == 0:
+                        return r2 + 1, c2
+
+            # If no clear line or multiple hits, pick a random adjacent target
+            return random.choice(potential_targets)
+
+    # 3. Fallback: If no hits and checkerboard exhausted, or no adjacent unknown cells to hits,
+    # simply target any unknown cell. This shouldn't be reached often.
+    available_cells = np.argwhere(board_arr == 0)
+    if len(available_cells) > 0:
+        return tuple(random.choice(available_cells))
+
+    # Should not happen in a correctly implemented game, as there should always be a target
+    # until all cells are hit or missed.
+    return 0, 0

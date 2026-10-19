@@ -1,0 +1,148 @@
+
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board)
+    rows, cols = board.shape
+    
+    # Check for immediate winning move
+    for col in range(cols):
+        if can_win(board, col, 1):
+            return col
+    
+    # Check if opponent can win next move and block them
+    for col in range(cols):
+        if can_win(board, col, -1):
+            return col
+    
+    # Try to play in the center column if available
+    center_col = cols // 2
+    if board[0, center_col] == 0:
+        return center_col
+    
+    # Evaluate potential moves with a simple heuristic
+    best_score = -float('inf')
+    best_col = center_col  # default to center
+    
+    for col in range(cols):
+        if board[0, col] != 0:  # column is full
+            continue
+            
+        # Find the first empty row in this column
+        row = np.max(np.where(board[:, col] == 0))
+        
+        # Calculate a score for this move
+        score = evaluate_move(board, row, col)
+        
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col
+
+def can_win(board: np.ndarray, col: int, player: int) -> bool:
+    """Check if dropping a disc in this column would result in a win for the given player."""
+    if board[0, col] != 0:  # column is full
+        return False
+    
+    # Find the first empty row in this column
+    row = np.max(np.where(board[:, col] == 0))
+    
+    # Temporarily place the disc
+    board[row, col] = player
+    
+    # Check if this creates a line of 4
+    if check_win(board, row, col, player):
+        board[row, col] = 0  # undo the temporary placement
+        return True
+    
+    board[row, col] = 0  # undo the temporary placement
+    return False
+
+def check_win(board: np.ndarray, row: int, col: int, player: int) -> bool:
+    """Check if the last move at (row, col) resulted in a win for the given player."""
+    directions = [
+        (0, 1),   # horizontal
+        (1, 0),    # vertical
+        (1, 1),    # diagonal down-right
+        (1, -1)    # diagonal down-left
+    ]
+    
+    for dr, dc in directions:
+        count = 1  # count the current disc
+        
+        # Search in positive direction
+        r, c = row + dr, col + dc
+        while 0 <= r < board.shape[0] and 0 <= c < board.shape[1] and board[r, c] == player:
+            count += 1
+            r += dr
+            c += dc
+            
+        # Search in negative direction
+        r, c = row - dr, col - dc
+        while 0 <= r < board.shape[0] and 0 <= c < board.shape[1] and board[r, c] == player:
+            count += 1
+            r -= dr
+            c -= dc
+            
+        if count >= 4:
+            return True
+    
+    return False
+
+def evaluate_move(board: np.ndarray, row: int, col: int) -> int:
+    """Evaluate the quality of a potential move at (row, col) with a simple heuristic."""
+    player = 1
+    opponent = -1
+    score = 0
+    
+    # Prefer moves that create opportunities for future wins
+    board[row, col] = player
+    score += count_potential_wins(board, player) * 10
+    board[row, col] = 0
+    
+    # Penalize moves that give opponent opportunities
+    board[row, col] = opponent
+    score -= count_potential_wins(board, opponent) * 8
+    board[row, col] = 0
+    
+    # Prefer center columns
+    center_col = board.shape[1] // 2
+    score += (board.shape[1] // 2 - abs(col - center_col)) * 2
+    
+    return score
+
+def count_potential_wins(board: np.ndarray, player: int) -> int:
+    """Count how many potential winning lines of 3 exist for the given player."""
+    count = 0
+    rows, cols = board.shape
+    
+    # Check all possible lines of 4
+    for r in range(rows):
+        for c in range(cols):
+            # Horizontal
+            if c + 3 < cols:
+                line = board[r, c:c+4]
+                if np.sum(line == player) == 3 and np.sum(line == 0) == 1:
+                    count += 1
+            
+            # Vertical
+            if r + 3 < rows:
+                line = board[r:r+4, c]
+                if np.sum(line == player) == 3 and np.sum(line == 0) == 1:
+                    count += 1
+            
+            # Diagonal down-right
+            if r + 3 < rows and c + 3 < cols:
+                line = [board[r+i, c+i] for i in range(4)]
+                if np.sum(line == player) == 3 and np.sum(line == 0) == 1:
+                    count += 1
+            
+            # Diagonal down-left
+            if r + 3 < rows and c - 3 >= 0:
+                line = [board[r+i, c-i] for i in range(4)]
+                if np.sum(line == player) == 3 and np.sum(line == 0) == 1:
+                    count += 1
+    
+    return count

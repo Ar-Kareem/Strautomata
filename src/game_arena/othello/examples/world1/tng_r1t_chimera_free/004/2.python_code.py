@@ -1,0 +1,61 @@
+
+import numpy as np
+
+WEIGHT_MATRIX = [
+    [500, -50, 30, 20, 20, 30, -50, 500],
+    [-50, -200, 5, 5, 5, 5, -200, -50],
+    [30,    5, 10, 3, 3, 10, 5,   30],
+    [20,    5,  3, 0, 0,  3, 5,   20],
+    [20,    5,  3, 0, 0,  3, 5,   20],
+    [30,    5, 10, 3, 3, 10, 5,   30],
+    [-50, -200, 5, 5, 5, 5, -200, -50],
+    [500, -50, 30, 20, 20, 30, -50, 500],
+]
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    legal_moves = []
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+    
+    for r in range(8):
+        for c in range(8):
+            if you[r][c] or opponent[r][c]:
+                continue
+            total_flips = 0
+            is_legal = False
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                flips = 0
+                while 0 <= nr < 8 and 0 <= nc < 8:
+                    if opponent[nr][nc]:
+                        flips += 1
+                        nr += dr
+                        nc += dc
+                    elif you[nr][nc]:
+                        if flips > 0:
+                            total_flips += flips
+                            is_legal = True
+                        break
+                    else:
+                        break
+            if is_legal:
+                legal_moves.append((r, c, total_flips))
+    
+    if not legal_moves:
+        return "pass"
+    
+    max_score = -float('inf')
+    best_move = None
+    best_flips = -1
+    
+    for r, c, flips in legal_moves:
+        score = WEIGHT_MATRIX[r][c] + flips
+        if score > max_score or (score == max_score and flips > best_flips):
+            max_score = score
+            best_move = (r, c)
+            best_flips = flips
+    
+    col = chr(ord('a') + best_move[1])
+    row = str(best_move[0] + 1)
+    return f"{col}{row}"

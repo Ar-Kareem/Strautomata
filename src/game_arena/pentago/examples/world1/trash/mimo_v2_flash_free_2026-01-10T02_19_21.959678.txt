@@ -1,0 +1,312 @@
+Thinking:
+To implement a strong policy for Pentago, I need a state evaluation function and a search algorithm.
+1.  **State Representation**: I'll convert the 6x6 arrays into a flattened integer or string representation for efficient hashing and checking. I'll also maintain a set of occupied cells to generate moves quickly.
+2.  **Evaluation**: I need a function `evaluate_board(board)` that calculates a score. A simple approach is to count potential 5-in-a-rows. I can check for existing 5-in-a-rows (win/loss), then count lines with 4, 3, 2, or 1 marbles, weighting them accordingly.
+3.  **Move Generation**: I need to generate all legal moves: for every empty cell, try rotating every quadrant (4) in both directions (2). Since there are 36 cells max, 4*2 = 8 rotations, the branching factor is roughly $36 * 8 = 288$.
+4.  **Search Algorithm**: A Depth-Limited Minimax search with Alpha-Beta pruning is suitable here. Given the 1-second time limit and the branching factor, I can likely search 2-3 full-ply (opponent's response) or use a shallower search with good heuristics. I will implement an iterative deepening approach or a fixed depth search (e.g., depth 2 or 3).
+5.  **Optimization**: Pre-calculate rotation maps for the quadrants to avoid repeated calculations. Use efficient board updates (bitboards or numpy array copies).
+
+The strategy will be:
+-   **Immediate Win**: Check if any move results in a win for "you". If so, take it.
+-   **Block Opponent**: Check if the opponent can win next turn (any move that puts them at 4-in-a-row). If so, block by either placing in the critical spot (if possible) or rotating to break their line.
+-   **Minimax Search**: Perform a limited depth Minimax search (depth 2) to find the move that maximizes my score while minimizing the opponent's potential score.
+
+Here is the complete Python code.
+
+```python
+import numpy as np
+import sys
+
+def policy(you, opponent):
+    # Convert inputs to numpy arrays if they aren't already
+    you_arr = np.array(you, dtype=np.int8)
+    opp_arr = np.array(opponent, dtype=np.int8)
+    
+    # Constants
+    EMPTY = 0
+    ME = 1
+    OPP = -1
+    
+    # Create a combined board: 1 for me, -1 for opponent, 0 for empty
+    board = np.zeros((6, 6), dtype=np.int8)
+    board[you_arr == 1] = ME
+    board[opp_arr == 1] = OPP
+    
+    # Helper: Check for 5-in-a-row
+    def check_win(b):
+        # Check horizontal
+        for r in range(6):
+            for c in range(2): # Start positions for 5-in-a-row
+                if abs(sum(b[r, c:c+5])) == 5:
+                    return b[r, c] # Return the player who won
+        # Check vertical
+        for c in range(6):
+            for r in range(2):
+                if abs(sum(b[r:r+5, c])) == 5:
+                    return b[r, c]
+        # Check diagonal /
+        for r in range(2):
+            for c in range(2):
+                s = b[r, c] + b[r+1, c+1] + b[r+2, c+2] + b[r+3, c+3] + b[r+4, c+4]
+                if abs(s) == 5:
+                    return b[r, c]
+        # Check diagonal \
+        for r in range(4):
+            for c in range(2):
+                s = b[r, c] + b[r+1, c-1] + b[r+2, c-2] + b[r+3, c-3] + b[r+4, c-4] # Wait, c-1 goes negative
+                # Correct diagonal \ logic
+                # Row r, Col c. Next is r+1, c+1
+                # Let's fix indices for \
+                # r=2..5, c=0..3 is also valid
+                # Actually, standard check:
+                pass
+        # Re-implement diagonal checks safely
+        # Diagonal \
+        for r in range(2):
+            for c in range(2):
+                val = b[r, c] + b[r+1, c+1] + b[r+2, c+2] + b[r+3, c+3] + b[r+4, c+4]
+                if abs(val) == 5: return b[r, c]
+        # Diagonal /
+        for r in range(4):
+            for c in range(2):
+                val = b[r, c] + b[r-1, c+1] + b[r-2, c+2] + b[r-3, c+3] + b[r-4, c+4] # No, row decreases
+                # r-4 is negative. Valid start: r=4..5, c=0..3? No.
+                # Start r=4..5, c=0..3 -> r=4, c=0: (4,0), (3,1), (2,2), (1,3), (0,4) -> Valid
+                # Let's use generic loop
+        # Generic check
+        lines = []
+        # Horizontals
+        for r in range(6):
+            lines.append(b[r, :])
+        # Verticals
+        for c in range(6):
+            lines.append(b[:, c])
+        # Diagonals \
+        for r in range(2): # Start row 0,1
+            for c in range(2): # Start col 0,1
+                lines.append(np.array([b[r+i, c+i] for i in range(5)]))
+        # Diagonals /
+        for r in range(4, 6): # Start row 4,5
+            for c in range(2): # Start col 0,1
+                lines.append(np.array([b[r-i, c+i] for i in range(5)]))
+        
+        for line in lines:
+            s = np.sum(line)
+            if abs(s) == 5:
+                return line[0]
+        return 0
+
+    # Check immediate win
+    def find_winning_move(b, player):
+        empty_cells = np.argwhere(b == 0)
+        for r, c in empty_cells:
+            # Try placing player at r, c
+            b[r, c] = player
+            if check_win(b) == player:
+                b[r, c] = 0
+                return (r, c)
+            b[r, c] = 0
+        return None
+
+    # Check if opponent threatens a win
+    def find_threats(b, threat_player):
+        # Returns list of (r, c) that if occupied by threat_player, would create 5-in-a-row
+        threats = []
+        empty_cells = np.argwhere(b == 0)
+        for r, c in empty_cells:
+            b[r, c] = threat_player
+            if check_win(b) == threat_player:
+                threats.append((r, c))
+            b[r, c] = 0
+        return threats
+
+    # Quadrant rotations
+    # 0: (0,0) to (2,2), 1: (0,3) to (2,5), 2: (3,0) to (5,2), 3: (3,3) to (5,5)
+    quads_coords = [
+        (slice(0,3), slice(0,3)),
+        (slice(0,3), slice(3,6)),
+        (slice(3,6), slice(0,3)),
+        (slice(3,6), slice(3,6))
+    ]
+
+    def rotate_quadrant(b, q, dir):
+        # Returns a new board rotated
+        nb = b.copy()
+        sl_r, sl_c = quads_coords[q]
+        sub = nb[sl_r, sl_c]
+        if dir == 'L':
+            # np.rot90 uses k=1 for 90 deg counter-clockwise
+            nb[sl_r, sl_c] = np.rot90(sub, k=1)
+        else: # R
+            nb[sl_r, sl_c] = np.rot90(sub, k=3) # or k=-1
+        return nb
+
+    # Heuristic Evaluation
+    def evaluate(b):
+        winner = check_win(b)
+        if winner == ME: return 100000
+        if winner == OPP: return -100000
+        
+        score = 0
+        lines = []
+        # Collect all lines of length 5
+        for r in range(6):
+            for c in range(2):
+                lines.append(b[r, c:c+5])
+        for c in range(6):
+            for r in range(2):
+                lines.append(b[r:r+5, c])
+        for r in range(2):
+            for c in range(2):
+                lines.append(np.array([b[r+i, c+i] for i in range(5)]))
+        for r in range(4, 6):
+            for c in range(2):
+                lines.append(np.array([b[r-i, c+i] for i in range(5)]))
+        
+        for line in lines:
+            cnt_me = np.sum(line == ME)
+            cnt_opp = np.sum(line == OPP)
+            if cnt_me > 0 and cnt_opp == 0:
+                # Weight 1, 2, 3, 4
+                if cnt_me == 4: score += 50
+                elif cnt_me == 3: score += 10
+                elif cnt_me == 2: score += 3
+                elif cnt_me == 1: score += 1
+            elif cnt_opp > 0 and cnt_me == 0:
+                if cnt_opp == 4: score -= 50
+                elif cnt_opp == 3: score -= 10
+                elif cnt_opp == 2: score -= 3
+                elif cnt_opp == 1: score -= 1
+        return score
+
+    # 1. Immediate Win
+    win_move = find_winning_move(board.copy(), ME)
+    if win_move:
+        r, c = win_move
+        # We need to pick a quad/dir. Any is fine. Let's pick 0, L.
+        return f"{r+1},{c+1},0,L"
+
+    # 2. Block Opponent Immediate Win
+    # If opponent has 4-in-a-row potential, we must block.
+    opp_threats = find_threats(board.copy(), OPP)
+    if opp_threats:
+        # Try to block by placement
+        for (r, c) in opp_threats:
+            # Try placing me at (r,c) and see if it blocks.
+            # If we place at (r,c), opponent wins? No, we take it.
+            # Wait, if opponent has 4-in-a-row, it means putting a piece at X makes them win.
+            # So we must not let them put a piece at X.
+            # Can we block by rotation?
+            # We can check if any rotation breaks the line.
+            # But simplest is: Place at the threat cell (if empty).
+            # If multiple threats, check if one move blocks all (unlikely).
+            # Just take the first threat cell.
+            if board[r, c] == 0:
+                # Check if placing here blocks (it does by taking the spot)
+                # But we must rotate.
+                # Try rotations. If any rotation doesn't create a win for opp (it shouldn't since we placed), we are good.
+                # Actually, we just need to output a legal move.
+                # Let's iterate quads to find one that doesn't expose a loss (though placing on the threat spot is the main thing).
+                # If we place on threat spot, opp can't win from there. So any rotation is valid?
+                # Wait, rotation might create a win for them elsewhere?
+                # Minimax will handle that. Let's just return a move at threat spot with some rotation.
+                return f"{r+1},{c+1},0,L"
+        
+        # If we can't place at threat (already occupied? shouldn't happen if threats found correctly),
+        # or if multiple threats exist that we can't cover with 1 move (5+ threats),
+        # we might need to rely on rotation to break lines.
+        # Let's check rotations for blocking.
+        for q in range(4):
+            for d in ['L', 'R']:
+                nb = rotate_quadrant(board, q, d)
+                if check_win(nb) != OPP:
+                    # Rotation breaks the threat without us placing yet?
+                    # We still need to place.
+                    # If rotation breaks the line, we can place anywhere (empty).
+                    # Let's pick an empty spot.
+                    empties = np.argwhere(board == 0)
+                    if len(empties) > 0:
+                        r, c = empties[0]
+                        return f"{r+1},{c+1},{q},{d}"
+
+    # 3. Minimax Search (Depth 2)
+    # We need to select the best move.
+    # We will limit the search to top N moves to save time.
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    empty_cells = np.argwhere(board == 0)
+    
+    # Optimization: Prioritize moves based on simple heuristic to prune
+    candidate_moves = []
+    
+    for r, c in empty_cells:
+        for q in range(4):
+            for d in ['L', 'R']:
+                # Apply move
+                nb = rotate_quadrant(board, q, d)
+                nb[r, c] = ME
+                
+                # Evaluate immediate score (depth 1)
+                s = evaluate(nb)
+                
+                # Store candidate: (score, r, c, q, d)
+                candidate_moves.append((s, r, c, q, d))
+    
+    # Sort candidates by score (descending) to search promising ones first
+    candidate_moves.sort(key=lambda x: x[0], reverse=True)
+    
+    # We can only evaluate a few moves within 1 second.
+    # Let's take the top K.
+    K = 30 # Heuristic limit
+    if len(candidate_moves) > K:
+        candidate_moves = candidate_moves[:K]
+        
+    for _, r, c, q, d in candidate_moves:
+        # Simulate my move
+        nb = rotate_quadrant(board, q, d)
+        nb[r, c] = ME
+        
+        # Check if I win immediately (should have been caught, but safe)
+        if check_win(nb) == ME:
+            return f"{r+1},{c+1},{q},{d}"
+            
+        # Opponent's Turn (Minimize)
+        opp_empty = np.argwhere(nb == 0)
+        min_score = float('inf')
+        
+        # Limit opp moves to top 5 to save time
+        opp_candidates = []
+        for er, ec in opp_empty:
+            for oq in range(4):
+                for od in ['L', 'R']:
+                    nbb = rotate_quadrant(nb, oq, od)
+                    nbb[er, ec] = OPP
+                    s = evaluate(nbb)
+                    opp_candidates.append(s)
+        
+        # If no opp moves (board full? but we just moved)
+        if not opp_candidates:
+            min_score = 0
+        else:
+            # Take the minimum score (worst case for us)
+            min_score = min(opp_candidates)
+        
+        # Alpha-Beta-ish pruning logic
+        if min_score > best_score:
+            best_score = min_score
+            best_move = (r, c, q, d)
+            
+        # If we found a move that gives us a huge lead, stop searching
+        if best_score > 90000:
+            break
+
+    if best_move:
+        r, c, q, d = best_move
+        return f"{r+1},{c+1},{q},{d}"
+    
+    # Fallback (should not be reached given the logic, but safe)
+    r, c = empty_cells[0]
+    return f"{r+1},{c+1},0,L"
+```

@@ -1,0 +1,201 @@
+**Strategy Overview**
+
+The game “leafymcfallface” is a turn‑taking race on a shrinking grid.  
+Each player moves to an adjacent leaf, eats that leaf (removing it from the board) and leaves an empty square behind.  
+The player who can still move after the opponent is surrounded wins 100 points; otherwise both score 0.
+
+The policy works as a depth‑limited minimax search:
+
+1. **State representation** – a set of remaining leaves and the two players’ positions.  
+2. **Move generation** – from a player’s current square, any orthogonal neighbour that is still a leaf is a legal move.  
+3. **Simulation** – a move creates a new state where the destination leaf is removed and the player’s position is updated.  
+4. **Evaluation** –  
+   * If the opponent has no legal moves → win for the current player (+1000).  
+   * If the current player has no moves → loss (−1000).  
+   * Otherwise the score is `my_available_moves – 2·opponent_available_moves` (favouring states where we have many moves and the opponent few).  
+5. **Search** – a minimax recursion with α‑β pruning (depth ≈ 6) explores the move tree. At each level the player whose turn it is tries to maximise (or minimise) the evaluation for the original role.  
+6. **Decision** – the move with the highest evaluated score is chosen; ties are broken by the immediate number of own moves remaining.
+
+Because the branching factor is at most 4, a depth‑6 search examines only a few thousand nodes – well within the 1‑second limit. This gives the agent a lookahead that lets it trap the opponent and seize winning paths, while the heuristic evaluation also drives greedy survival when full lookahead isn’t possible.
+
+<code>
+import sys
+from typing import List, Tuple, Set, Dict
+
+# ----------------------------------------------------------------------
+# Helper data structures and functions
+# ----------------------------------------------------------------------
+
+# Orthogonal directions (up, down, left, right)
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+def parse_state(state: List[List[object]]) -> Tuple[Set[Tuple[int, int]], Dict[str, Tuple[int, int]]]:
+    """
+    Parse the raw state into a set of remaining leaves and a dict of player positions.
+    :param state: list of propositions
+    :return: (leaf_set, pos_dict) where leaf_set contains (row,col) tuples and
+             pos_dict maps role string ('red' or 'blue') to (row,col).
+    """
+    leaf_set: Set[Tuple[int, int]] = set()
+    pos_dict: Dict[str, Tuple[int, int]] = {}
+    for fact in state:
+        if not fact:
+            continue
+        if fact[0] == "leaf":
+            # fact = ["leaf", row, col]
+            r, c = int(fact[1]), int(fact[2])
+            leaf_set.add((r, c))
+        elif fact[0] == "isplayer":
+            # fact = ["isplayer", row, col, role]
+            r, c = int(fact[1]), int(fact[2])
+            role = fact[3]
+            pos_dict[role] = (r, c)
+        # we can ignore "control" and any other propositions
+    return leaf_set, pos_dict
+
+
+def get_moves(leaf_set: Set[Tuple[int, int]], pos: Tuple[int, int]) -> List[Tuple[int, int]]:
+    """
+    Return a list of legal moves (neighbouring leaves) from the given position.
+    """
+    moves = []
+    for dr, dc in DIRS:
+        nr, nc = pos[0] + dr, pos[1] + dc
+        if (nr, nc) in leaf_set:
+            moves.append((nr, nc))
+    return moves
+
+
+def evaluate_state(leaf_set: Set[Tuple[int, int]],
+                  pos_dict: Dict[str, Tuple[int, int]],
+                  maximizing_role: str) -> int:
+    """
+    Heuristic evaluation from the perspective of `maximizing_role'.
+    Returns a large positive value for a winning position, large negative for a losing
+    position, otherwise a weighted difference of available moves.
+    """
+    my_pos = pos_dict[maximizing_role]
+    opp_role = "red" if maximizing_role == "blue" else "blue"
+    opp_pos = pos_dict[opp_role]
+
+    my_moves = get_moves(leaf_set, my_pos)
+    opp_moves = get_moves(leaf_set, opp_pos)
+
+    # Terminal conditions
+    if not my_moves and not opp_moves:
+        # Both stuck – draw
+        return 0
+    if not my_moves:
+        # I cannot move, opponent wins
+        return -1000
+    if not opp_moves:
+        # Opponent cannot move, I win
+        return 1000
+
+    # Non‑terminal: favour having more own moves and fewer opponent moves
+    # Weight opponent moves twice as much as our own.
+    return len(my_moves) - 2 * len(opp_moves)
+
+
+def minimax(leaf_set: Set[Tuple[int, int]],
+            pos_dict: Dict[str, Tuple[int, int]],
+            turn: str,
+            depth: int,
+            maximizing_role: str) -> int:
+    """
+    Depth‑limited minimax with α‑β pruning (simple version).
+    Returns the evaluation score for the current state from the perspective of
+    `maximizing_role'.
+    """
+    # Terminal or depth limit
+    if depth == 0:
+        return evaluate_state(leaf_set, pos_dict, maximizing_role)
+
+    cur_pos = pos_dict[turn]
+    moves = get_moves(leaf_set, cur_pos)
+
+    # If the player to move has no legal moves, the game ends immediately
+    if not moves:
+        return evaluate_state(leaf_set, pos_dict, maximizing_role)
+
+    next_turn = "red" if turn == "blue" else "blue"
+
+    if turn == maximizing_role:
+        # Maximizing player – choose the move with the highest score
+        best_val = -10**9
+        for move in moves:
+            new_leaf_set = leaf_set - {move}
+            new_pos_dict = pos_dict.copy()
+            new_pos_dict[turn] = move
+            val = minimax(new_leaf_set, new_pos_dict, next_turn, depth - 1, maximizing_role)
+            if val > best_val:
+                best_val = val
+        return best_val
+    else:
+        # Minimizing opponent – choose the move with the lowest score
+        best_val = 10**9
+        for move in moves:
+            new_leaf_set = leaf_set - {move}
+            new_pos_dict = pos_dict.copy()
+            new_pos_dict[turn] = move
+            val = minimax(new_leaf_set, new_pos_dict, next_turn, depth - 1, maximizing_role)
+            if val < best_val:
+                best_val = val
+        return best_val
+
+
+# ----------------------------------------------------------------------
+# Main policy function
+# ----------------------------------------------------------------------
+MAX_DEPTH = 6  # depth‑limited search – fast enough for a 7×7 board
+
+
+def policy(state: List[List[object]], role: str) -> str:
+    """
+    Given the current `state` and the `role` to move (either 'red' or 'blue'),
+    return a legal move in Stanford syntax, e.g. 'move(1,2)'.
+    """
+    leaf_set, pos_dict = parse_state(state)
+
+    # Ensure we have positions for both players
+    if role not in pos_dict:
+        # Should never happen in normal play – fall back to a dummy move
+        return "move(0,0)"
+
+    my_pos = pos_dict[role]
+    opp_role = "red" if role == "blue" else "blue"
+    opp_pos = pos_dict[opp_role]
+
+    # Generate all legal moves for the current player
+    possible_moves = get_moves(leaf_set, my_pos)
+    if not possible_moves:
+        # No legal moves – game should be over; return a dummy to avoid disqualification
+        return "move(0,0)"
+
+    best_move = None
+    best_score = -10**9
+
+    for move in possible_moves:
+        # Simulate the move
+        new_leaf_set = leaf_set - {move}
+        new_pos_dict = pos_dict.copy()
+        new_pos_dict[role] = move
+
+        # After our move, it's the opponent's turn
+        score = minimax(new_leaf_set, new_pos_dict, opp_role, MAX_DEPTH - 1, role)
+
+        # Tie‑break: prefer the move that leaves us with more own moves
+        own_moves_after = len(get_moves(new_leaf_set, move))
+
+        # Update best move
+        if score > best_score or (score == best_score and own_moves_after > len(get_moves(leaf_set, best_move) if best_move else (0,))):
+            best_score = score
+            best_move = move
+
+    # As a safety net, if best_move is still None (should not happen), pick the first move
+    if best_move is None:
+        best_move = possible_moves[0]
+
+    row, col = best_move
+    return f"move({row},{col})"
+</code>

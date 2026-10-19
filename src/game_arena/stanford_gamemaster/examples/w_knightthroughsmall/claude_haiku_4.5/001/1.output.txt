@@ -1,0 +1,112 @@
+# Strategy
+
+The strategy for this policy is to advance pieces toward the opponent's side as efficiently as possible while blocking opponent pieces when necessary.
+
+Key observations from the game:
+1. **Goal**: Get a piece to the opposite side (row 6 for white, row 1 for black)
+2. **Knight moves**: Pieces move like chess knights but only "forward" - for white this means increasing row numbers, for black this means decreasing row numbers
+3. **Knight move offsets**: A knight can move to positions that are 2 squares in one direction and 1 square perpendicular. Forward-only moves from position (col, row) are:
+   - For white: (col±1, row+2) and (col±2, row+1)
+   - For black: (col±1, row-2) and (col±2, row-1)
+
+The policy should:
+1. Prioritize moves that advance pieces closest to victory (furthest along the board)
+2. Move pieces that are furthest forward first
+3. Avoid blocked paths when possible
+4. Ensure a legal move is always returned
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the state to find all pieces
+    board = {}  # (col, row) -> color
+    my_pieces = []
+    
+    for fact in state:
+        if fact[0] == "cell":
+            col = fact[1]
+            row = int(fact[2])
+            color = fact[3]
+            board[(col, row)] = color
+            if color == role:
+                my_pieces.append((col, row))
+    
+    # Define column order for easier indexing
+    cols = ['a', 'b', 'c', 'd', 'e', 'f']
+    col_to_idx = {c: i for i, c in enumerate(cols)}
+    idx_to_col = {i: c for i, c in enumerate(cols)}
+    
+    # Helper function to get valid forward knight moves
+    def get_forward_knight_moves(col, row, role):
+        col_idx = col_to_idx[col]
+        row = int(row)
+        moves = []
+        
+        if role == "white":
+            # White moves forward (increasing row)
+            # Knight moves: (±1, +2) and (±2, +1)
+            candidates = [
+                (col_idx + 1, row + 2),
+                (col_idx - 1, row + 2),
+                (col_idx + 2, row + 1),
+                (col_idx - 2, row + 1),
+            ]
+        else:  # black
+            # Black moves forward (decreasing row)
+            # Knight moves: (±1, -2) and (±2, -1)
+            candidates = [
+                (col_idx + 1, row - 2),
+                (col_idx - 1, row - 2),
+                (col_idx + 2, row - 1),
+                (col_idx - 2, row - 1),
+            ]
+        
+        # Filter valid moves
+        for new_col_idx, new_row in candidates:
+            if 0 <= new_col_idx < 6 and 1 <= new_row <= 6:
+                new_col = idx_to_col[new_col_idx]
+                # Check if destination is empty or has opponent piece
+                if (new_col, new_row) not in board or board[(new_col, new_row)] != role:
+                    moves.append((new_col, new_row))
+        
+        return moves
+    
+    # Find the best move
+    best_move = None
+    best_score = -1
+    
+    for col, row in my_pieces:
+        row = int(row)
+        moves = get_forward_knight_moves(col, row, role)
+        
+        for new_col, new_row in moves:
+            # Score based on progress toward goal
+            if role == "white":
+                progress = new_row  # Higher is better for white
+                is_winning = new_row == 6
+            else:  # black
+                progress = 7 - new_row  # Higher is better (closer to row 1)
+                is_winning = new_row == 1
+            
+            # Prioritize winning moves
+            if is_winning:
+                return f"move({col},{row},{new_col},{new_row})"
+            
+            # Score combines progress and current position advantage
+            score = progress * 10 + (int(row) if role == "white" else (7 - int(row)))
+            
+            if score > best_score:
+                best_score = score
+                best_move = (col, row, new_col, new_row)
+    
+    # If no move found with scoring, just return any legal move
+    if best_move is None:
+        for col, row in my_pieces:
+            row = int(row)
+            moves = get_forward_knight_moves(col, row, role)
+            if moves:
+                new_col, new_row = moves[0]
+                return f"move({col},{row},{new_col},{new_row})"
+    
+    col, row, new_col, new_row = best_move
+    return f"move({col},{row},{new_col},{new_row})"
+</code>

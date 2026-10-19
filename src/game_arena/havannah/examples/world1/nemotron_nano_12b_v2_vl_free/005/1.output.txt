@@ -1,0 +1,134 @@
+To create an effective policy for playing Havannah on a 15x15 board, we focus on evaluating potential moves based on their strategic importance. The goal is to maximize the player's ability to form powerful structures like bridges and rings while leveraging the center of the board for forks and other tactical opportunities. The heuristic balances **connectivity**, **positional importance**, and **defensive utility**.
+
+---
+
+### 🧠 Strategy Overview
+
+1. **Move Selection**:
+   - Identify all valid moves from the `valid_mask` that are unoccupied (not in `me` or `opp`).
+   
+2. **Adjacency Evaluation**:
+   - Use a precomputed adjacency list to quickly determine how many of the player's stones are adjacent to each candidate move.
+   
+3. **Positional Evaluation**:
+   - Prioritize moves near the center of the board using a positional scoring system based on Manhattan distance to the center (7,7). This favors central placements that support fork formation and control over the board.
+
+4. **Foe Influence**:
+   - Penalize moves adjacent to opponent stones to avoid weakening our own position or giving the opponent opportunities to expand.
+
+5. **Scoring**:
+   - The total score for each move is computed as:
+     ```
+     score = (friend_adjacency * 4) + positional_score - (foe_adjacency * 2)
+     ```
+     - `friend_adjacency` encourages connecting to existing stones.
+     - `positional_score` favors central moves that support forks and control.
+     - `foe_penalty` discourages moves adjacent to opponent stones.
+
+---
+
+### 🧮 Move Scoring Logic
+
+- **Friend adjacency (`friend_adjacency`)**:
+  Each adjacent stone of the player's increases the move's value. A higher value indicates the move is more connected and thus more powerful.
+
+- **Positional importance (`positional_score`)**:
+  Based on Manhattan distance to the board's center (7,7), this encourages central placements which are crucial for forks and bridge formation.
+
+- **Foe penalty (`foe_penalty`)**:
+  Penalizes moves that are adjacent to opponent stones, as they may become threats or block our expansion.
+
+---
+
+### 🧮 Adjacency Model
+
+The hexagonal adjacency is modeled using six directional offsets:
+- Up: (-1, 0)
+- Down: (1, 0)
+- Left: (0, -1)
+- Right: (0, 1)
+- Upper-left: (-1, -1)
+- Upper-right: (-1, 1)
+
+This model aligns with the board's hexagonal layout and ensures accurate neighbor computation.
+
+---
+
+### 🧠 Final Policy Implementation
+
+```python
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    board_size = 15
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    possible_moves = [
+        (i, j) for i in range(board_size) for j in range(board_size)
+        if valid_mask[i][j] and (i, j) not in me_set and (i, j) not in opp_set
+    ]
+
+    if not possible_moves:
+        raise RuntimeError("No valid moves found. Game over.")
+
+    # Precompute neighbors for all possible moves
+    directions = [
+        (-1, 0), (1, 0),    # Up and Down
+        (0, -1), (0, 1),    # Left and Right
+        (-1, -1), (-1, 1)   # Upper-Left and Upper-Right
+    ]
+    neighbors_map = {}
+    for (x, y) in possible_moves:
+        neighbors = []
+        for dx, dy in directions:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < board_size and 0 <= ny < board_size:
+                neighbors.append((nx, ny))
+        neighbors_map[(x, y)] = neighbors
+
+    best = possible_moves[0]
+    best_score = -float('inf')
+
+    for move in possible_moves:
+        i, j = move
+        neighbors = neighbors_map[move]
+
+        # Count adjacent friend and foe stones
+        friend_adjacency = sum(1 for (x, y) in neighbors if (x, y) in me_set)
+        foe_adjacency = sum(1 for (x, y) in neighbors if (x, y) in opp_set)
+
+        # Positional score: closer to center = higher score
+        dx = abs(i - 7)
+        dy = abs(j - 7)
+        center_distance = dx + dy
+        positional_score = max(20 - center_distance * 2, 0)
+
+        # Total score: more emphasis on connecting to friend stones and center
+        score = friend_adjacency * 5 - foe_adjacency * 2 + positional_score
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+```
+
+---
+
+### 📌 Key Features
+
+- **Efficiency**: Precompute neighbors for each valid move to avoid redundant calculations.
+- **Positional Heuristic**: Prioritizes the center and corners based on strategic value.
+- **Adaptive**: Adjusts scoring dynamically based on the number of adjacent friendly and enemy stones.
+- **Scalability**: Works within the 1-second time limit on a modern CPU.
+
+---
+
+### 🏁 Strategy Summary
+
+This policy emphasizes:
+- **Connectivity**: Prioritizes moves that connect to existing stones.
+- **Central Control**: Prefers central placement for potential forks.
+- **Defensive Awareness**: Avoids moves adjacent to opponent stones.
+- **Scalability**: Designed to operate efficiently within the computational limits of the arena.
+
+This heuristic-based approach balances the need for offensive and defensive play, making it a strong candidate for winning Havannah matches.

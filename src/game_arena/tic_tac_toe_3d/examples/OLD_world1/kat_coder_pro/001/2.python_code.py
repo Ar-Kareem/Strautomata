@@ -1,0 +1,204 @@
+
+import numpy as np
+from math import sqrt, log
+
+class Node:
+    def __init__(self, board, player=1, move=None):
+        self.board = board
+        self.player = player
+        self.move = move
+        self.wins = 0
+        self.visits = 0
+        self.children = []
+        self.untried_moves = self.get_legal_moves()
+        self.result = self.check_winner()
+        
+    def get_legal_moves(self):
+        legal_moves = []
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if self.board[x][y][z] == 0:
+                        legal_moves.append((x, y, z))
+        return legal_moves
+
+    def check_winner(self):
+        # Check all lines through the 3D board
+        for p in [1, -1]:
+            # Check all possible lines
+            for x in range(3):
+                for y in range(3):
+                    # Check z-axis lines
+                    if all(self.board[x][y][z] == p for z in range(3)):
+                        return p
+                for z in range(3):
+                    # Check y-axis lines
+                    if all(self.board[x][y][z] == p for y in range(3)):
+                        return p
+                # Check diagonals in y-z plane
+                if all(self.board[x][i][i] == p for i in range(3)):
+                    return p
+                if all(self.board[x][i][2-i] == p for i in range(3)):
+                    return p
+
+            for y in range(3):
+                for z in range(3):
+                    # Check x-axis lines
+                    if all(self.board[x][y][z] == p for x in range(3)):
+                        return p
+                # Check diagonals in x-z plane
+                if all(self.board[i][y][i] == p for i in range(3)):
+                    return p
+                if all(self.board[i][y][2-i] == p for i in range(3)):
+                    return p
+
+            # Check diagonals in x-y plane
+            for z in range(3):
+                if all(self.board[i][i][z] == p for i in range(3)):
+                    return p
+                if all(self.board[i][2-i][z] == p for i in range(3)):
+                    return p
+
+            # Check 3D diagonals
+            if all(self.board[i][i][i] == p for i in range(3)):
+                return p
+            if all(self.board[i][i][2-i] == p for i in range(3)):
+                return p
+            if all(self.board[i][2-i][i] == p for i in range(3)):
+                return p
+            if all(self.board[2-i][i][i] == p for i in range(3)):
+                return p
+
+        return 0
+
+    def is_fully_expanded(self):
+        return len(self.untried_moves) == 0
+
+    def best_child(self, c_param=1.4):
+        choices_weights = []
+        for c in self.children:
+            exploit = c.wins / c.visits
+            explore = sqrt(log(self.visits) / c.visits)
+            choices_weights.append(exploit + c_param * explore)
+        return self.children[np.argmax(choices_weights)]
+
+    def rollout_policy(self, legal_moves):
+        # Simple random rollout policy
+        return legal_moves[np.random.randint(len(legal_moves))]
+
+    def rollout(self, max_depth=20):
+        current_board = np.copy(self.board)
+        current_player = self.player
+        depth = 0
+        
+        while depth < max_depth:
+            legal_moves = [(x, y, z) for x in range(3) for y in range(3) for z in range(3) if current_board[x][y][z] == 0]
+            
+            if not legal_moves:
+                return 0  # Draw
+                
+            move = self.rollout_policy(legal_moves)
+            x, y, z = move
+            current_board[x][y][z] = current_player
+            
+            # Check for win
+            winner = self._check_winner_board(current_board)
+            if winner != 0:
+                return winner if current_player == 1 else -winner
+            
+            current_player *= -1
+            depth += 1
+            
+        return 0  # Draw by depth limit
+
+    def _check_winner_board(self, board):
+        for p in [1, -1]:
+            # Check all possible lines
+            for x in range(3):
+                for y in range(3):
+                    if all(board[x][y][z] == p for z in range(3)):
+                        return p
+                for z in range(3):
+                    if all(board[x][y][z] == p for y in range(3)):
+                        return p
+                if all(board[x][i][i] == p for i in range(3)):
+                    return p
+                if all(board[x][i][2-i] == p for i in range(3)):
+                    return p
+
+            for y in range(3):
+                for z in range(3):
+                    if all(board[x][y][z] == p for x in range(3)):
+                        return p
+                if all(board[i][y][i] == p for i in range(3)):
+                    return p
+                if all(board[i][y][2-i] == p for i in range(3)):
+                    return p
+
+            for z in range(3):
+                if all(board[i][i][z] == p for i in range(3)):
+                    return p
+                if all(board[i][2-i][z] == p for i in range(3)):
+                    return p
+
+            if all(board[i][i][i] == p for i in range(3)):
+                return p
+            if all(board[i][i][2-i] == p for i in range(3)):
+                return p
+            if all(board[i][2-i][i] == p for i in range(3)):
+                return p
+            if all(board[2-i][i][i] == p for i in range(3)):
+                return p
+
+        return 0
+
+    def backpropagate(self, result):
+        self.visits += 1
+        if result == 1:
+            self.wins += 1
+        elif result == -1:
+            self.wins -= 1
+        
+        if self.move is not None:
+            self.backpropagate(result * -1)
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Convert to numpy array
+    board = np.array(board)
+    
+    # Check if there's only one legal move
+    legal_moves = [(x, y, z) for x in range(3) for y in range(3) for z in range(3) if board[x][y][z] == 0]
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Create root node
+    root = Node(board, player=1)
+    
+    # Run MCTS for a fixed number of iterations
+    iterations = 1000
+    for _ in range(iterations):
+        node = root
+        current_board = np.copy(board)
+        
+        # Selection
+        while node.is_fully_expanded() and node.children:
+            node = node.best_child()
+            x, y, z = node.move
+            current_board[x][y][z] = node.player
+        
+        # Expansion
+        if not node.is_fully_expanded():
+            move = node.untried_moves.pop()
+            x, y, z = move
+            current_board[x][y][z] = node.player
+            
+            child_node = Node(current_board, player=node.player * -1, move=move)
+            node.children.append(child_node)
+            node = child_node
+        
+        # Simulation and backpropagation
+        result = node.rollout()
+        node.backpropagate(result)
+    
+    # Return the best move
+    return root.best_child(c_param=0).move

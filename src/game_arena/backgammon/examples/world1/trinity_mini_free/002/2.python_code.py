@@ -1,0 +1,73 @@
+
+def policy(state: dict) -> str:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    # Handle bar moves first
+    if my_bar > 0:
+        sorted_dice = sorted(dice, reverse=True)
+        moves = []
+        for die in sorted_dice:
+            found = False
+            # Check opponent's home board (points 0-5) from highest to lowest
+            for point in range(5, -1, -1):
+                if opp_pts[point] < 2:  # Valid entry point
+                    moves.append(('B', point))
+                    found = True
+                    break
+            if not found:
+                moves.append(('P', None))  # Pass if no valid moves
+        # Format moves with H/L based on dice order
+        if len(moves) == 2:
+            return f'H:B,{moves[0][1]},L:B,{moves[1][1]}'
+        else:
+            return f'H:B,{moves[0][1]},P'
+    
+    # Check if all checkers are in home board (points 18-23)
+    home_points = [18, 19, 20, 21, 22, 23]
+    all_home = all(my_pts[point] > 0 for point in home_points)
+    
+    if all_home:
+        sorted_dice = sorted(dice, reverse=True)
+        moves = []
+        for die in sorted_dice:
+            found = False
+            # Check home points for bearing off
+            for point in home_points:
+                if die >= (24 - point):  # Valid bearing off
+                    moves.append(('A', point))
+                    found = True
+                    break
+            if not found:
+                moves.append(('P', None))
+        if len(moves) == 2:
+            return f'H:A,{moves[0][1]},L:A,{moves[1][1]}'
+        else:
+            return f'H:A,{moves[0][1]},P'
+    
+    # Move forward checkers
+    sorted_dice = sorted(dice, reverse=True)
+    moves = []
+    for die in sorted_dice:
+        found = False
+        # Check my points from highest to lowest
+        for point in range(23, -1, -1):
+            if my_pts[point] > 0:
+                dest = point - die
+                if dest < 0:  # Invalid destination
+                    continue
+                if opp_pts[dest] < 2:  # Valid move
+                    moves.append(('A', point))
+                    found = True
+                    break
+        if not found:
+            moves.append(('P', None))
+    if len(moves) == 2:
+        return f'H:A,{moves[0][1]},L:A,{moves[1][1]}'
+    else:
+        return f'H:A,{moves[0][1]},P'

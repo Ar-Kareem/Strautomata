@@ -1,0 +1,146 @@
+To solve this problem, we need to create a policy function for the game Pentago that always returns a valid move. The function must decide the best move by first checking for immediate winning opportunities, then blocking potential opponent moves, and if neither is possible, using a heuristic to choose the most strategic move.
+
+### Approach
+1. **Immediate Win Check**: The function first checks all possible empty cells to see if placing a marble in any of them followed by a rotation could immediately result in a win. This is done by simulating each possible move and rotation, then checking if the resulting move leads to a win.
+2. **Blocking Opponent's Win**: If no immediate win is found, the function checks if the opponent has a potential winning move. If such a move is found, the function blocks it by placing the marble in the same cell.
+3. **Heuristic Move**: If neither an immediate win nor a blocking move is found, the function uses a heuristic to choose the best cell. The heuristic prioritizes cells that have the most marbles in the same quadrant, aiming to control that quadrant through rotations.
+
+### Solution Code
+```python
+def policy(you, opponent):
+    def check_win(b):
+        # Check rows
+        for r in range(6):
+            for c in 0, 1:
+                if all(b[r][c + i] == 1 for i in range(5)):
+                    return True
+        # Check columns
+        for c in range(6):
+            for r in 0, 1:
+                if all(b[r + i][c] == 1 for i in range(5)):
+                    return True
+        # Check diagonal down-right
+        for r in 0, 1:
+            for c in 0, 1:
+                if all(b[r + i][c + i] == 1 for i in range(5)):
+                    return True
+        # Check diagonal down-left
+        for r in 4, 3:
+            for c in 0, 1:
+                if all(b[r - i][c + i] == 1 for i in range(5)):
+                    return True
+        return False
+
+    def rotate_3x3(matrix, direction):
+        if direction == 'L':
+            return [
+                [matrix[0][2], matrix[1][2], matrix[2][2]],
+                [matrix[0][1], matrix[1][1], matrix[2][1]],
+                [matrix[0][0], matrix[1][0], matrix[2][0]],
+            ]
+        else:  # 'R'
+            return [
+                [matrix[2][0], matrix[1][0], matrix[0][0]],
+                [matrix[2][1], matrix[1][1], matrix[0][1]],
+                [matrix[2][2], matrix[1][2], matrix[0][2]],
+            ]
+
+    def extract_quad(b, quad):
+        if quad == 0:
+            return [row[0:3] for row in b[0:3]]
+        elif quad == 1:
+            return [row[3:6] for row in b[0:3]]
+        elif quad == 2:
+            return [row[0:3] for row in b[3:6]]
+        else:
+            return [row[3:6] for row in b[3:6]]
+
+    def apply_quad_rotation(b, quad, direction):
+        if quad == 0:
+            rows = slice(0, 3)
+            cols = slice(0, 3)
+        elif quad == 1:
+            rows = slice(0, 3)
+            cols = slice(3, 6)
+        elif quad == 2:
+            rows = slice(3, 6)
+            cols = slice(0, 3)
+        else:
+            rows = slice(3, 6)
+            cols = slice(3, 6)
+        for i in range(3):
+            for j in range(3):
+                b[rows.start + i][cols.start + j] = matrix[i][j]
+
+    empty_cells = [ (r, c) for r in range(6) for c in range(6) if you[r][c] == 0 and opponent[r][c] == 0]
+    
+    # Check for immediate win
+    for r, c in empty_cells:
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                new_you = [row.copy() for row in you]
+                new_opp = [row.copy() for row in opponent]
+                new_you[r][c] = 1
+                quad_you = extract_quad(new_you, quad)
+                quad_opp = extract_quad(new_opp, quad)
+                rotated_you = rotate_3x3(quad_you, dir)
+                rotated_opp = rotate_3x3(quad_opp, dir)
+                apply_quad_rotation(new_you, quad, rotated_you)
+                apply_quad_rotation(new_opp, quad, rotated_opp)
+                if check_win(new_you):
+                    return f"{r+1},{c+1},{quad},{dir}"
+    
+    # Block opponent's winning moves
+    blocking = []
+    for r in range(6):
+        for c in range(6):
+            if opponent[r][c] == 0:
+                for q in range(4):
+                    for d in ['L', 'R']:
+                        sim_opp = [row.copy() for row in opponent]
+                        sim_opp[r][c] = 1
+                        quad_q = extract_quad(sim_opp, q)
+                        rotated = rotate_3x3(quad_q, d)
+                        apply_quad_rotation(sim_opp.copy(), q, rotated)
+                        if check_win(sim_opp):
+                            blocking.append((r, c))
+                            break
+                    else: continue
+                    break
+    
+    if blocking:
+        for r, c in empty_cells:
+            if (r, c) in blocking:
+                quad = 0 if (r < 3 and c < 3) else 1 if (r < 3) else 2 if (c < 3) else 3
+                return f"{r+1},{c+1},{quad},L"
+    
+    # Heuristic move: closest to center with most same-quadrant marbles
+    quad_counts = {}
+    for r in range(6):
+        for c in range(6):
+            if you[r][c] == 1:
+                q = 0 if (r < 3 and c < 3) else 1 if (r < 3) else 2 if (c < 3) else 3
+                quad_counts[(r, c)] = quad_counts.get((r, c), 0) + 1
+    
+    scores = {}
+    for r, c in empty_cells:
+        q = get_quad(r, c)
+        count = 0
+        for dr in range(3):
+            for dc in range(3):
+                if you[(3 if q in [2,3] else 0) + dr][(0 if q < 2 else 3) + dc] == 1:
+                    count += 1
+        scores[(r, c)] = count
+    
+    if empty_cells:
+        best = max(empty_cells, key=lambda cell: scores.get(cell, 0))
+        q = 0 if best[0] < 3 and best[1] < 3 else 1 if best[0] < 3 else 2 if best[1] < 3 else 3
+        return f"{best[0]+1},{best[1]+1},{q},R"
+    
+    return "0,0,0,L"  # fallback, though shouldn't happen
+```
+
+### Explanation
+1. **Check for Immediate Wins**: The function first checks all empty cells to see if placing a marble and rotating any quadrant would result in a win. This involves simulating each move and rotation and checking if it creates a 5-in-a-row.
+2. **Blocking Opponent's Wins**: If no immediate win is found, the function checks if the opponent can win on their next move. If an opponent's move that would lead to a win is found, the function blocks that move by placing its own marble in the same cell.
+3. **Heuristic Move**: If neither an immediate win nor blocking move is found, the function uses a heuristic to choose the most strategic cell. It prioritizes cells with the most marbles in the same quadrant to maximize control over that quadrant and enable future rotations for potential wins.

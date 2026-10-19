@@ -1,0 +1,286 @@
+
+import numpy as np
+from typing import List, Tuple, Dict
+
+def _get_legal_moves(
+    my_pts: List[int],
+    opp_pts: List[int],
+    my_bar: int,
+    opp_bar: int,
+    my_off: int,
+    opp_off: int,
+    dice: List[int]
+) -> List[str]:
+    """
+    Generate all legal moves for the current state.
+    Returns a list of move strings in the format: <ORDER>:<FROM1>,<FROM2>
+    """
+    # Sort dice descending
+    dice_sorted = sorted(dice, reverse=True)
+    high_die, low_die = dice_sorted[0], dice_sorted[1] if len(dice) > 1 else dice_sorted[0]
+    
+    legal_moves = []
+    
+    # Check if we can make a move
+    can_move = False
+    
+    # Helper to check if a point is safe to move from (not leaving a blot)
+    def is_safe_to_move_from(point_idx: int, die: int) -> bool:
+        if my_pts[point_idx] == 0:
+            return False
+        # Calculate destination
+        dest = point_idx - die
+        if dest < 0:
+            # Bearing off
+            return True
+        # Check if dest has 0 or 1 opponent checkers
+        return opp_pts[dest] <= 1
+    
+    # Helper to get all possible moves for a single die
+    def get_moves_for_die(die: int) -> List[str]:
+        moves = []
+        # If on bar, must enter
+        if my_bar > 0:
+            # Try to enter from bar
+            dest = 24 - die  # Opponent's point to enter
+            if opp_pts[dest] <= 1:
+                moves.append("B")
+        else:
+            # Normal moves
+            for pt in range(24):
+                if my_pts[pt] > 0:
+                    dest = pt - die
+                    if dest >= 0:
+                        if opp_pts[dest] <= 1:
+                            moves.append(f"A{pt}")
+                    else:
+                        # Bearing off
+                        if all(my_pts[i] == 0 for i in range(6, 24)):  # All checkers in home board
+                            moves.append(f"A{pt}")
+        return moves
+    
+    # Get possible moves for each die
+    moves_high = get_moves_for_die(high_die)
+    moves_low = get_moves_for_die(low_die) if len(dice) > 1 else []
+    
+    # If only one die, just return those moves
+    if len(dice) == 1:
+        for move in moves_high:
+            legal_moves.append(f"H:{move},P")
+        if not legal_moves:
+            legal_moves.append("H:P,P")
+        return legal_moves
+    
+    # Try both orders
+    for order in ["H", "L"]:
+        if order == "H":
+            first_moves, second_moves = moves_high, moves_low
+            first_die, second_die = high_die, low_die
+        else:
+            first_moves, second_moves = moves_low, moves_high
+            first_die, second_die = low_die, high_die
+        
+        # Try all combinations
+        found_move = False
+        for fm in first_moves:
+            # Simulate first move
+            new_my_pts = my_pts.copy()
+            new_my_bar = my_bar
+            new_my_off = my_off
+            
+            if fm == "B":
+                new_my_bar -= 1
+                dest = 24 - first_die
+                if opp_pts[dest] == 1:
+                    # Hit opponent
+                    # Note: In actual game, opponent checker goes to bar, but for move generation we just need to know it's legal
+                    pass
+                new_my_pts[dest] += 1
+            else:
+                pt = int(fm[1:])
+                new_my_pts[pt] -= 1
+                dest = pt - first_die
+                if dest >= 0:
+                    if opp_pts[dest] == 1:
+                        # Hit
+                        pass
+                    new_my_pts[dest] += 1
+                else:
+                    # Bear off
+                    new_my_off += 1
+            
+            # Check second move with updated state
+            second_legal = False
+            for sm in second_moves:
+                if sm == "P":
+                    second_legal = True
+                    break
+                # Check if second move is still legal
+                if sm == "B":
+                    if new_my_bar > 0:
+                        dest2 = 24 - second_die
+                        if opp_pts[dest2] <= 1:
+                            second_legal = True
+                            break
+                else:
+                    pt2 = int(sm[1:])
+                    if new_my_pts[pt2] > 0:
+                        dest2 = pt2 - second_die
+                        if dest2 >= 0:
+                            if opp_pts[dest2] <= 1:
+                                second_legal = True
+                                break
+                        else:
+                            # Bearing off check
+                            if all(new_my_pts[i] == 0 for i in range(6, 24)):
+                                second_legal = True
+                                break
+            
+            if second_legal:
+                legal_moves.append(f"{order}:{fm},P")
+                found_move = True
+        
+        # If no two-move sequence found, try single moves
+        if not found_move:
+            for fm in first_moves:
+                legal_moves.append(f"{order}:{fm},P")
+            if not first_moves:
+                legal_moves.append(f"{order}:P,P")
+    
+    # Remove duplicates and ensure we have at least one move
+    legal_moves = list(set(legal_moves))
+    if not legal_moves:
+        legal_moves = ["H:P,P", "L:P,P"]
+    
+    return legal_moves
+
+def _evaluate_board(my_pts: List[int], opp_pts: List[int], my_bar: int, opp_bar: int, my_off: int, opp_off: int) -> float:
+    """
+    Evaluate the board position with a simple heuristic.
+    Returns a score where higher is better for the current player.
+    """
+    score = 0.0
+    
+    # 1. Checkers borne off (positive for us, negative for opponent)
+    score += my_off * 10
+    score -= opp_off * 10
+    
+    # 2. Checkers on bar (negative for us, positive for opponent when they're stuck)
+    score -= my_bar * 5
+    score += opp_bar * 5  # Opponent having checkers on bar is good for us
+    
+    # 3. Safety: Penalize having single checkers (blots)
+    for i in range(24):
+        if my_pts[i] == 1:
+            score -= 2  # Blot penalty
+        if opp_pts[i] == 1:
+            score += 1  # Opponent blot is good (can hit)
+    
+    # 4. Blocking: Reward having multiple checkers on points (especially in opponent's home)
+    for i in range(24):
+        if my_pts[i] >= 2:
+            # More points for blocking in opponent's side
+            if i >= 18:
+                score += 1.5
+            elif i >= 12:
+                score += 1.2
+            else:
+                score += 1.0
+    
+    # 5. Home board control
+    home_checkers = sum(my_pts[i] for i in range(6))
+    score += home_checkers * 0.5
+    
+    # 6. Progress: Reward having checkers closer to home
+    for i in range(24):
+        if my_pts[i] > 0:
+            score += (23 - i) * 0.1  # More points for being closer to home (0)
+    
+    # 7. Opponent progress (negative impact)
+    for i in range(24):
+        if opp_pts[i] > 0:
+            score -= i * 0.1  # Opponent closer to their home (23) is bad for us
+    
+    return score
+
+def _apply_move(
+    my_pts: List[int],
+    opp_pts: List[int],
+    my_bar: int,
+    opp_bar: int,
+    my_off: int,
+    dice: List[int],
+    move_str: str
+) -> Tuple[List[int], List[int], int, int, int]:
+    """
+    Apply a move to the board state and return the new state.
+    This is a simplified version that doesn't handle all edge cases perfectly,
+    but is sufficient for evaluating move quality.
+    """
+    # For this basic evaluation, we'll just return modified counts
+    # A full implementation would need to track exact positions and handle hits
+    
+    new_my_pts = my_pts.copy()
+    new_opp_pts = opp_pts.copy()
+    new_my_bar = my_bar
+    new_opp_bar = opp_bar
+    new_my_off = my_off
+    
+    # Parse move
+    parts = move_str.split(":")[1].split(",")
+    from1, from2 = parts[0], parts[1]
+    
+    # Apply first move
+    if from1 != "P" and from1 != "B":
+        pt = int(from1[1:])
+        if pt < 24:
+            new_my_pts[pt] -= 1
+            # Simplified: assume we move towards home
+            # In a real implementation, we'd calculate exact destination
+            new_my_pts[max(0, pt - dice[0])] += 1
+    
+    # Apply second move if present
+    if from2 != "P" and from2 != "B" and len(dice) > 1:
+        pt = int(from2[1:])
+        if pt < 24:
+            new_my_pts[pt] -= 1
+            new_my_pts[max(0, pt - dice[1])] += 1
+    
+    return new_my_pts, new_opp_pts, new_my_bar, new_opp_bar, new_my_off
+
+def policy(state: dict) -> str:
+    """
+    Main policy function that selects the best move.
+    """
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    # Get all legal moves
+    legal_moves = _get_legal_moves(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, dice)
+    
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Evaluate each move
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        # Apply move to get new state
+        new_my_pts, new_opp_pts, new_my_bar, new_opp_bar, new_my_off = _apply_move(
+            my_pts, opp_pts, my_bar, opp_bar, my_off, dice, move
+        )
+        
+        # Evaluate the resulting board
+        score = _evaluate_board(new_my_pts, new_opp_pts, new_my_bar, new_opp_bar, new_my_off, opp_off)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

@@ -1,0 +1,229 @@
+The following Python code implements a game-theoretic policy. It treats the problem as a single-player optimization game where the "Opponent" is a probabilistic model. The policy iteratively computes the optimal "Best Response" to the opponent's strategy (starting from a heuristic and refining it) using a form of Fictitious Play or Iterative Nash Equilibrium approximation.
+
+The solution uses:
+1.  **State Representation**: The hand is represented by the sorted tuple of indices of the cards used (preserving the deck constraint of 13 distinct cards).
+2.  **Memoization**: The computed policy (Action map) is cached per `target` to ensure execution is fast (< 1s) and only computed once per game.
+3.  **Dynamic Programming**: It calculates the Expected Utility of `HIT` vs `STAY` by considering the probability of winning against the opponent's score distribution.
+
+<code>
+import sys
+import collections
+
+# Global cache to persist calculated policies across calls for the same target
+_policy_cache = {}
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Determines whether to HIT or STAY given the current hand and target.
+    
+    The strategy is computed by modeling the game as a single-player optimization
+    problem against a distribution of opponent scores. We use an iterative approach
+    (Fictitious Play) to approximate the Nash Equilibrium distribution.
+    
+    The state is determined by the specific cards drawn from the user's finite deck.
+    """
+    global _policy_cache
+    
+    # Since the target is fixed for the game, we compute the optimal policy map once.
+    if target not in _policy_cache:
+        _policy_cache[target] = _solve_game_strategy(target)
+    
+    policy_map = _policy_cache[target]
+    
+    # Convert input hand strings to our internal tuple representation (indices 0-12)
+    # This uniquely identifies the subset of cards used from the 13-card deck.
+    hand_tuple = _get_hand_indices(hand)
+    
+    # Retrieve optimal action from the computed policy
+    # If the state is not in the map (e.g., busted or unreachable), default to STAY.
+    if hand_tuple in policy_map:
+        return policy_map[hand_tuple][0]
+    
+    return "STAY"
+
+
+def _get_hand_indices(hand_strs):
+    """Maps card strings to unique indices 0-12 to represent the state."""
+    # 0->A, 1..8->2..9, 9->10, 10->J, 11->Q, 12->K
+    mapping = {
+        'A': 0, '2': 1, '3': 2, '4': 3, '5': 4, '6': 5, '7': 6, '8': 7, '9': 8,
+        '10': 9, 'J': 10, 'Q': 11, 'K': 12
+    }
+    # Sort to canonicalize set representation (order of draw doesn't matter)
+    return tuple(sorted(mapping[c] for c in hand_strs))
+
+
+def _calculate_score(hand_indices, target):
+    """Calculates the hand score based on the specific rules."""
+    total = 0
+    aces = 0
+    for idx in hand_indices:
+        if idx == 0: # Ace
+            total += 11
+            aces += 1
+        elif 1 <= idx <= 8: # 2-9
+            total += (idx + 1)
+        else: # 10, J, Q, K
+            total += 10
+    
+    # If over target, treat Aces as 1 instead of 11
+    while total > target and aces > 0:
+        total -= 10
+        aces -= 1
+    return total
+
+
+def _solve_game_strategy(target):
+    """
+    Computes a policy map {hand_tuple: (ACTION, expected_value)} for the given target.
+    
+    We assume the opponent is also playing optimally. We approximate the Nash Equilibrium
+    by starting with a heuristic opponent distribution and iteratively responding to it.
+    """
+    
+    # --- Helper: Compute Outcome Distribution for a fixed Policy ---
+    def compute_distribution(policy_map_or_threshold):
+        """
+        Computes the probability distribution of final scores given a policy.
+        policy_map_or_threshold: either a dict mapping states to actions, 
+                                 or an int threshold (simple "stop at X").
+        """
+        dist = collections.defaultdict(float)
+        # Queue stores (hand_tuple, probability)
+        queue = [( (), 1.0 )]
+        
+        while queue:
+            hand, prob = queue.pop(0)
+            score = _calculate_score(hand, target)
+            
+            # Check Bust
+            if score > target:
+                dist['bust'] += prob
+                continue
+            
+            # Determine Action
+            action = "STAY"
+            if isinstance(policy_map_or_threshold, int):
+                if score < policy_map_or_threshold:
+                    action = "HIT"
+            else:
+                if hand in policy_map_or_threshold:
+                    action = policy_map_or_threshold[hand][0]
+                # else default STAY
+            
+            if action == "STAY":
+                dist[score] += prob
+                continue
+            
+            # Calculate transitions for HIT
+            # Determine which cards are remaining in the 13-card deck
+            used_mask = 0
+            for idx in hand:
+                used_mask |= (1 << idx)
+            
+            possible_next = []
+            for i in range(13):
+                if not (used_mask & (1 << i)):
+                    possible_next.append(i)
+            
+            if not possible_next:
+                # No cards left
+                dist[score] += prob
+                continue
+            
+            p_next = prob / len(possible_next)
+            for c in possible_next:
+                # Construct next state
+                new_hand_list = list(hand)
+                new_hand_list.append(c)
+                new_hand_list.sort()
+                queue.append((tuple(new_hand_list), p_next))
+            
+        return dist
+
+    # --- Step 1: Initialize Opponent Distribution ---
+    # Heuristic: Opponent stands if score >= Target - 6
+    initial_threshold = max(target - 6, 10)
+    p_opp = compute_distribution(initial_threshold)
+    
+    # --- Step 2: Iterative Optimization ---
+    # We perform a few iterations of Best Response.
+    # 3 iterations is typically sufficient for this state space size.
+    memo_val = {}
+    
+    for _ in range(3):
+        memo_val = {}
+        
+        # computes expected utility of a state vs p_opp
+        # returns (Best_Action, Expected_Utility)
+        def get_value(hand):
+            if hand in memo_val:
+                return memo_val[hand]
+            
+            score = _calculate_score(hand, target)
+            
+            if score > target:
+                # If we bust, result depends on opponent.
+                # Win if Opp busts (Draw?).
+                # Prompt: "If both you and the opponent bust, the game is a draw."
+                # We reward Win=1, Draw=0.5.
+                u_bust = p_opp.get('bust', 0.0) * 0.5
+                return ("STAY", u_bust) # Action irrelevant, state is terminal
+            
+            # Evaluate STAY
+            # We win if Score > Opp_Score (and Opp not bust) OR Opp busts.
+            # We draw if Score == Opp_Score.
+            win_prob = p_opp.get('bust', 0.0)
+            draw_prob = 0.0
+            
+            for s_opp, prob in p_opp.items():
+                if s_opp == 'bust': continue
+                if score > s_opp:
+                    win_prob += prob
+                elif score == s_opp:
+                    draw_prob += prob
+            
+            u_stay = win_prob + 0.5 * draw_prob
+            
+            # Evaluate HIT
+            used_mask = 0
+            for idx in hand:
+                used_mask |= (1 << idx)
+            
+            possible_moves = []
+            for i in range(13):
+                if not (used_mask & (1 << i)):
+                    possible_moves.append(i)
+            
+            if not possible_moves:
+                memo_val[hand] = ("STAY", u_stay)
+                return ("STAY", u_stay)
+            
+            u_hit = 0
+            for c in possible_moves:
+                new_hand_list = list(hand)
+                new_hand_list.append(c)
+                new_hand_list.sort()
+                _, val = get_value(tuple(new_hand_list))
+                u_hit += val
+            
+            u_hit /= len(possible_moves)
+            
+            # Choose max
+            # Add small epsilon to prefer HIT if values are identical (rare)
+            if u_hit > u_stay + 1e-9:
+                res = ("HIT", u_hit)
+            else:
+                res = ("STAY", u_stay)
+            
+            memo_val[hand] = res
+            return res
+
+        # Populate map for all reachable states
+        get_value(())
+        
+        # Update opponent distribution to match this new policy
+        p_opp = compute_distribution(memo_val)
+        
+    return memo_val
+</code>

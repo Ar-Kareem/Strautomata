@@ -1,0 +1,129 @@
+Here's a Python implementation of a Kalah move-selection policy that uses a simple heuristic approach combined with a few lookahead steps to choose the best move:
+
+```python
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Evaluate all possible moves and pick the best one using heuristic
+    best_move = -1
+    best_score = -float('inf')
+    
+    for move in [i for i in range(6) if you[i] > 0]:
+        # Simulate the move
+        temp_you = you.copy()
+        temp_opp = opponent.copy()
+        extra_turn, captured = make_move(temp_you, temp_opp, move)
+        
+        # Calculate heuristic score
+        score = heuristic(temp_you, temp_opp)
+        
+        # Bonus for extra turns
+        if extra_turn:
+            score += 5
+            # If we get an extra turn, look one move deeper
+            best_extra_move = -1
+            best_extra_score = -float('inf')
+            for extra_move in [i for i in range(6) if temp_you[i] > 0]:
+                temp_you2 = temp_you.copy()
+                temp_opp2 = temp_opp.copy()
+                extra_turn2, captured2 = make_move(temp_you2, temp_opp2, extra_move)
+                extra_score = heuristic(temp_you2, temp_opp2)
+                if extra_score > best_extra_score:
+                    best_extra_score = extra_score
+            if best_extra_move != -1:
+                score += best_extra_score * 0.5
+        
+        # Check if this is the best move so far
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move
+
+def make_move(you: list[int], opponent: list[int], move: int) -> tuple[bool, bool]:
+    """Simulate making a move. Returns (extra_turn, captured)"""
+    seeds = you[move]
+    you[move] = 0
+    length = len(you) - 1  # don't count store
+    stores = (length, length)  # indices of stores
+    
+    extra_turn = False
+    captured = False
+    
+    pos = move + 1
+    for _ in range(seeds):
+        # Alternate between boards
+        if pos < length * 2 + 1:  # Don't count opponent's store
+            if pos < length:
+                # Player's houses
+                you[pos] += 1
+                last_pos = ('you', pos)
+            elif pos == length:
+                # Player's store
+                you[-1] += 1
+                last_pos = ('you_store', 0)
+            elif pos < length * 2:
+                # Opponent's houses
+                opponent[pos - length - 1] += 1
+                last_pos = ('opp', pos - length - 1)
+            else:
+                # Loop back to player's side
+                you[0] += 1
+                last_pos = ('you', 0)
+                pos = -1
+            pos += 1
+    
+    # Determine if we get an extra turn
+    if last_pos[0] == 'you_store':
+        extra_turn = True
+    
+    # Check for capture
+    elif last_pos[0] == 'you' and you[last_pos[1]] == 1:
+        opp_pos = 5 - last_pos[1]
+        if opponent[opp_pos] > 0:
+            captured = True
+            you[-1] += you[last_pos[1]] + opponent[opp_pos]
+            you[last_pos[1]] = 0
+            opponent[opp_pos] = 0
+    
+    return extra_turn, captured
+
+def heuristic(you: list[int], opponent: list[int]) -> float:
+    """Evaluate the position using several factors"""
+    score = 0
+    
+    # Store difference is most important
+    score += (you[-1] - opponent[-1]) * 2
+    
+    # Number of seeds on our side
+    score += sum(you[:-1]) * 0.2
+    
+    # Number of seeds on opponent's side (negative)
+    score -= sum(opponent[:-1]) * 0.2
+    
+    # Additional points for almost emptying houses
+    for i in range(6):
+        if you[i] == 0:
+            score += 0.5  # empty houses are good for captures
+        if opponent[i] == 0:
+            score -= 0.3  # opponent's empty houses might be bad
+    
+    return score
+```
+
+This implementation uses the following strategy:
+
+1. It evaluates all possible legal moves by simulating each one.
+2. For each move, it calculates a heuristic score based on:
+   - The immediate store difference
+   - The number of seeds on each side
+   - Potential captures
+   - Extra turns
+3. It gives preference to moves that:
+   - Result in an immediate extra turn
+   - Lead to potential captures
+   - Increase the store difference
+4. When an extra turn is possible, it looks one move ahead to evaluate the possible follow-up moves.
+5. The heuristic weights can be adjusted to change the strategy's aggressiveness.
+
+The policy is designed to be reasonably strong while staying within the 1-second execution time constraint, even for more complex board positions. The lookahead for extra turns helps avoid immediate traps and find sequences of good moves.

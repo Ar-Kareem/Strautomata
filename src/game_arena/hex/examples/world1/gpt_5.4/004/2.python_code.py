@@ -1,0 +1,262 @@
+
+from heapq import heappush, heappop
+
+N = 11
+
+# Hex neighbors under the coordinate system in the prompt:
+# all 8 surrounding cells except (i-1,j-1) and (i+1,j+1)
+DIRS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+
+
+def in_bounds(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc):
+            yield nr, nc
+
+
+def side_a_cells(color):
+    if color == 'b':
+        return [(0, c) for c in range(N)]      # top
+    else:
+        return [(r, 0) for r in range(N)]      # left
+
+
+def side_b_cells(color):
+    if color == 'b':
+        return [(N - 1, c) for c in range(N)]  # bottom
+    else:
+        return [(r, N - 1) for r in range(N)]  # right
+
+
+def is_goal_cell(color, cell):
+    r, c = cell
+    if color == 'b':
+        return r == N - 1
+    else:
+        return c == N - 1
+
+
+def occupied_sets(me, opp):
+    return set(me), set(opp)
+
+
+def has_connection(stones, color):
+    """Check if stones already connect the two target sides."""
+    s = set(stones)
+    stack = []
+    seen = set()
+
+    for cell in side_a_cells(color):
+        if cell in s:
+            stack.append(cell)
+            seen.add(cell)
+
+    while stack:
+        u = stack.pop()
+        if is_goal_cell(color, u):
+            return True
+        for v in neighbors(*u):
+            if v in s and v not in seen:
+                seen.add(v)
+                stack.append(v)
+    return False
+
+
+def connection_cost(myset, oppset, color):
+    """
+    0-1 shortest path from one side to the other:
+    - my stone cost 0
+    - empty cost 1
+    - opponent blocked
+    Lower is better.
+    """
+    INF = 10**9
+    dist = {}
+    pq = []
+
+    for cell in side_a_cells(color):
+        if cell in oppset:
+            continue
+        w = 0 if cell in myset else 1
+        dist[cell] = w
+        heappush(pq, (w, cell))
+
+    best = INF
+    while pq:
+        d, u = heappop(pq)
+        if d != dist.get(u, INF):
+            continue
+        if is_goal_cell(color, u):
+            best = d
+            break
+        for v in neighbors(*u):
+            if v in oppset:
+                continue
+            nd = d + (0 if v in myset else 1)
+            if nd < dist.get(v, INF):
+                dist[v] = nd
+                heappush(pq, (nd, v))
+    return best
+
+
+def centrality(cell):
+    r, c = cell
+    # Prefer center-ish cells
+    return -((r - 5) * (r - 5) + (c - 5) * (c - 5))
+
+
+def axis_progress(cell, color):
+    r, c = cell
+    # Slight preference for progressing along own connection axis
+    if color == 'b':
+        return -abs(r - 5)
+    else:
+        return -abs(c - 5)
+
+
+def local_features(move, myset, oppset, color):
+    r, c = move
+    score = 0.0
+
+    my_n = 0
+    opp_n = 0
+    empties = 0
+
+    nbrs = list(neighbors(r, c))
+    for nb in nbrs:
+        if nb in myset:
+            my_n += 1
+        elif nb in oppset:
+            opp_n += 1
+        else:
+            empties += 1
+
+    # Strongly prefer connecting to own stones
+    score += 5.0 * my_n
+    # Some value for contesting opponent vicinity
+    score += 2.0 * opp_n
+
+    # Bonus if move joins multiple friendly groups through the placed stone
+    # Approximate by counting distinct adjacent friendly stones.
+    if my_n >= 2:
+        score += 3.0 + 1.5 * (my_n - 2)
+
+    # Edge affinity: own target edges matter
+    if color == 'b':
+        if r == 0 or r == N - 1:
+            score += 2.0
+    else:
+        if c == 0 or c == N - 1:
+            score += 2.0
+
+    # Mild center preference
+    score += 0.25 * centrality(move)
+    score += 0.15 * axis_progress(move, color)
+
+    # Simple bridge/template-ish bonuses:
+    # If two "support" cells around move are ours, reward.
+    bridge_pairs = [
+        [(-1, 0), (0, 1)],
+        [(-1, 1), (1, 0)],
+        [(0, -1), (1, -1)],
+        [(-1, 0), (1, -1)],
+        [(-1, 1), (0, -1)],
+        [(0, 1), (1, 0)],
+    ]
+    for (d1, d2) in bridge_pairs:
+        a = (r + d1[0], c + d1[1])
+        b = (r + d2[0], c + d2[1])
+        if in_bounds(*a) and in_bounds(*b):
+            if a in myset and b in myset:
+                score += 1.5
+            if a in oppset and b in oppset:
+                score += 1.0
+
+    return score
+
+
+def evaluate_move(move, me_set, opp_set, color):
+    my2 = set(me_set)
+    my2.add(move)
+
+    # Connection-cost improvement
+    before_me = connection_cost(me_set, opp_set, color)
+    after_me = connection_cost(my2, opp_set, color)
+
+    opp_color = 'w' if color == 'b' else 'b'
+    before_opp = connection_cost(opp_set, me_set, opp_color)
+    after_opp = connection_cost(opp_set, my2, opp_color)
+
+    score = 0.0
+    score += 18.0 * (before_me - after_me)
+    score += 14.0 * (after_opp - before_opp)
+    score += local_features(move, me_set, opp_set, color)
+
+    return score
+
+
+def legal_moves(me, opp):
+    occ = set(me) | set(opp)
+    return [(r, c) for r in range(N) for c in range(N) if (r, c) not in occ]
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    me_set = set(me)
+    opp_set = set(opp)
+    empties = legal_moves(me, opp)
+
+    # Safety: always return something legal
+    if not empties:
+        return (0, 0)
+
+    # Opening preference: center, then nearby strong cells
+    if not me and not opp:
+        return (5, 5)
+    if len(empties) >= 119:
+        opening_order = [(5, 5), (5, 4), (4, 5), (6, 5), (5, 6), (4, 6), (6, 4)]
+        for mv in opening_order:
+            if mv in empties:
+                return mv
+
+    # 1) Immediate winning move
+    for mv in empties:
+        test = set(me_set)
+        test.add(mv)
+        if has_connection(test, color):
+            return mv
+
+    # 2) Immediate block if opponent has a winning reply
+    opp_color = 'w' if color == 'b' else 'b'
+    must_block = []
+    for mv in empties:
+        test_opp = set(opp_set)
+        test_opp.add(mv)
+        if has_connection(test_opp, opp_color):
+            must_block.append(mv)
+    if must_block:
+        # If multiple blocking cells exist, choose the best among them.
+        best = must_block[0]
+        best_score = -10**18
+        for mv in must_block:
+            sc = evaluate_move(mv, me_set, opp_set, color)
+            if sc > best_score:
+                best_score = sc
+                best = mv
+        return best
+
+    # 3) Heuristic search over legal moves
+    best_move = empties[0]
+    best_score = -10**18
+
+    for mv in empties:
+        sc = evaluate_move(mv, me_set, opp_set, color)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    return best_move

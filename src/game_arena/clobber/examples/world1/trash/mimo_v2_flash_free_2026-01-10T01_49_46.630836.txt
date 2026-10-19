@@ -1,0 +1,418 @@
+The game is Clobber on a 5x6 board.
+I will implement a move-selection policy based on the Minimax algorithm with Alpha-Beta pruning and iterative deepening. Given the constraints (5x6 board, low branching factor), we can search to a significant depth within 1 second.
+
+The evaluation function will prioritize:
+1.  Terminal states (Win/Loss).
+2.  Forced moves (only 1 legal move).
+3.  Captures (taking an opponent piece).
+4.  Mobility (forcing the opponent into a state with fewer moves).
+
+I will use a bitboard representation for efficiency.
+- Player A (You): 60-bit integer.
+- Player B (Opponent): 60-bit integer.
+- Board State: Combined 120-bit state.
+- Hashing: Zobrist hashing for transposition table.
+
+The search will start with depth 1 and increase until the time limit is approaching. It will use a transposition table to reuse search results.
+
+```python
+import sys
+import time
+import random
+
+def policy(you: list[list[int]], opponent: list[list[int]]) -> str:
+    """
+    Minimax with Alpha-Beta pruning, Iterative Deepening, and Transposition Table
+    for Clobber 5x6.
+    """
+    
+    # --- Configuration ---
+    ROWS = 5
+    COLS = 6
+    SIZE = ROWS * COLS
+    TIMEOUT = 0.9  # Seconds
+    
+    # --- Bitboard Utilities ---
+    
+    # Map (r, c) to bit index
+    def idx(r, c): return r * COLS + c
+    
+    # Convert 2D array to bitboard
+    def list_to_bb(board):
+        bb = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if board[r][c] == 1:
+                    bb |= (1 << idx(r, c))
+        return bb
+    
+    my_bb = list_to_bb(you)
+    op_bb = list_to_bb(opponent)
+    
+    # Precomputed masks for edges to avoid wrap-around
+    # 100... (row 0), 010... (row 1), etc.
+    # But simpler: check boundaries during generation
+    
+    # Neighbor offsets
+    # U, D, L, R
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    dir_map = ['U', 'D', 'L', 'R']
+    
+    # --- Transposition Table ---
+    # Key: (my_bb, op_bb) -> (score, depth, flag, move)
+    # flag: 0=Exact, 1=Lowerbound, 2=Upperbound
+    tt = {}
+    
+    # Zobrist hashing keys
+    random.seed(42)
+    # 120 bits for positions, 2 for turn (though turn is fixed in recursion)
+    zobrist_table = [random.getrandbits(64) for _ in range(SIZE * 2)]
+    
+    def get_hash(my, op):
+        h = 0
+        # My pieces
+        temp = my
+        bit = 0
+        while temp:
+            if temp & 1:
+                h ^= zobrist_table[bit]
+            temp >>= 1
+            bit += 1
+        # Opponent pieces
+        temp = op
+        bit = SIZE
+        while temp:
+            if temp & 1:
+                h ^= zobrist_table[bit]
+            temp >>= 1
+            bit += 1
+        return h
+
+    # --- Move Generation ---
+    
+    def get_moves(my, op):
+        """Returns list of (move_code, new_my, new_op)"""
+        moves = []
+        
+        # We can move pieces in 'my' that are orthogonally adjacent to 'op'
+        
+        # 1. Identify potential sources: bits in 'my' that have neighbors in 'op'
+        
+        # Optimization: Iterate over 'my' bits
+        # Check neighbors: (pos - COLS), (pos + COLS), (pos - 1), (pos + 1)
+        
+        # Mask to prevent wrap-around for left/right
+        # Cols 0-5. 
+        # Left check: (pos % 6 != 0)
+        # Right check: (pos % 6 != 5)
+        
+        # We can use bit manipulation for adjacency
+        
+        # Check Up: (my & (op << COLS))
+        # If my piece is above op piece, my piece can move down (onto op)
+        # Wait, direction logic:
+        # If my piece at P, opponent at Q. P moves to Q.
+        # So if my piece is at pos, and opponent is at pos - COLS (Up), my piece moves Up.
+        # Or if opponent is at pos + COLS (Down), my piece moves Down.
+        # Or if opponent is at pos - 1 (Left), my piece moves Left.
+        # Or if opponent is at pos + 1 (Right), my piece moves Right.
+        
+        # We iterate 'my' pieces. For each, check 4 neighbors in 'op'.
+        
+        temp_my = my
+        while temp_my:
+            lsb = temp_my & -temp_my
+            pos = (lsb.bit_length() - 1)
+            temp_my ^= lsb
+            
+            r, c = pos // COLS, pos % COLS
+            
+            # Up
+            if r > 0:
+                n_pos = pos - COLS
+                if (op >> n_pos) & 1:
+                    # Move Up
+                    new_my = my ^ (1 << pos) | (1 << n_pos)
+                    new_op = op ^ (1 << n_pos)
+                    moves.append((pos * 100 + n_pos, new_my, new_op))
+            
+            # Down
+            if r < ROWS - 1:
+                n_pos = pos + COLS
+                if (op >> n_pos) & 1:
+                    # Move Down
+                    new_my = my ^ (1 << pos) | (1 << n_pos)
+                    new_op = op ^ (1 << n_pos)
+                    moves.append((pos * 100 + n_pos, new_my, new_op))
+            
+            # Left
+            if c > 0:
+                n_pos = pos - 1
+                if (op >> n_pos) & 1:
+                    # Move Left
+                    new_my = my ^ (1 << pos) | (1 << n_pos)
+                    new_op = op ^ (1 << n_pos)
+                    moves.append((pos * 100 + n_pos, new_my, new_op))
+            
+            # Right
+            if c < COLS - 1:
+                n_pos = pos + 1
+                if (op >> n_pos) & 1:
+                    # Move Right
+                    new_my = my ^ (1 << pos) | (1 << n_pos)
+                    new_op = op ^ (1 << n_pos)
+                    moves.append((pos * 100 + n_pos, new_my, new_op))
+                    
+        return moves
+
+    def get_moves_heuristic(my, op):
+        """Returns moves sorted by heuristic: captures first, then mobility"""
+        moves = get_moves(my, op)
+        
+        # Evaluate moves
+        scored_moves = []
+        for code, n_my, n_op in moves:
+            # 1. Terminal check (did we win? I.e. op_bb becomes 0? No, that happens on opponent turn start)
+            # Actually, if we capture all opponent pieces, they have 0 moves on their turn -> win.
+            if n_op == 0:
+                score = 100000
+            else:
+                # Estimate opponent mobility after this move
+                # We need to simulate opponent's moves to count them
+                # We can approximate by counting our potential captures in reverse?
+                # Or just count adjacencies between n_op and n_my (opponent's moves against us)
+                
+                # Count opponent moves
+                op_moves_count = 0
+                temp_op = n_op
+                while temp_op:
+                    lsb = temp_op & -temp_op
+                    pos = (lsb.bit_length() - 1)
+                    temp_op ^= lsb
+                    r, c = pos // COLS, pos % COLS
+                    
+                    # Check if neighbor is in n_my
+                    if r > 0 and (n_my >> (pos - COLS)) & 1: op_moves_count += 1
+                    if r < ROWS - 1 and (n_my >> (pos + COLS)) & 1: op_moves_count += 1
+                    if c > 0 and (n_my >> (pos - 1)) & 1: op_moves_count += 1
+                    if c < COLS - 1 and (n_my >> (pos + 1)) & 1: op_moves_count += 1
+                
+                # Lower score if opponent has fewer moves
+                # We want to maximize our score, so minimize opponent mobility
+                score = -op_moves_count * 10 
+            
+            scored_moves.append((score, code, n_my, n_op))
+        
+        # Sort descending by score
+        scored_moves.sort(key=lambda x: x[0], reverse=True)
+        
+        # Return unpacked list (score is internal for sorting)
+        return [(code, n_my, n_op) for _, code, n_my, n_op in scored_moves]
+
+    # --- Evaluation ---
+    
+    def evaluate(my, op, depth, max_depth):
+        """Static evaluation for TT"""
+        # If opponent has no pieces -> Win (very high)
+        if op == 0:
+            return 100000 + depth
+        
+        # If I have no pieces -> Loss (very low)
+        if my == 0:
+            return -100000 - depth
+        
+        # If we reach max depth, return mobility diff
+        # My mobility
+        my_mob = len(get_moves(my, op))
+        # Opponent mobility (would be calculated in recursion, but here approximate)
+        op_mob = len(get_moves(op, my))
+        
+        return (my_mob - op_mob) * 10
+
+    # --- Search Algorithms ---
+    
+    def negamax(depth, alpha, beta, my, op, hash_val):
+        start_time = time.time()
+        
+        # TT Lookup
+        if hash_val in tt:
+            entry = tt[hash_val]
+            if entry[1] >= depth:
+                flag = entry[2]
+                val = entry[0]
+                if flag == 0: return val
+                if flag == 1 and val >= beta: return val # Lowerbound
+                if flag == 2 and val <= alpha: return val # Upperbound
+        
+        # Time check
+        if time.time() - start_time > TIMEOUT:
+            raise TimeoutError
+            
+        # Base cases
+        if op == 0: # Win
+            return 100000 + depth
+        
+        if my == 0: # Loss
+            return -100000 - depth
+        
+        if depth == 0:
+            return evaluate(my, op, 0, 0) # Heuristic
+        
+        # Generate moves
+        # Sorting is crucial for alpha-beta efficiency
+        moves = get_moves_heuristic(my, op)
+        
+        if not moves: # No moves -> Loss
+            return -100000 - depth
+            
+        best_val = -float('inf')
+        best_move = moves[0] # Default
+        
+        # For TT store
+        original_alpha = alpha
+        flag = 2 # Upperbound initially
+        
+        for move_code, n_my, n_op in moves:
+            val = -negamax(depth - 1, -beta, -alpha, n_op, n_my, get_hash(n_op, n_my))
+            
+            if val > best_val:
+                best_val = val
+                best_move = move_code
+            
+            if best_val > alpha:
+                alpha = best_val
+            
+            if alpha >= beta:
+                flag = 1 # Lowerbound
+                break
+        
+        # Store in TT
+        # Only store if we didn't timeout (check flag)
+        if flag == 1 or best_val <= original_alpha:
+            # Exact or Lowerbound or Upperbound
+            pass 
+        # Actually, we should store regardless if we completed the search
+        tt[hash_val] = (best_val, depth, flag, best_move)
+        
+        return best_val
+
+    # --- Main Execution Loop ---
+    
+    # 1. Check if already won/lost (shouldn't happen per prompt, but safe)
+    if op_bb == 0: return "0,0,U" # Placeholder, should be win
+    if my_bb == 0: return "0,0,U" # Placeholder, should be loss
+
+    # 2. Initial Move Gen (to check if any moves exist - though prompt says at least one)
+    initial_moves = get_moves_heuristic(my_bb, op_bb)
+    if not initial_moves:
+        # Should not happen per prompt, but fallback
+        return "0,0,U"
+    
+    # If only one move, take it immediately (optimization)
+    if len(initial_moves) == 1:
+        move = initial_moves[0]
+        start_pos = move[0] // 100
+        end_pos = move[0] % 100
+        r1, c1 = start_pos // COLS, start_pos % COLS
+        r2, c2 = end_pos // COLS, end_pos % COLS
+        dr, dc = r2 - r1, c2 - c1
+        dir_char = ''
+        if dr == -1: dir_char = 'U'
+        elif dr == 1: dir_char = 'D'
+        elif dc == -1: dir_char = 'L'
+        elif dc == 1: dir_char = 'R'
+        return f"{r1},{c1},{dir_char}"
+
+    # 3. Iterative Deepening
+    best_final_move = None
+    
+    # We need to handle the Timeout logic manually in the loop
+    # Since recursion raises exception, we wrap the ID loop
+    
+    try:
+        depth = 1
+        while True:
+            # Start ID loop
+            # We need to use negamax. 
+            # But we need to stop if timeout is close.
+            # Since Python recursion is slow, we set a time check in recursion.
+            
+            # Reset TT for fresh depth search? 
+            # No, keep TT to reuse info across depths, but update depth key.
+            # Actually, for ID, we usually clear TT or just overwrite.
+            # I will keep TT but rely on depth check in TT.
+            
+            current_best_move = None
+            current_best_val = -float('inf')
+            
+            # Run search for this depth
+            try:
+                # We need to run negamax for all root moves to pick the best
+                # Negamax returns value for current player (us)
+                # Root is maximizer.
+                
+                # We can't just call negamax on the whole state because we need to pick the best move at root.
+                # We iterate root moves.
+                
+                moves = get_moves_heuristic(my_bb, op_bb)
+                
+                alpha = -float('inf')
+                beta = float('inf')
+                
+                for move_code, n_my, n_op in moves:
+                    # We call negamax for the opponent's perspective
+                    val = -negamax(depth - 1, -beta, -alpha, n_op, n_my, get_hash(n_op, n_my))
+                    
+                    if val > alpha:
+                        alpha = val
+                        current_best_move = move_code
+                        current_best_val = val
+                        
+                        # Check win immediately
+                        if val > 90000:
+                            break
+                
+                # If we reached here without timeout, update best_final_move
+                if current_best_move is not None:
+                    best_final_move = current_best_move
+                    
+                    # If we found a winning move, stop
+                    if current_best_val > 90000:
+                        break
+                
+                # Increase depth
+                depth += 1
+                
+                # Safety check: if depth is getting too high (e.g. 30) and we still have time
+                if depth > 30:
+                    break
+                    
+            except TimeoutError:
+                break
+                
+    except Exception as e:
+        # Fallback if something goes wrong
+        pass
+
+    if best_final_move is None:
+        # Fallback: pick first move from initial list
+        best_final_move = initial_moves[0][0]
+    else:
+        best_final_move = best_final_move # It's already the code
+
+    # Convert move code to string
+    start_pos = best_final_move // 100
+    end_pos = best_final_move % 100
+    r1, c1 = start_pos // COLS, start_pos % COLS
+    r2, c2 = end_pos // COLS, end_pos % COLS
+    
+    dr, dc = r2 - r1, c2 - c1
+    
+    if dr == -1: d = 'U'
+    elif dr == 1: d = 'D'
+    elif dc == -1: d = 'L'
+    elif dc == 1: d = 'R'
+    else: d = 'U' # Should not happen
+    
+    return f"{r1},{c1},{d}"
+```

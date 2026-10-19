@@ -1,0 +1,150 @@
+The strategy for this policy is to balance exploration and exploitation in the context of Phantom Tic Tac Toe, where we only have partial information. Since we cannot see the opponent's moves, we must reason probabilistically about where we can successfully place our mark.
+
+We use the following approach:
+
+1. **Legal Move Filtering**: Only consider moves where `board[row][col] != 1`, because we know that cell is already successfully ours and we cannot place again.
+
+2. **Threat Assessment**: Even though we don’t observe the opponent’s marks, repeated failed attempts (when the game rejects our move) imply occupancy. But since that feedback comes externally, our policy assumes that unconfirmed cells (0) are potentially free.
+
+3. **Heuristic Scoring**:
+   - Prioritize center and corners (higher value in standard tic tac toe).
+   - Favor moves that complete or extend potential lines (rows, cols, diagonals) where we have partial presence.
+   - Use a virtual "belief" state: simulate possible board completions consistent with our known marks and score moves based on how often they lead to wins.
+
+4. **Monte Carlo Sampling (lightweight)**: Instead of full search (too slow for 1s), we sample a few random completions of the opponent’s marks (ensuring consistency: no overlap with our known `1`s). For each completion, simulate our move and evaluate immediate opportunity.
+
+5. **Final Decision**: Rank available moves by a score combining:
+   - Number of winning lines the move contributes to (in sampled completions)
+   - Standard positional value (center=high value)
+   - Preference for cells adjacent to our existing marks to build connections
+
+Given the time and API constraints, this policy uses efficient Python with `random` and `itertools` to sample possible board states and score actions accordingly.
+
+<code>
+import random
+from itertools import product
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Available moves: any cell not confirmed as ours
+    available_moves = []
+    my_positions = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] != 1:
+                available_moves.append((r, c))
+            else:
+                my_positions.append((r, c))
+    
+    # If no available moves, fallback to first valid (should not happen in real game)
+    if not available_moves:
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] != 1:
+                    return (r, c)
+    
+    # Prefer center, then corners, then edges (positional value)
+    def move_value(r, c):
+        if (r, c) == (1, 1):
+            return 3
+        elif (r, c) in [(0,0), (0,2), (2,0), (2,2)]:
+            return 2
+        else:
+            return 1
+    
+    # If board is empty (first move), take center
+    if len(my_positions) == 0 and (1,1) in available_moves:
+        return (1, 1)
+    
+    # We'll simulate a few random opponent placements consistent with our knowledge
+    def simulate_move_score(move: Tuple[int,int], nsims=50) -> float:
+        score = 0.0
+        mr, mc = move
+        for _ in range(nsims):
+            # Randomly assign opponent marks to unknown cells (0s), avoiding our known cells (1s)
+            # But: we don't know opponent's count, so guess: assume opponent has placed as many as we have, or one less
+            my_count = len(my_positions)
+            opp_count = my_count  # assume same number of moves made (fair)
+            
+            # Get unknown cells (not ours)
+            unknown_cells = [(r, c) for r in range(3) for c in range(3) if board[r][c] != 1]
+            # Remove our current move from unknown if it's in there
+            if move in unknown_cells:
+                unknown_cells.remove(move)
+            
+            # Sample opp_count cells from unknown_cells for opponent's marks (if possible)
+            if opp_count > len(unknown_cells):
+                opp_marks = set(unknown_cells)
+            else:
+                opp_marks = set(random.sample(unknown_cells, opp_count))
+            
+            # Build virtual board: 1 = us, -1 = opponent, 0 = unoccupied/unknown (but we assume rest empty for scoring)
+            vboard = [[0]*3 for _ in range(3)]
+            for r, c in my_positions:
+                vboard[r][c] = 1
+            for r, c in opp_marks:
+                if vboard[r][c] == 0:
+                    vboard[r][c] = -1
+            # Our move: assume it succeeds
+            vboard[mr][mc] = 1
+            
+            # Check if this move completes a line for us
+            if is_winner(vboard, 1):
+                score += 2.0
+            elif will_block_win(vboard, move, -1):  # would block opponent's win
+                score += 1.5
+            # Add positional value
+            score += move_value(mr, mc) * 0.1
+            # Add value for being in a row/col/diag with our existing marks
+            if contributes_to_line(vboard, move, 1):
+                score += 0.2
+        
+        return score
+
+    # Helper: check if player wins
+    def is_winner(b, player):
+        # Check rows, cols, diagonals
+        for i in range(3):
+            if all(b[i][j] == player for j in range(3)): return True
+            if all(b[j][i] == player for j in range(3)): return True
+        if all(b[i][i] == player for i in range(3)): return True
+        if all(b[i][2-i] == player for i in range(3)): return True
+        return False
+
+    # Helper: does placing 'player' at move block opponent's imminent win?
+    def will_block_win(b, move, opponent):
+        mr, mc = move
+        # Temporarily remove our mark and see if opponent had a win
+        orig = b[mr][mc]
+        b[mr][mc] = 0
+        # Simulate opponent placing at move - would that win?
+        # But we are *blocking* by taking it first. So check: if opponent could win *at this cell*, we block it
+        b[mr][mc] = opponent
+        blocks = is_winner(b, opponent)
+        b[mr][mc] = orig
+        return blocks
+
+    # Helper: does this move connect with our existing marks in a line?
+    def contributes_to_line(b, move, player):
+        r, c = move
+        # Check if in same row/col/diag with another of our marks
+        for dr, dc in [(0,1), (1,0), (1,1), (1,-1)]:
+            for step in [-1, 1]:
+                nr, nc = r + step*dr, c + step*dc
+                if 0 <= nr < 3 and 0 <= nc < 3:
+                    if b[nr][nc] == player:
+                        return True
+        return False
+
+    # Score all available moves
+    move_scores = []
+    for move in available_moves:
+        score = simulate_move_score(move, nsims=25)  # reduce sims to ensure speed
+        move_scores.append((score, random.random()), move)  # random tiebreak
+    
+    # Sort by score descending
+    move_scores.sort(reverse=True)
+    best_move = move_scores[0][2]
+    
+    return best_move
+</code>

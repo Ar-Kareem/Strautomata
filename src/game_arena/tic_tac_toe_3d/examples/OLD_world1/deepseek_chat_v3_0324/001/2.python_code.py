@@ -1,0 +1,173 @@
+
+import numpy as np
+from typing import Tuple, List
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """Determine the best move for a 3D Tic Tac Toe game.
+    
+    Args:
+        board: 3x3x3 list representing the game state (0=empty, 1=AI, -1=opponent)
+        
+    Returns:
+        Tuple of (x, y, z) coordinates for the best move
+    """
+    n = 3  # Board size (3x3x3)
+    
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # First check if we can win in one move
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                if board_np[x, y, z] == 0:  # Empty cell
+                    board_np[x, y, z] = 1  # Try our move
+                    if check_win(board_np, 1):
+                        return (x, y, z)
+                    board_np[x, y, z] = 0  # Undo move
+    
+    # Then check if opponent can win next move and block them
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                if board_np[x, y, z] == 0:  # Empty cell
+                    board_np[x, y, z] = -1  # Try opponent's move
+                    if check_win(board_np, -1):
+                        board_np[x, y, z] = 1  # Block by placing our mark
+                        return (x, y, z)
+                    board_np[x, y, z] = 0  # Undo move
+    
+    # If center is empty, take it (strong position)
+    if board_np[1, 1, 1] == 0:
+        return (1, 1, 1)
+    
+    # Otherwise, use minimax to find best move
+    best_score = -float('inf')
+    best_move = None
+    
+    for x in range(n):
+        for y in range(n):
+            for z in range(n):
+                if board_np[x, y, z] == 0:
+                    board_np[x, y, z] = 1
+                    score = minimax(board_np, 0, False, -float('inf'), float('inf'))
+                    board_np[x, y, z] = 0
+                    
+                    if score > best_score or best_move is None:
+                        best_score = score
+                        best_move = (x, y, z)
+    
+    # If all else fails, pick first available empty cell
+    if best_move is None:
+        for x in range(n):
+            for y in range(n):
+                for z in range(n):
+                    if board_np[x, y, z] == 0:
+                        return (x, y, z)
+    
+    return best_move
+
+def check_win(board: np.ndarray, player: int) -> bool:
+    """Check if the specified player has won.
+    
+    Args:
+        board: 3x3x3 numpy array representing the game state
+        player: 1 (AI) or -1 (opponent)
+        
+    Returns:
+        True if player has won, False otherwise
+    """
+    n = 3
+    # Check all possible lines in 3D space
+    
+    # Check straight lines in x, y, z directions
+    for i in range(n):
+        for j in range(n):
+            # Check x-direction (same y,z)
+            if all(board[:, i, j] == player):
+                return True
+            # Check y-direction (same x,z)
+            if all(board[i, :, j] == player):
+                return True
+            # Check z-direction (same x,y)
+            if all(board[i, j, :] == player):
+                return True
+    
+    # Check 4 space diagonals (1 per cube face)
+    # Diagonals in xy planes
+    for k in range(n):
+        if (board[0, 0, k] == board[1, 1, k] == board[2, 2, k] == player or
+            board[0, 2, k] == board[1, 1, k] == board[2, 0, k] == player):
+            return True
+    
+    # Diagonals in xz planes
+    for j in range(n):
+        if (board[0, j, 0] == board[1, j, 1] == board[2, j, 2] == player or
+            board[0, j, 2] == board[1, j, 1] == board[2, j, 0] == player):
+            return True
+    
+    # Diagonals in yz planes
+    for i in range(n):
+        if (board[i, 0, 0] == board[i, 1, 1] == board[i, 2, 2] == player or
+            board[i, 0, 2] == board[i, 1, 1] == board[i, 2, 0] == player):
+            return True
+    
+    # Check 4 main 3D diagonals
+    if (board[0, 0, 0] == board[1, 1, 1] == board[2, 2, 2] == player or
+        board[0, 0, 2] == board[1, 1, 1] == board[2, 2, 0] == player or
+        board[0, 2, 0] == board[1, 1, 1] == board[2, 0, 2] == player or
+        board[0, 2, 2] == board[1, 1, 1] == board[2, 0, 0] == player):
+        return True
+    
+    return False
+
+def minimax(board: np.ndarray, depth: int, is_maximizing: bool, alpha: float, beta: float) -> int:
+    """Minimax algorithm with alpha-beta pruning for 3D Tic Tac Toe.
+    
+    Args:
+        board: Current game state
+        depth: Current depth in the game tree
+        is_maximizing: True for AI's turn, False for opponent's
+        alpha: Alpha value for pruning
+        beta: Beta value for pruning
+        
+    Returns:
+        Score for the current board state
+    """
+    n = 3
+    if check_win(board, 1):  # AI wins
+        return 10 - depth
+    if check_win(board, -1):  # Opponent wins
+        return -10 + depth
+    
+    if np.all(board != 0):  # Draw
+        return 0
+    
+    if is_maximizing:
+        best_score = -float('inf')
+        for x in range(n):
+            for y in range(n):
+                for z in range(n):
+                    if board[x, y, z] == 0:
+                        board[x, y, z] = 1
+                        score = minimax(board, depth + 1, False, alpha, beta)
+                        board[x, y, z] = 0
+                        best_score = max(score, best_score)
+                        alpha = max(alpha, best_score)
+                        if beta <= alpha:
+                            break
+        return best_score
+    else:
+        best_score = float('inf')
+        for x in range(n):
+            for y in range(n):
+                for z in range(n):
+                    if board[x, y, z] == 0:
+                        board[x, y, z] = -1
+                        score = minimax(board, depth + 1, True, alpha, beta)
+                        board[x, y, z] = 0
+                        best_score = min(score, best_score)
+                        beta = min(beta, best_score)
+                        if beta <= alpha:
+                            break
+        return best_score

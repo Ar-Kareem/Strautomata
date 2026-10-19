@@ -1,0 +1,77 @@
+
+import random
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Define all winning lines in 3x3x3
+    lines = []
+    
+    # 1D lines: Parallel to axes
+    for i in range(3):
+        for j in range(3):
+            lines.append([(i, j, k) for k in range(3)]) # x,y fixed
+            lines.append([(i, k, j) for k in range(3)]) # x,z fixed
+            lines.append([(k, i, j) for k in range(3)]) # y,z fixed
+            
+    # 2D diagonals: On the planes
+    for i in range(3):
+        # Plane x=i
+        lines.append([(i, 0, 0), (i, 1, 1), (i, 2, 2)])
+        lines.append([(i, 0, 2), (i, 1, 1), (i, 2, 0)])
+        # Plane y=i
+        lines.append([(0, i, 0), (1, i, 1), (2, i, 2)])
+        lines.append([(0, i, 2), (1, i, 1), (2, i, 0)])
+        # Plane z=i
+        lines.append([(0, 0, i), (1, 1, i), (2, 2, i)])
+        lines.append([(2, 0, i), (1, 1, i), (0, 2, i)])
+        
+    # 3D diagonals: Through the volume
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+
+    def get_line_sum(line):
+        return sum(board[p[0]][p[1]][p[2]] for p in line)
+
+    def find_empty(line):
+        for p in line:
+            if board[p[0]][p[1]][p[2]] == 0:
+                return p
+        return None
+
+    # 1. Check for immediate win (sum is 2 and contains no -1)
+    for line in lines:
+        if get_line_sum(line) == 2:
+            move = find_empty(line)
+            if move: return move
+
+    # 2. Block opponent win (sum is -2 and contains no 1)
+    for line in lines:
+        if get_line_sum(line) == -2:
+            move = find_empty(line)
+            if move: return move
+
+    # 3. Strategy: Center, then Corners, then anywhere
+    center = (1, 1, 1)
+    if board[center[0]][center[1]][center[2]] == 0:
+        return center
+
+    corners = []
+    for x in [0, 2]:
+        for y in [0, 2]:
+            for z in [0, 2]:
+                corners.append((x, y, z))
+    
+    random.shuffle(corners)
+    for c in corners:
+        if board[c[0]][c[1]][c[2]] == 0:
+            return c
+
+    # 4. Fallback: Any empty cell
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    return (x, y, z)
+
+    return (0, 0, 0) # Should not happen in a valid game

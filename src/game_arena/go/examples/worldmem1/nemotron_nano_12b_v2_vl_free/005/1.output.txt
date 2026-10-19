@@ -1,0 +1,142 @@
+To develop a **smart Go AI policy**, we must provide a function that selects a **legal move** from a given board state while maximizing the AI's chances of success. The function will prioritize moves near **corners**, then edges, and finally the center of the board, while favoring moves that **maximize liberties** (i.e., freedom of movement without being captured).
+
+---
+
+## 🧠 Strategy Overview
+
+This policy uses the following **heuristic strategy**:
+
+1. **Prioritize Corner Moves**: Corners are highly valuable in Go. The AI will attempt to claim or defend corners first.
+2. **Evaluate Move Liberty**: For each legal move, compute the number of **liberties** (empty adjacent cells) of the group that would be formed if that move is played.
+3. **Sort by Priority**: Moves are sorted by:
+   - **Minimum distance to the nearest corner** (closer to corners come first).
+   - **Liberty count** (descending; more liberties are better).
+4. **Avoid Illegal Moves**: Moves that result in **suicide** (groups with zero liberties) are **excluded**.
+
+This strategy ensures that the AI chooses the **most strategic move** that enhances its influence on the board.
+
+---
+
+## 🧰 Implementation Details
+
+- **Legal Move Check**: A move is legal if placing the stone does not result in a **suicide** (i.e., the resulting group has at least one liberty).
+- **Liberty Calculation**: After placing the stone, find the **connected group** and count all empty adjacent cells.
+- **Distance to Corners**: Using **Manhattan distance** to determine how close a move is to a corner.
+- **Sorting Heuristic**: Moves are sorted by:
+  - **Closest to a corner**
+  - **Highest number of liberties**
+
+---
+
+## 🧾 Code Implementation
+
+```python
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    me_set = set(me)
+    opponent_set = set(opponent)
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    corners = [(1, 1), (1, 19), (19, 1), (19, 19)]
+
+    legal_moves = []
+
+    # Step 1: Generate all empty cells
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in me_set or (r, c) in opponent_set:
+                continue
+
+            # Simulate placing a stone at (r, c)
+            temp_me = me_set.copy()
+            temp_me.add((r, c))
+
+            # Find the connected group using BFS
+            group = set()
+            queue = deque([(r, c)])
+            visited = set([(r, c)])
+
+            while queue:
+                x, y = queue.popleft()
+                for dx, dy in directions:
+                    nx, ny = x + dx, y + dy
+                    if 1 <= nx <= 19 and 1 <= ny <= 19:
+                        if (nx, ny) in temp_me and (nx, ny) not in visited:
+                            visited.add((nx, ny))
+                            queue.append((nx, ny))
+
+            # Calculate liberties
+            liberties = 0
+            for x, y in visited:
+                for dx, dy in directions:
+                    nx, ny = x + dx, y + dy
+                    if 1 <= nx <= 19 and 1 <= ny <= 19:
+                        if (nx, ny) not in temp_me and (nx, ny) not in opponent_set:
+                            liberties += 1
+
+            # Only add to legal moves if it's not a suicide
+            if liberties > 0:
+                legal.append((r, c))
+
+    # Step 2: If no legal moves, return pass
+    if not legal:
+        return (0, 0), memory
+
+    # Step 3: Try to place a corner first if any are legal
+    for corner in corners:
+        if corner in legal:
+            return corner, memory
+
+    # Step 4: If no legal corner, choose move with highest liberties and closest to corners
+    move_data = []
+
+    for move in legal:
+        r, c = move
+        min_corner_dist = min(
+            abs(r - 1) + abs(c - 1),
+            abs(r - 1) + abs(c - 19),
+            abs(r - 19) + abs(c - 1),
+            abs(r - 19) + abs(c - 19)
+        )
+        # Recompute liberties for sorting
+        temp_me = me_set | {move}
+        visited = set()
+        queue = deque([move])
+        visited.add(move)
+
+        while queue:
+            x, y = queue.popleft()
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx <= 19 and 1 <= ny <= 19:
+                    if (nx, ny) in temp_me and (nx, ny) not in visited:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+
+        libs = 0
+        for x, y in visited:
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx <= 19 and 1 <= ny <= 19:
+                    if (nx, ny) not in temp_me and (nx, ny) not in opponent_set:
+                        libs += 1
+
+        move_data.append((min_corner_dist, -libs, move))
+
+    # Sort by min corner distance (ascending), then by liberties (descending)
+    move_data.sort()
+    best_move = move_data[0][2]
+
+    return best_move, memory
+```
+
+---
+
+## ✅ Summary
+
+This policy prioritizes:
+- Playing in **corners** first.
+- If no corner is available, it selects the **legal move closest to a corner**.
+- If multiple corner-adjacent moves are available, it chooses the one that provides the **most liberties**.
+
+This strategy is **simple yet effective** for a baseline AI in Go, and it can be extended with more advanced techniques like Monte Carlo Tree Search (MCTS) or reinforcement learning for deeper gameplay in future iterations.

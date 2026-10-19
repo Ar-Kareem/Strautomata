@@ -1,0 +1,103 @@
+The strategy is to win as efficiently as possible. Clobber is a partisan game, and on a small $5 \times 6$ board, the game is short. A good heuristic is to prioritize moves that:
+1.  **Capture immediately**: Winning the game is the top priority. We check if any move captures the opponent's last piece.
+2.  **Create a "strong" piece**: A piece is strong if it has many legal moves (high mobility). We prioritize moving pieces that have many starting options or moving to squares that have many landing options.
+3.  **Simulate trades**: If we can't win immediately, we prefer moves where the opponent cannot immediately recapture (safe moves).
+4.  **Avoid giving the opponent a win**: We avoid moves that allow the opponent to capture our piece and leave us with no moves (unless we are forced into it, but the prompt says we always have a move).
+
+We will implement a greedy search that evaluates all legal moves and scores them based on these criteria.
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Selects a move in the game of Clobber.
+    Strategy:
+    1. Immediate Win: Check if a move removes the opponent's last piece.
+    2. Safety & Mobility: Prefer moves where the destination has high mobility
+       (potential to capture many pieces later) and the source is not vulnerable
+       (opponent cannot immediately recapture).
+    """
+    
+    rows = 5
+    cols = 6
+    directions = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    
+    legal_moves = []
+    
+    # Pre-calculate opponent positions for fast lookup
+    opp_positions = set()
+    you_positions = set()
+    for r in range(rows):
+        for c in range(cols):
+            if opponent[r][c]:
+                opp_positions.add((r, c))
+            if you[r][c]:
+                you_positions.add((r, c))
+                
+    opp_count = len(opp_positions)
+    
+    # 1. Gather all legal moves and categorize them
+    for r, c in you_positions:
+        for dr, dc, d_str in directions:
+            nr, nc = r + dr, c + dc
+            # Check bounds and if occupied by opponent
+            if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) in opp_positions:
+                # This is a legal move
+                
+                # --- Immediate Win Check ---
+                if opp_count == 1:
+                    # If we capture the last piece, it's a winning move.
+                    return f"{r},{c},{d_str}"
+                
+                # --- Heuristic Scoring ---
+                
+                # Score 1: Destination Mobility (how many pieces can the moved piece attack next?)
+                dest_mobility = 0
+                for dr2, dc2, _ in directions:
+                    nnr, nnc = nr + dr2, nc + dc2
+                    if 0 <= nnr < rows and 0 <= nnc < cols and (nnr, nnc) in opp_positions:
+                        dest_mobility += 1
+                
+                # Score 2: Source Vulnerability (can opponent immediately recapture?)
+                # We prefer moves where the opponent cannot immediately take our piece back.
+                # However, if they can, it's a trade. We value trades based on piece mobility difference.
+                is_vulnerable = False
+                for dr2, dc2, _ in directions:
+                    nnr, nnc = r + dr2, nc + dc2
+                    if 0 <= nnr < rows and 0 <= nnc < cols and (nnr, nnc) in opp_positions:
+                        is_vulnerable = True
+                        break
+                
+                # Heuristic Weight:
+                # High mobility at destination is good.
+                # Being vulnerable is bad.
+                # If destination mobility is high, we might attract opponent captures, 
+                # but we also threaten them more.
+                
+                # We assign a raw score.
+                # Base score: Destination Mobility
+                score = dest_mobility * 10
+                
+                # Penalize if vulnerable
+                if is_vulnerable:
+                    score -= 5
+                
+                # Specific Playstyle: "Aggressive/Secure"
+                # If we are in a trade situation (vulnerable), prefer higher mobility to ensure 
+                # we threaten more pieces than we are threatened, or simply kill more.
+                # If safe, prefer high mobility.
+                
+                legal_moves.append((score, r, c, d_str))
+
+    if not legal_moves:
+        # This should not happen based on prompt rules, but as a fallback.
+        raise Exception("No legal moves found, but policy was called.")
+
+    # Sort moves by score (descending)
+    legal_moves.sort(key=lambda x: x[0], reverse=True)
+    
+    # Select the best move
+    # If there are ties in score, the first one found (often upper-leftish) is chosen.
+    _, best_r, best_c, best_d = legal_moves[0]
+    
+    return f"{best_r},{best_c},{best_d}"
+```

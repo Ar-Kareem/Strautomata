@@ -1,0 +1,112 @@
+
+
+strategy: This policy prioritizes capturing opponent stones and expanding territory in high-value areas. It uses a heuristic scoring system to evaluate moves based on proximity to opponent stones, potential captures, and board position. The algorithm efficiently checks move legality and scores candidates before selecting the highest-rated option.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(me, opponent, memory):
+    # Convert lists to 19x19 grid (0=empty, 1=me, 2=opponent)
+    grid = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        grid[r-1, c-1] = 1
+    for r, c in opponent:
+        grid[r-1, c-1] = 2
+    
+    # Find all empty intersections
+    empty = np.argwhere(grid == 0)
+    best_move = None
+    best_score = -1
+    
+    # Check each empty cell
+    for cell in empty:
+        i, j = cell
+        # Simulate move
+        grid_sim = grid.copy()
+        grid_sim[i, j] = 1
+        
+        # Check group liberties (self-capture check)
+        group = []
+        visited = np.zeros((19, 19), dtype=bool)
+        queue = deque([(i, j)])
+        visited[i, j] = True
+        while queue:
+            x, y = queue.popleft()
+            group.append((x, y))
+            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+                nx, ny = x+dx, y+dy
+                if 0 <= nx < 19 and 0 <= ny < 19 and not visited[nx, ny] and grid_sim[nx, ny] == 1:
+                    visited[nx, ny] = True
+                    queue.append((nx, ny))
+        
+        liberties = 0
+        for x, y in group:
+            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+                nx, ny = x+dx, y+dy
+                if 0 <= nx < 19 and 0 <= ny < 19 and grid_sim[nx, ny] == 0:
+                    liberties += 1
+        if liberties == 0:
+            continue  # Illegal move (self-capture)
+        
+        # Score move
+        score = 0
+        # Capture opponent stones
+        for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+            ni, nj = i+dx, j+dy
+            if 0 <= ni < 19 and 0 <= nj < 19 and grid_sim[ni, nj] == 2:
+                # Check if opponent stone is captured
+                opp_group = []
+                opp_visited = np.zeros((19, 19), dtype=bool)
+                queue_opp = deque([(ni, nj)])
+                opp_visited[ni, nj] = True
+                while queue_opp:
+                    x, y = queue_opp.popleft()
+                    opp_group.append((x, y))
+                    for dxx, dyy in [(1,0), (-1,0), (0,1), (0,-1)]:
+                        nx, ny = x+dxx, y+dyy
+                        if 0 <= nx < 19 and 0 <= ny < 19 and not opp_visited[nx, ny] and grid_sim[nx, ny] == 2:
+                            opp_visited[nx, ny] = True
+                            queue_opp.append((nx, ny))
+                opp_liberties = 0
+                for x, y in opp_group:
+                    for dxx, dyy in [(1,0), (-1,0), (0,1), (0,-1)]:
+                        nx, ny = x+dxx, y+dyy
+                        if 0 <= nx < 19 and 0 <= ny < 19 and grid_sim[nx, ny] == 0:
+                            opp_liberties += 1
+                if opp_liberties == 0:
+                    score += 10  # Capture bonus
+        
+        # Position bonuses
+        if i == 0 or i == 18 or j == 0 or j == 18:
+            score += 2  # Corner/edge bonus
+        if (i == 0 or i == 18) and 1 <= j <= 17:
+            score += 1  # Edge bonus
+        if (j == 0 or j == 18) and 1 <= i <= 17:
+            score += 1  # Edge bonus
+        
+        # Proximity to opponent stones
+        for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+            ni, nj = i+dx, j+dy
+            if 0 <= ni < 19 and 0 <= nj < 19 and grid_sim[ni, nj] == 2:
+                score += 1  # Threat proximity bonus
+        
+        # Adjacent to own stones
+        adjacent = 0
+        for dx, dy in [(1,0), (-1,0), (0,1), (0,-1)]:
+            ni, nj = i+dx, j+dy
+            if 0 <= ni < 19 and 0 <= nj < 19 and grid_sim[ni, nj] == 1:
+                adjacent += 1
+        if adjacent >= 2:
+            score += 1  # Stability bonus
+        
+        # Select best move
+        if score > best_score:
+            best_score = score
+            best_move = (i, j)
+    
+    # Return move or pass
+    if best_move is None:
+        return (0, 0), memory
+    return (best_move[0]+1, best_move[1]+1), memory
+</code>

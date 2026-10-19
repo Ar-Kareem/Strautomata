@@ -1,0 +1,522 @@
+
+import time
+
+EMPTY = ".."
+INF = 10**9
+MATE = 100000
+
+VALUES = {
+    'P': 100,
+    'N': 320,
+    'B': 330,
+    'R': 500,
+    'Q': 900,
+    'K': 0,
+}
+
+FILES = "abcdefgh"
+SQ_STR = [FILES[i % 8] + str(i // 8 + 1) for i in range(64)]
+RANK_OF = [i // 8 for i in range(64)]
+FILE_OF = [i % 8 for i in range(64)]
+CENTER_BONUS = [
+    int(((3.5 - abs(FILE_OF[i] - 3.5)) + (3.5 - abs(RANK_OF[i] - 3.5))) * 2)
+    for i in range(64)
+]
+
+KNIGHT_TARGETS = [[] for _ in range(64)]
+KING_TARGETS = [[] for _ in range(64)]
+for sq in range(64):
+    r = RANK_OF[sq]
+    f = FILE_OF[sq]
+    for dr, df in ((2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)):
+        nr, nf = r + dr, f + df
+        if 0 <= nr < 8 and 0 <= nf < 8:
+            KNIGHT_TARGETS[sq].append(nr * 8 + nf)
+    for dr, df in ((1, 1), (1, 0), (1, -1), (0, 1), (0, -1), (-1, 1), (-1, 0), (-1, -1)):
+        nr, nf = r + dr, f + df
+        if 0 <= nr < 8 and 0 <= nf < 8:
+            KING_TARGETS[sq].append(nr * 8 + nf)
+
+BISHOP_DIRS = ((1, 1), (1, -1), (-1, 1), (-1, -1))
+ROOK_DIRS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    side = 'w' if to_play == 'white' else 'b'
+    opp = 'b' if side == 'w' else 'w'
+    deadline = time.perf_counter() + 0.85
+
+    board = [EMPTY] * 64
+    kw = -1
+    kb = -1
+    for sq, piece in pieces.items():
+        idx = (int(sq[1]) - 1) * 8 + (ord(sq[0]) - 97)
+        board[idx] = piece
+        if piece == 'wK':
+            kw = idx
+        elif piece == 'bK':
+            kb = idx
+
+    nodes = 0
+
+    def time_check():
+        nonlocal nodes
+        nodes += 1
+        if (nodes & 255) == 0 and time.perf_counter() > deadline:
+            raise TimeoutError
+
+    def move_to_str(mv):
+        fr, to, promo = mv
+        return SQ_STR[fr] + SQ_STR[to] + (promo if promo else "")
+
+    def is_attacked(sq, by_color):
+        r = RANK_OF[sq]
+        f = FILE_OF[sq]
+
+        # Pawn attacks
+        if by_color == 'w':
+            if r > 0:
+                if f > 0 and board[(r - 1) * 8 + (f - 1)] == 'wP':
+                    return True
+                if f < 7 and board[(r - 1) * 8 + (f + 1)] == 'wP':
+                    return True
+        else:
+            if r < 7:
+                if f > 0 and board[(r + 1) * 8 + (f - 1)] == 'bP':
+                    return True
+                if f < 7 and board[(r + 1) * 8 + (f + 1)] == 'bP':
+                    return True
+
+        # Knight attacks
+        attacker_knight = by_color + 'N'
+        for j in KNIGHT_TARGETS[sq]:
+            if board[j] == attacker_knight:
+                return True
+
+        # Bishop / Queen diagonal attacks
+        for dr, df in BISHOP_DIRS:
+            nr, nf = r + dr, f + df
+            while 0 <= nr < 8 and 0 <= nf < 8:
+                j = nr * 8 + nf
+                p = board[j]
+                if p != EMPTY:
+                    if p[0] == by_color and (p[1] == 'B' or p[1] == 'Q'):
+                        return True
+                    break
+                nr += dr
+                nf += df
+
+        # Rook / Queen orthogonal attacks
+        for dr, df in ROOK_DIRS:
+            nr, nf = r + dr, f + df
+            while 0 <= nr < 8 and 0 <= nf < 8:
+                j = nr * 8 + nf
+                p = board[j]
+                if p != EMPTY:
+                    if p[0] == by_color and (p[1] == 'R' or p[1] == 'Q'):
+                        return True
+                    break
+                nr += dr
+                nf += df
+
+        # King attacks
+        attacker_king = by_color + 'K'
+        for j in KING_TARGETS[sq]:
+            if board[j] == attacker_king:
+                return True
+
+        return False
+
+    def gen_pseudo_moves(color, captures_only=False):
+        forward = 8 if color == 'w' else -8
+        start_rank = 1 if color == 'w' else 6
+        promo_rank = 7 if color == 'w' else 0
+
+        for i, p in enumerate(board):
+            if p == EMPTY or p[0] != color:
+                continue
+
+            typ = p[1]
+            r = RANK_OF[i]
+            f = FILE_OF[i]
+
+            if typ == 'P':
+                nr = r + (1 if color == 'w' else -1)
+
+                # Forward moves
+                if 0 <= nr < 8:
+                    j = i + forward
+                    if board[j] == EMPTY:
+                        if nr == promo_rank:
+                            for pr in ('q', 'r', 'b', 'n'):
+                                yield (i, j, pr)
+                        elif not captures_only:
+                            yield (i, j, None)
+                            if r == start_rank:
+                                j2 = i + 2 * forward
+                                if board[j2] == EMPTY:
+                                    yield (i, j2, None)
+
+                # Captures
+                for df in (-1, 1):
+                    nf = f + df
+                    nr = r + (1 if color == 'w' else -1)
+                    if 0 <= nf < 8 and 0 <= nr < 8:
+                        j = nr * 8 + nf
+                        q = board[j]
+                        if q != EMPTY and q[0] != color and q[1] != 'K':
+                            if nr == promo_rank:
+                                for pr in ('q', 'r', 'b', 'n'):
+                                    yield (i, j, pr)
+                            else:
+                                yield (i, j, None)
+
+                # Quiet promotions even in quiescence
+                if captures_only and 0 <= nr < 8:
+                    j = i + forward
+                    if board[j] == EMPTY and (j // 8) == promo_rank:
+                        for pr in ('q', 'r', 'b', 'n'):
+                            yield (i, j, pr)
+
+            elif typ == 'N':
+                for j in KNIGHT_TARGETS[i]:
+                    q = board[j]
+                    if q == EMPTY:
+                        if not captures_only:
+                            yield (i, j, None)
+                    elif q[0] != color and q[1] != 'K':
+                        yield (i, j, None)
+
+            elif typ == 'B' or typ == 'R' or typ == 'Q':
+                dirs = []
+                if typ == 'B' or typ == 'Q':
+                    dirs.extend(BISHOP_DIRS)
+                if typ == 'R' or typ == 'Q':
+                    dirs.extend(ROOK_DIRS)
+
+                for dr, df in dirs:
+                    nr, nf = r + dr, f + df
+                    while 0 <= nr < 8 and 0 <= nf < 8:
+                        j = nr * 8 + nf
+                        q = board[j]
+                        if q == EMPTY:
+                            if not captures_only:
+                                yield (i, j, None)
+                        else:
+                            if q[0] != color and q[1] != 'K':
+                                yield (i, j, None)
+                            break
+                        nr += dr
+                        nf += df
+
+            elif typ == 'K':
+                for j in KING_TARGETS[i]:
+                    q = board[j]
+                    if q == EMPTY:
+                        if not captures_only:
+                            yield (i, j, None)
+                    elif q[0] != color and q[1] != 'K':
+                        yield (i, j, None)
+
+    def make_move(mv):
+        fr, to, promo = mv
+        piece = board[fr]
+        captured = board[to]
+        old_kw, old_kb = kw_local[0], kb_local[0]
+
+        new_piece = piece if promo is None else piece[0] + promo.upper()
+        board[fr] = EMPTY
+        board[to] = new_piece
+
+        if piece == 'wK':
+            kw_local[0] = to
+        elif piece == 'bK':
+            kb_local[0] = to
+
+        return piece, captured, old_kw, old_kb
+
+    def unmake_move(mv, piece, captured, old_kw, old_kb):
+        fr, to, _promo = mv
+        board[fr] = piece
+        board[to] = captured
+        kw_local[0] = old_kw
+        kb_local[0] = old_kb
+
+    def gen_legal_moves(color, captures_only=False):
+        res = []
+        enemy = 'b' if color == 'w' else 'w'
+        for mv in gen_pseudo_moves(color, captures_only):
+            piece, captured, old_kw, old_kb = make_move(mv)
+            king_sq = kw_local[0] if color == 'w' else kb_local[0]
+            if king_sq != -1 and not is_attacked(king_sq, enemy):
+                res.append(mv)
+            unmake_move(mv, piece, captured, old_kw, old_kb)
+        return res
+
+    def move_order_key(mv):
+        fr, to, promo = mv
+        mover = board[fr]
+        target = board[to]
+        score = 0
+        if target != EMPTY:
+            score += 10000 + 20 * VALUES[target[1]] - VALUES[mover[1]]
+        if promo:
+            score += 8000 + VALUES[promo.upper()]
+        score += CENTER_BONUS[to]
+        if mover[1] == 'P' and abs(RANK_OF[to] - RANK_OF[fr]) == 2:
+            score += 2
+        return score
+
+    def evaluate():
+        white_pawns = [0] * 8
+        black_pawns = [0] * 8
+        white_bishops = 0
+        black_bishops = 0
+        total_nonpawn_material = 0
+
+        for i, p in enumerate(board):
+            if p == EMPTY:
+                continue
+            c, t = p[0], p[1]
+            f = FILE_OF[i]
+            if t == 'P':
+                if c == 'w':
+                    white_pawns[f] += 1
+                else:
+                    black_pawns[f] += 1
+            elif t != 'K':
+                total_nonpawn_material += VALUES[t]
+            if t == 'B':
+                if c == 'w':
+                    white_bishops += 1
+                else:
+                    black_bishops += 1
+
+        score = 0
+
+        for i, p in enumerate(board):
+            if p == EMPTY:
+                continue
+
+            c, t = p[0], p[1]
+            sign = 1 if c == 'w' else -1
+            r = RANK_OF[i]
+            f = FILE_OF[i]
+            rr = r if c == 'w' else 7 - r
+            center = (3.5 - abs(f - 3.5)) + (3.5 - abs(r - 3.5))
+
+            score += sign * VALUES[t]
+
+            if t == 'P':
+                score += sign * int(rr * 12 - abs(f - 3.5) * 4)
+
+                pawns_by_file = white_pawns if c == 'w' else black_pawns
+                opp_pawn = 'bP' if c == 'w' else 'wP'
+
+                if pawns_by_file[f] > 1:
+                    score -= sign * 10 * (pawns_by_file[f] - 1)
+
+                isolated = ((f == 0 or pawns_by_file[f - 1] == 0) and
+                            (f == 7 or pawns_by_file[f + 1] == 0))
+                if isolated:
+                    score -= sign * 10
+
+                passed = True
+                if c == 'w':
+                    for nr in range(r + 1, 8):
+                        for nf in (f - 1, f, f + 1):
+                            if 0 <= nf < 8 and board[nr * 8 + nf] == opp_pawn:
+                                passed = False
+                                break
+                        if not passed:
+                            break
+                else:
+                    for nr in range(r - 1, -1, -1):
+                        for nf in (f - 1, f, f + 1):
+                            if 0 <= nf < 8 and board[nr * 8 + nf] == opp_pawn:
+                                passed = False
+                                break
+                        if not passed:
+                            break
+                if passed:
+                    score += sign * (20 + rr * 10)
+
+            elif t == 'N':
+                score += sign * int(center * 12)
+
+            elif t == 'B':
+                score += sign * int(center * 10)
+
+            elif t == 'R':
+                score += sign * (10 if rr == 6 else 0)
+                own_pf = white_pawns if c == 'w' else black_pawns
+                opp_pf = black_pawns if c == 'w' else white_pawns
+                if own_pf[f] == 0:
+                    score += sign * 8
+                    if opp_pf[f] == 0:
+                        score += sign * 10
+
+            elif t == 'Q':
+                score += sign * int(center * 4)
+
+            elif t == 'K':
+                if total_nonpawn_material > 2400:
+                    score += sign * (-int(center * 8))
+                    if 1 <= rr <= 2:
+                        score -= sign * 10
+                    score += sign * (12 - min(abs(f - 1), abs(f - 6)) * 4)
+                else:
+                    score += sign * int(center * 14)
+
+        if white_bishops >= 2:
+            score += 30
+        if black_bishops >= 2:
+            score -= 30
+
+        return score
+
+    def qsearch(color, alpha, beta, ply):
+        time_check()
+        enemy = 'b' if color == 'w' else 'w'
+        king_sq = kw_local[0] if color == 'w' else kb_local[0]
+
+        if is_attacked(king_sq, enemy):
+            moves = gen_legal_moves(color, captures_only=False)
+            if not moves:
+                return -MATE + ply
+            moves.sort(key=move_order_key, reverse=True)
+            best = -INF
+            for mv in moves:
+                piece, captured, old_kw, old_kb = make_move(mv)
+                score = -qsearch(enemy, -beta, -alpha, ply + 1)
+                unmake_move(mv, piece, captured, old_kw, old_kb)
+                if score > best:
+                    best = score
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+            return best
+
+        stand = evaluate()
+        if color == 'b':
+            stand = -stand
+
+        if stand >= beta:
+            return beta
+        if stand > alpha:
+            alpha = stand
+
+        moves = gen_legal_moves(color, captures_only=True)
+        if not moves:
+            return stand
+
+        moves.sort(key=move_order_key, reverse=True)
+
+        for mv in moves:
+            fr, to, promo = mv
+            target = board[to]
+            gain = 0
+            if target != EMPTY:
+                gain += VALUES[target[1]]
+            if promo:
+                gain += VALUES[promo.upper()] - VALUES['P']
+            if target != EMPTY and stand + gain + 80 <= alpha:
+                continue
+
+            piece, captured, old_kw, old_kb = make_move(mv)
+            score = -qsearch(enemy, -beta, -alpha, ply + 1)
+            unmake_move(mv, piece, captured, old_kw, old_kb)
+
+            if score >= beta:
+                return beta
+            if score > alpha:
+                alpha = score
+
+        return alpha
+
+    def negamax(color, depth, alpha, beta, ply):
+        time_check()
+        enemy = 'b' if color == 'w' else 'w'
+        king_sq = kw_local[0] if color == 'w' else kb_local[0]
+        in_check = is_attacked(king_sq, enemy)
+
+        if in_check and depth > 0:
+            depth += 1
+
+        if depth <= 0:
+            return qsearch(color, alpha, beta, ply)
+
+        moves = gen_legal_moves(color, captures_only=False)
+        if not moves:
+            if in_check:
+                return -MATE + ply
+            return 0
+
+        moves.sort(key=move_order_key, reverse=True)
+
+        best = -INF
+        for mv in moves:
+            piece, captured, old_kw, old_kb = make_move(mv)
+            score = -negamax(enemy, depth - 1, -beta, -alpha, ply + 1)
+            unmake_move(mv, piece, captured, old_kw, old_kb)
+
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        return best
+
+    kw_local = [kw]
+    kb_local = [kb]
+
+    legal = gen_legal_moves(side, captures_only=False)
+    if not legal:
+        return "a1a1"
+    if len(legal) == 1:
+        return move_to_str(legal[0])
+
+    legal.sort(key=move_order_key, reverse=True)
+    best_move = legal[0]
+
+    piece_count = len(pieces)
+    if piece_count <= 8:
+        max_depth = 5
+    elif piece_count <= 14:
+        max_depth = 4
+    else:
+        max_depth = 3
+
+    try:
+        ordered = legal[:]
+        for depth in range(1, max_depth + 1):
+            scored = []
+            best_score = -INF
+            current_best = ordered[0]
+
+            alpha = -INF
+            beta = INF
+
+            for mv in ordered:
+                piece, captured, old_kw, old_kb = make_move(mv)
+                score = -negamax(opp, depth - 1, -beta, -alpha, 1)
+                unmake_move(mv, piece, captured, old_kw, old_kb)
+
+                scored.append((score, mv))
+                if score > best_score:
+                    best_score = score
+                    current_best = mv
+                if score > alpha:
+                    alpha = score
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+            ordered = [mv for _, mv in scored]
+            best_move = current_best
+
+    except TimeoutError:
+        pass
+
+    return move_to_str(best_move)

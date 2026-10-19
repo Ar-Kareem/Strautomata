@@ -1,0 +1,92 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """Return the best move (row, col) for the current board state."""
+    
+    def is_winner(b: list[list[int]], player: int) -> bool:
+        """Check if the given player has won."""
+        # Check rows and columns
+        for i in range(3):
+            if all(b[i][j] == player for j in range(3)):
+                return True
+            if all(b[j][i] == player for j in range(3)):
+                return True
+        # Check diagonals
+        if b[0][0] == b[1][1] == b[2][2] == player:
+            return True
+        if b[0][2] == b[1][1] == b[2][0] == player:
+            return True
+        return False
+
+    # 1. Take immediate winning move if available
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                board[r][c] = 1
+                if is_winner(board, 1):
+                    return (r, c)
+                board[r][c] = 0
+
+    # 2. Block opponent's immediate winning move
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                board[r][c] = -1
+                if is_winner(board, -1):
+                    return (r, c)
+                board[r][c] = 0
+
+    # 3. Minimax to find optimal move
+    def minimax(b: list[list[int]], depth: int, is_maximizing: bool) -> int:
+        if is_winner(b, 1):
+            return 10 - depth
+        if is_winner(b, -1):
+            return -10 + depth
+        # Check for draw (no empty cells)
+        if all(b[i][j] != 0 for i in range(3) for j in range(3)):
+            return 0
+        
+        if is_maximizing:
+            max_eval = -float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if b[i][j] == 0:
+                        b[i][j] = 1
+                        eval = minimax(b, depth + 1, False)
+                        b[i][j] = 0
+                        if eval > max_eval:
+                            max_eval = eval
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if b[i][j] == 0:
+                        b[i][j] = -1
+                        eval = minimax(b, depth + 1, True)
+                        b[i][j] = 0
+                        if eval < min_eval:
+                            min_eval = eval
+            return min_eval
+
+    best_score = -float('inf')
+    best_move = None
+
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                board[r][c] = 1
+                score = minimax(board, 0, False)
+                board[r][c] = 0
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+    
+    # Fallback (should never happen in a valid game)
+    if best_move is None:
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:
+                    return (r, c)
+        return (0, 0)
+    
+    return best_move

@@ -1,0 +1,227 @@
+The strategy for this policy is to implement a Minimax algorithm with Alpha-Beta pruning to search for the optimal move. The policy first checks for immediate winning moves or moves necessary to block an opponent's immediate win. If neither is available, it proceeds with a depth-limited search (depth 6). The search uses a heuristic evaluation function that scores the board based on the number of favorable "windows" (groups of 4 consecutive cells) for the current player and the opponent. It prioritizes center column control and efficient pruning to ensure execution within the time limit.
+
+<code>
+import sys
+
+# Constants for game rules
+ROWS = 6
+COLS = 7
+PLAYER = 1
+OPPONENT = -1
+EMPTY = 0
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Determines the next move for the Connect 4 game using Minimax with Alpha-Beta pruning.
+    """
+    # 1. Check for immediate winning move
+    for col in range(COLS):
+        if is_valid_location(board, col):
+            row = get_next_open_row(board, col)
+            board[row][col] = PLAYER
+            if check_win(board, row, col, PLAYER):
+                board[row][col] = EMPTY
+                return col
+            board[row][col] = EMPTY
+
+    # 2. Check for immediate blocking move (opponent wins next turn)
+    for col in range(COLS):
+        if is_valid_location(board, col):
+            row = get_next_open_row(board, col)
+            board[row][col] = OPPONENT
+            if check_win(board, row, col, OPPONENT):
+                board[row][col] = EMPTY
+                return col
+            board[row][col] = EMPTY
+
+    # 3. Minimax with Alpha-Beta Pruning
+    # Depth 6 is a safe balance for 1 second time limit in Python
+    depth = 6
+    # Order columns starting from center to improve pruning efficiency
+    col_order = [3, 2, 4, 1, 5, 0, 6]
+    
+    best_score = -sys.maxsize
+    best_col = -1
+    
+    for col in col_order:
+        if is_valid_location(board, col):
+            row = get_next_open_row(board, col)
+            board[row][col] = PLAYER
+            
+            # Compute score
+            score = minimax(board, depth - 1, -sys.maxsize, sys.maxsize, False)
+            
+            board[row][col] = EMPTY
+            
+            if score > best_score:
+                best_score = score
+                best_col = col
+                
+    return best_col
+
+def minimax(board, depth, alpha, beta, maximizingPlayer):
+    valid_moves = [c for c in [3, 2, 4, 1, 5, 0, 6] if is_valid_location(board, c)]
+    
+    # Terminal states: depth limit reached, board full, or someone won
+    if depth == 0 or not valid_moves:
+        return evaluate_board(board)
+    
+    # Check for terminal win states immediately to save evaluation time
+    # (This check is expensive if done every node, evaluate_board handles some of this)
+    
+    if maximizingPlayer:
+        value = -sys.maxsize
+        for col in valid_moves:
+            row = get_next_open_row(board, col)
+            board[row][col] = PLAYER
+            
+            # Early termination check
+            if check_win(board, row, col, PLAYER):
+                board[row][col] = EMPTY
+                return 1000000 + depth # Prefer faster wins
+            
+            value = max(value, minimax(board, depth - 1, alpha, beta, False))
+            board[row][col] = EMPTY
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break # Beta cutoff
+        return value
+    else:
+        value = sys.maxsize
+        for col in valid_moves:
+            row = get_next_open_row(board, col)
+            board[row][col] = OPPONENT
+            
+            # Early termination check
+            if check_win(board, row, col, OPPONENT):
+                board[row][col] = EMPTY
+                return -1000000 - depth # Prefer blocking late losses (or rather, avoid quick losses)
+            
+            value = min(value, minimax(board, depth - 1, alpha, beta, True))
+            board[row][col] = EMPTY
+            beta = min(beta, value)
+            if alpha >= beta:
+                break # Alpha cutoff
+        return value
+
+def evaluate_board(board):
+    score = 0
+    
+    # Score center column (Strategy: control center)
+    center_array = [row[3] for row in board]
+    center_count = center_array.count(PLAYER)
+    score += center_count * 3
+
+    # Score Horizontal
+    for r in range(ROWS):
+        row_array = board[r]
+        for c in range(COLS - 3):
+            window = row_array[c:c+4]
+            score += evaluate_window(window)
+
+    # Score Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r+i][c] for i in range(4)]
+            score += evaluate_window(window)
+
+    # Score Positive Diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window)
+
+    # Score Negative Diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window)
+
+    return score
+
+def evaluate_window(window):
+    score = 0
+    player_count = window.count(PLAYER)
+    opponent_count = window.count(OPPONENT)
+    empty_count = window.count(EMPTY)
+
+    if player_count == 4:
+        score += 100
+    elif player_count == 3 and empty_count == 1:
+        score += 5
+    elif player_count == 2 and empty_count == 2:
+        score += 2
+
+    if opponent_count == 3 and empty_count == 1:
+        score -= 4 # Block opponent's potential win
+
+    return score
+
+def is_valid_location(board, col):
+    return board[0][col] == EMPTY
+
+def get_next_open_row(board, col):
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == EMPTY:
+            return r
+    return -1
+
+def check_win(board, row, col, piece):
+    # Check Horizontal
+    count = 1
+    # Right
+    c = col + 1
+    while c < COLS and board[row][c] == piece:
+        count += 1
+        c += 1
+    # Left
+    c = col - 1
+    while c >= 0 and board[row][c] == piece:
+        count += 1
+        c -= 1
+    if count >= 4: return True
+
+    # Check Vertical
+    count = 1
+    # Down
+    r = row + 1
+    while r < ROWS and board[r][col] == piece:
+        count += 1
+        r += 1
+    # Up
+    r = row - 1
+    while r >= 0 and board[r][col] == piece:
+        count += 1
+        r -= 1
+    if count >= 4: return True
+
+    # Check Positive Diagonal
+    count = 1
+    r, c = row + 1, col + 1
+    while r < ROWS and c < COLS and board[r][c] == piece:
+        count += 1
+        r += 1
+        c += 1
+    r, c = row - 1, col - 1
+    while r >= 0 and c >= 0 and board[r][c] == piece:
+        count += 1
+        r -= 1
+        c -= 1
+    if count >= 4: return True
+
+    # Check Negative Diagonal
+    count = 1
+    r, c = row - 1, col + 1
+    while r >= 0 and c < COLS and board[r][c] == piece:
+        count += 1
+        r -= 1
+        c += 1
+    r, c = row + 1, col - 1
+    while r < ROWS and c >= 0 and board[r][c] == piece:
+        count += 1
+        r += 1
+        c -= 1
+    if count >= 4: return True
+
+    return False
+</code>

@@ -1,0 +1,204 @@
+
+from collections import deque
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+N = 10
+
+def _in_bounds(r, c):
+    return 0 <= r < N and 0 <= c < N
+
+def _unknown_cells(board):
+    cells = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                cells.append((r, c))
+    return cells
+
+def _neighbors(r, c):
+    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        nr, nc = r + dr, c + dc
+        if _in_bounds(nr, nc):
+            yield nr, nc
+
+def _find_hit_clusters(board):
+    visited = [[False] * N for _ in range(N)]
+    clusters = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1 and not visited[r][c]:
+                q = deque([(r, c)])
+                visited[r][c] = True
+                comp = []
+                while q:
+                    x, y = q.popleft()
+                    comp.append((x, y))
+                    for nx, ny in _neighbors(x, y):
+                        if board[nx][ny] == 1 and not visited[nx][ny]:
+                            visited[nx][ny] = True
+                            q.append((nx, ny))
+                clusters.append(comp)
+    return clusters
+
+def _target_from_cluster(board, cluster):
+    # Larger clusters are more urgent; caller should sort by size descending.
+    if len(cluster) == 1:
+        r, c = cluster[0]
+        candidates = []
+        for nr, nc in _neighbors(r, c):
+            if board[nr][nc] == 0:
+                # Slight preference for parity / centrality
+                score = 0
+                if (nr + nc) % 2 == 0:
+                    score += 1
+                score += 4 - abs(4.5 - nr) * 0.1 - abs(4.5 - nc) * 0.1
+                candidates.append((score, nr, nc))
+        if candidates:
+            candidates.sort(reverse=True)
+            return (candidates[0][1], candidates[0][2])
+        return None
+
+    rows = {r for r, _ in cluster}
+    cols = {c for _, c in cluster}
+
+    # If aligned horizontally
+    if len(rows) == 1:
+        r = next(iter(rows))
+        cs = sorted(c for _, c in cluster)
+        left = cs[0] - 1
+        right = cs[-1] + 1
+        candidates = []
+        if left >= 0 and board[r][left] == 0:
+            candidates.append((len(cluster), r, left))
+        if right < N and board[r][right] == 0:
+            candidates.append((len(cluster), r, right))
+        if candidates:
+            # Small center bias tie-break
+            candidates.sort(key=lambda x: (x[0], -abs(4.5 - x[1]) - abs(4.5 - x[2])), reverse=True)
+            return (candidates[0][1], candidates[0][2])
+
+    # If aligned vertically
+    if len(cols) == 1:
+        c = next(iter(cols))
+        rs = sorted(r for r, _ in cluster)
+        up = rs[0] - 1
+        down = rs[-1] + 1
+        candidates = []
+        if up >= 0 and board[up][c] == 0:
+            candidates.append((len(cluster), up, c))
+        if down < N and board[down][c] == 0:
+            candidates.append((len(cluster), down, c))
+        if candidates:
+            candidates.sort(key=lambda x: (x[0], -abs(4.5 - x[1]) - abs(4.5 - x[2])), reverse=True)
+            return (candidates[0][1], candidates[0][2])
+
+    # Fallback for odd cluster shapes: try any unknown neighbor adjacent to cluster,
+    # preferring cells adjacent to multiple hits.
+    touch_count = {}
+    for r, c in cluster:
+        for nr, nc in _neighbors(r, c):
+            if board[nr][nc] == 0:
+                touch_count[(nr, nc)] = touch_count.get((nr, nc), 0) + 1
+    if touch_count:
+        best = max(
+            touch_count.items(),
+            key=lambda kv: (kv[1], -abs(4.5 - kv[0][0]) - abs(4.5 - kv[0][1]))
+        )[0]
+        return best
+
+    return None
+
+def _placement_valid(board, cells):
+    # A placement is valid if it contains no known misses.
+    # Known hits are allowed and contribute strongly to scoring.
+    for r, c in cells:
+        if board[r][c] == -1:
+            return False
+    return True
+
+def _probability_grid(board):
+    scores = [[0.0] * N for _ in range(N)]
+
+    total_unknown = sum(1 for r in range(N) for c in range(N) if board[r][c] == 0)
+    # Dynamic parity bias: stronger early, weaker late.
+    parity_weight = 0.35 if total_unknown > 20 else 0.10
+
+    for L in SHIP_LENGTHS:
+        # Horizontal placements
+        for r in range(N):
+            for c in range(N - L + 1):
+                cells = [(r, c + k) for k in range(L)]
+                if not _placement_valid(board, cells):
+                    continue
+
+                hit_count = sum(1 for x, y in cells if board[x][y] == 1)
+
+                # If there are hits on board, legal placements covering hits are more valuable.
+                weight = 1.0 + 6.0 * hit_count + 2.0 * hit_count * hit_count
+
+                for x, y in cells:
+                    if board[x][y] == 0:
+                        scores[x][y] += weight
+
+        # Vertical placements
+        for r in range(N - L + 1):
+            for c in range(N):
+                cells = [(r + k, c) for k in range(L)]
+                if not _placement_valid(board, cells):
+                    continue
+
+                hit_count = sum(1 for x, y in cells if board[x][y] == 1)
+                weight = 1.0 + 6.0 * hit_count + 2.0 * hit_count * hit_count
+
+                for x, y in cells:
+                    if board[x][y] == 0:
+                        scores[x][y] += weight
+
+    # Add mild parity and center bias in hunt situations.
+    any_hits = any(board[r][c] == 1 for r in range(N) for c in range(N))
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] != 0:
+                continue
+            if not any_hits and (r + c) % 2 == 0:
+                scores[r][c] += parity_weight
+            # Mild center preference as tie-break.
+            scores[r][c] += 0.02 * (9 - (abs(4.5 - r) + abs(4.5 - c)))
+
+    return scores
+
+def policy(board):
+    # 1. Target mode: chase existing hits first.
+    clusters = _find_hit_clusters(board)
+    if clusters:
+        clusters.sort(key=len, reverse=True)
+        for cluster in clusters:
+            move = _target_from_cluster(board, cluster)
+            if move is not None:
+                r, c = move
+                if _in_bounds(r, c) and board[r][c] == 0:
+                    return (r, c)
+
+    # 2. Hunt mode: choose highest-probability unknown cell.
+    scores = _probability_grid(board)
+    best_move = None
+    best_score = -1e18
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                s = scores[r][c]
+                if s > best_score:
+                    best_score = s
+                    best_move = (r, c)
+
+    if best_move is not None:
+        return best_move
+
+    # 3. Guaranteed legal fallback.
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                return (r, c)
+
+    # Should never happen in a valid game state; still return a tuple.
+    return (0, 0)

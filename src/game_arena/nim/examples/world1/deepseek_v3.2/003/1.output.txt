@@ -1,0 +1,132 @@
+Let's reason this out.
+
+We’re playing **Misère Nim** with 4 piles — the player who takes the last object *loses*.
+
+In normal Nim, the Nim-sum (XOR of all pile sizes) determines winning/losing positions: if Nim-sum = 0, it’s a losing position for the player to move (assuming optimal play in normal play).  
+In **Misère Nim**, the winning strategy is the same as normal Nim *except* when all piles have size 1 — then the strategy flips.  
+But for 4 piles, the special case is:  
+If every pile is of size 1, then losing positions are when the number of piles is even (so 4 piles = losing position if all are size 1).  
+Actually, let's recall exact rule:
+
+Standard misère Nim theory (from *Winning Ways* etc.):  
+If all piles are of size 1 → losing position if number of piles is even (else winning).  
+Otherwise, normal Nim strategy applies (move to Nim-sum 0).
+
+So:  
+1. Compute Nim-sum (XOR of pile sizes).  
+2. If Nim-sum ≠ 0 → winning position → find a move that makes Nim-sum = 0.  
+   But must also avoid leaving only piles of size 1 with an even count? Actually, in misère Nim, if you can move to a position where all non-empty piles are size 1 and the count of those is odd, that’s good (because opponent then faces losing position). Wait, check: If after your move all remaining piles are size 1 and *odd* number of piles remain → opponent loses (since they’ll take last eventually).  
+   More precise known algorithm:  
+   - Compute Nim-sum.  
+   - If Nim-sum = 0:  
+     - If all piles ≤ 1 → you must take a 1 (losing position).  
+     - Else you can’t force win but must still move legally — choose some safe move to delay.  
+   - If Nim-sum ≠ 0:  
+     - Find pile where XOR of its size with Nim-sum < its size.  
+     - Take from that pile to leave Nim-sum = 0 **but** if that move leaves only piles of size 1 (and count of them even), it’s bad (that’s a losing position for next player, which is opponent → good for us). Actually, let’s test logic:  
+
+Let’s implement:  
+If current Nim-sum = 0 (losing in normal Nim), in misère Nim we’re still losing unless all piles ≤ 1 and odd count of piles? Wait — in misère Nim, position with all piles size 1 and odd count is winning (because you take last and lose? No — in misère, taking last loses, so if odd count of 1s, the player to move takes one, leaves even count → opponent takes last. So actually odd count of 1s is winning? Let's check example: piles [1,1,1] (3 piles, all 1):  
+- You take one → [1,1] (2 piles) → opponent takes one → [1] → you take last → you lose. Wait that means original [1,1,1] is losing? Let's check systematically:
+
+Misère Nim: Terminal position is [] (no piles) → player who moved to [] loses (so player who took last object from last pile loses).  
+So winning positions:  
+[1] → take it → lose → so [1] losing.  
+[1,1] → take one → [1] → opponent loses → so [1,1] winning.  
+[1,1,1] → take one → [1,1] winning for opponent → so [1,1,1] losing.  
+So indeed: All piles size 1 → losing if odd count of piles, winning if even count.  
+
+But in general misère Nim (not all 1s), normal Nim strategy applies.
+
+So algorithm:  
+1. Compute Nim-sum.  
+2. If Nim-sum != 0:  
+   - Find pile i where (piles[i] XOR Nim-sum) < piles[i].  
+   - Take (piles[i] - (piles[i] XOR Nim-sum)) objects from pile i.  
+   - But if that leaves position with all piles size ≤ 1? Then check count of 1s: if odd → good (opponent losing), if even → try another pile/move if possible.  
+3. If Nim-sum = 0:  
+   - If all piles size ≤ 1 (actually all size 1 since ≤1 means 0 or 1, but 0 piles are empty):  
+     - We are in losing position (odd count of 1s), just take 1 from first non-zero pile.  
+   - Else: try to leave position with all 1s and even count if possible (to force win), else just take 1 from largest pile (delay).  
+
+Let’s implement carefully.
+
+---
+
+<code>
+import random
+
+def policy(piles: list[int]) -> str:
+    # Compute Nim-sum
+    nim_sum = 0
+    for p in piles:
+        nim_sum ^= p
+
+    # Helper: count of piles with size 1
+    def count_ones(state):
+        return sum(1 for x in state if x == 1)
+
+    # Helper: check if all piles are size 0 or 1
+    def all_at_most_one(state):
+        return all(x <= 1 for x in state)
+
+    # If Nim-sum != 0 (winning position in normal Nim)
+    if nim_sum != 0:
+        best_move = None
+        for i in range(4):
+            if piles[i] == 0:
+                continue
+            target = piles[i] ^ nim_sum
+            if target < piles[i]:
+                take = piles[i] - target
+                # Simulate move
+                new_piles = piles.copy()
+                new_piles[i] -= take
+                # Check if move leaves all piles <= 1
+                if all_at_most_one(new_piles):
+                    ones = count_ones(new_piles)
+                    if ones % 2 == 1:  # opponent gets odd ones -> losing for them
+                        return f"{i},{take}"
+                    else:
+                        # This move leaves even ones -> winning for opponent, avoid if possible
+                        continue
+                else:
+                    return f"{i},{take}"
+        # If all winning moves lead to even ones and all <=1, just pick first winning move
+        for i in range(4):
+            if piles[i] == 0:
+                continue
+            target = piles[i] ^ nim_sum
+            if target < piles[i]:
+                take = piles[i] - target
+                return f"{i},{take}"
+    else:
+        # Nim-sum = 0: losing in normal play, in misère try to force all 1s & even count
+        # If already all <=1
+        if all_at_most_one(piles):
+            # Take 1 from first non-zero pile
+            for i in range(4):
+                if piles[i] == 1:
+                    return f"{i},1"
+        # Else try to move to all piles <=1 with even count of 1s
+        for i in range(4):
+            if piles[i] > 1:
+                # Try taking piles[i] - 1 (leave 1)
+                take = piles[i] - 1
+                new_piles = piles.copy()
+                new_piles[i] = 1
+                if all_at_most_one(new_piles):
+                    ones = count_ones(new_piles)
+                    if ones % 2 == 0:  # opponent gets even ones -> losing for them
+                        return f"{i},{take}"
+        # If not possible, take 1 from largest pile (delay)
+        max_pile = max(piles)
+        for i in range(4):
+            if piles[i] == max_pile and piles[i] > 0:
+                return f"{i},1"
+    # Fallback (should not happen)
+    for i in range(4):
+        if piles[i] > 0:
+            return f"{i},1"
+    return "0,1"
+</code>

@@ -1,0 +1,158 @@
+The strategy for this policy is a **minimax algorithm with alpha-beta pruning and depth-limited search**. It evaluates the board state by calculating the position value of each player (using a simplified rule where advancing closer to the opponent's home row enhances a piece's value and proximity to the opponent's pieces influences capture) and selects the best move based on a few future steps, ensuring to return a legal move in all cases.
+
+Key features:
+- **Scoring function** evaluates positions based on:
+  - Proximity of pieces to the opponent's home row (closer pieces score higher).
+  - Count of capturing opportunities.
+  - Density and arrangement for forward advancement.
+- **Depth-limited minimax** with exploration of future moves to avoid myopic decisions.
+- **Alpha-beta pruning** to reduce the move tree branching for efficiency.
+- All legal moves are considered, including captures.
+- Prioritizes arrival at the opponent's home row or capturing as a path to victory.
+
+Now here is the Python implementation of this policy:
+
+<code>
+```python
+import numpy as np
+from typing import List, Tuple
+
+# Constants
+DIRECTIONS = {
+    'b': [(-1, 0), (-1, 1), (0, 1)],
+    'w': [(1, 0), (1, -1), (0, -1)]
+}
+
+MOVE_TYPES = {
+    'b': [(-1, 0), (-1, 1)],  # forward & left diagonal for black
+    'w': [(1, 0), (1, -1)]  # forward & right diagonal for white
+}
+
+CAPTURE_TYPES = {
+    'b': [(-1, 1)],  # left diagonal for black
+    'w': [(1, -1)]  # right diagonal for white
+}
+
+# Scoring function
+def evaluate_position(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> int:
+    my_color = color
+    opponent_color = 'w' if my_color == 'b' else 'b'
+    
+    # Count of my pieces and opponent's pieces
+    my_piece_count = len(me)
+    opp_piece_count = len(opp)
+    
+    # Distance to goal (home row of the opponent)
+    if my_color == 'b':
+        my_goal_row = 0
+        direction_factor = 1  # black advances to lower row
+    else:
+        my_goal_row = 7
+        direction_factor = -1  # white advances to higher row
+
+    # Sum of the distances of my pieces to the opponent's home row
+    my_pieces_distance = sum(abs(row - my_goal_row) for row, _ in me)
+    
+    # Sum of the distances of opponent's pieces from their home row
+    opp_goal_row = 7 if my_color == 'b' else 0
+    opp_pieces_distance = sum(abs(row - opp_goal_row) for row, _ in opp)
+    
+    # Simple positional score
+    positional_score = len(me) - (my_pieces_distance - opp_pieces_distance)
+    
+    # Winning in current state or ending game advantage
+    if any(row == my_goal_row for row, _ in me):
+        return 1000  # reaching goal is the best possible state
+    if len(opp) == 0:
+        return 900   # if opponent has no pieces left, it's a decisive win
+    if my_piece_count > opp_piece_count:
+        return positional_score + 100  # favor states with more pieces
+    elif my_piece_count < opp_piece_count:
+        return positional_score - 100  # penalize if losing material
+
+    return positional_score
+
+# Returns all legal moves for a given color
+def get_all_moves(positions: List[Tuple[int, int]], opp_positions: List[Tuple[int, int]], color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    move_list = []
+    opponent_set = set(opp_positions)
+    
+    for (r, c) in positions:
+        for dr, dc in MOVE_TYPES[color]:
+            nr, nc = r + dr, c + dc
+            
+            # Check if move is within bounds
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                # If to an empty square, it's a move
+                if (nr, nc) not in opponent_set and (nr, nc) not in positions:
+                    move_list.append(((r, c), (nr, nc)))
+                    
+                # If to an opponent square, it's a capture
+                elif (nr, nc) in opponent_set:
+                    move_list.append(((r, c), (nr, nc)))
+                    
+    return move_list
+
+# Minimax with alpha-beta pruning
+def minimax(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str, depth: int, alpha: float, beta: float, maximizing: bool) -> Tuple[int, Tuple[Tuple[int, int], Tuple[int, int]]]:
+    # Terminal conditions
+    if depth == 0:
+        return evaluate_position(me, opp, color), None
+    
+    moves = get_all_moves(me, opp, color)
+    
+    best_move = None
+    if maximizing:
+        max_score = -float('inf')
+        for move in moves:
+            ((r1, c1), (r2, c2)) = move
+
+            # Generate new positions after move
+            new_me = [pos for pos in me if pos != (r1, c1)] + [(r2, c2)]
+            new_opp = [(r, c) for (r, c) in opp if (r, c) != (r2, c2)]
+            
+            # Opponent’s turn
+            opponent_score, _ = minimax(new_opp, new_me, color, depth - 1, alpha, beta, False)
+            
+            if opponent_score > max_score:
+                max_score = opponent_score
+                best_move = move
+                alpha = max(alpha, max_score)
+                if alpha >= beta:
+                    break
+        return max_score, best_move
+    else:
+        min_score = float('inf')
+        for move in moves:
+            ((r1, c1), (r2, c2)) = move
+
+            new_opp = [pos for pos in opp if pos != (r1, c1)] + [(r2, c2)]
+            new_me = [(r, c) for (r, c) in me if (r, c) != (r2, c2)]
+            
+            # My turn again
+            my_score, _ = minimax(new_me, new_opp, color, depth - 1, alpha, beta, True)
+            
+            if my_score < min_score:
+                min_score = my_score
+                best_move = move
+                beta = min(beta, my_score)
+                if alpha >= beta:
+                    break
+        return min_score, best_move
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Run minimax to find the optimal move
+    _, best_move = minimax(me, opp, color, depth=3, alpha=-float('inf'), beta=float('inf'), maximizing=True)
+    
+    if best_move:
+        return best_move
+    else:
+        # Fallback to a random legal move if none found
+        all_moves = get_all_moves(me, opp, color)
+        if all_moves:
+            return all_moves[0]
+        else:
+            # This should never happen if current position is valid
+            return None  # Placeholder (should not reach here)
+```
+</code>

@@ -1,0 +1,87 @@
+The strategy for this policy is based on the mathematical solution for Misère Nim.
+1.  **Compute Metrics**: Calculate the binary XOR sum (nim-sum) of all piles and count the number of "large" piles (piles with size > 1).
+2.  **Losing Position ($S = 0$)**: If the nim-sum is zero, the position is theoretically losing against optimal play. We make a move that maximizes the opponent's difficulty. If there are no large piles, we take 1 object from a pile of size 1 (following the forced end-game progression). If there are large piles, we take 1 object from the largest pile.
+3.  **Winning Position ($S \neq 0$)**: We calculate the standard Nim move to make the nim-sum zero.
+    - **Standard Move**: Reduce a pile $p_i$ to $p_i \oplus S$.
+    - **Misère Correction**: If we are in a state with exactly one large pile and the standard move would reduce that pile to size 0 or 1 (thereby eliminating the last large pile), we must adjust the move. In this specific end-game transition, we want to leave the opponent with an **odd** number of piles of size 1.
+    - If the current count of size-1 piles is even, we reduce the large pile to size 1.
+    - If the current count of size-1 piles is odd, we remove the large pile entirely (reduce to 0).
+
+<code>
+import sys
+
+def policy(piles: list[int]) -> str:
+    # Calculate the nim-sum (XOR sum) of all piles
+    s = piles[0] ^ piles[1] ^ piles[2] ^ piles[3]
+    
+    # Count piles that are strictly greater than 1 ("large" piles)
+    # and piles exactly equal to 1.
+    large_piles_count = 0
+    ones_count = 0
+    for p in piles:
+        if p > 1:
+            large_piles_count += 1
+        elif p == 1:
+            ones_count += 1
+            
+    # Case 1: Losing position (nim-sum is 0)
+    if s == 0:
+        # We must make a move. If we are in the 1s end-game, take 1.
+        if large_piles_count == 0:
+            for i, p in enumerate(piles):
+                if p == 1:
+                    return f"{i},1"
+        # Otherwise, take 1 from the largest pile to extend the game
+        max_idx = -1
+        max_val = -1
+        for i, p in enumerate(piles):
+            if p > max_val:
+                max_val = p
+                max_idx = i
+        if max_idx != -1:
+            return f"{max_idx},1"
+        # Fallback if all empty (should not happen in valid game)
+        return "0,0"
+
+    # Case 2: Winning position (nim-sum is non-zero)
+    # We look for a move that makes the nim-sum zero.
+    for i, p in enumerate(piles):
+        target = p ^ s
+        if target < p:
+            take = p - target
+            
+            # Misère Nim Exception Logic:
+            # If we are about to remove the last "large" pile (transition to end-game),
+            # we check parity of the resulting piles of size 1.
+            # This applies if:
+            # 1. There is currently exactly 1 large pile.
+            # 2. The current pile is that large pile.
+            # 3. The target size is 0 or 1 (so it won't be large anymore).
+            
+            if large_piles_count == 1 and p > 1 and target <= 1:
+                # We want to leave an ODD number of piles of size 1.
+                # The current number of size-1 piles is `ones_count`.
+                # Our move will either result in this pile being 0 or 1.
+                
+                if ones_count % 2 == 0:
+                    # Even number of 1s currently. 
+                    # We want odd. We can achieve this by leaving the current pile as 1.
+                    # This adds one to the count of 1s.
+                    # Move: take (p - 1).
+                    take = p - 1
+                else:
+                    # Odd number of 1s currently.
+                    # We want odd. We can achieve this by removing the current pile entirely.
+                    # The count of 1s remains `ones_count`.
+                    # Move: take p.
+                    take = p
+            
+            return f"{i},{take}"
+
+    # Fallback (should theoretically be unreachable if s != 0)
+    for i, p in enumerate(piles):
+        if p > 0:
+            return f"{i},1"
+            
+    return "0,0"
+</code>

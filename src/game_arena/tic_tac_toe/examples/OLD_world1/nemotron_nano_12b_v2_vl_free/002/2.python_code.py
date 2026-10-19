@@ -1,0 +1,48 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def has_won(b, p):
+        # Check rows
+        for row in b:
+            if all(cell == p for cell in row):
+                return True
+        # Check columns
+        for col in range(3):
+            if all(b[row][col] == p for row in range(3)):
+                return True
+        # Check diagonals
+        if all(b[i][i] == p for i in range(3)):
+            return True
+        if all(b[i][2 - i] == p for i in range(3)):
+            return True
+        return False
+
+    # Check for immediate winning move
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                new_board = [row.copy() for row in board]
+                new_board[i][j] = 1
+                if has_won(new_board, 1):
+                    return (i, j)
+    
+    # Check to block opponent's winning move
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                new_board = [row.copy() for row in board]
+                new_board[i][j] = -1
+                if has_won(new_board, -1):
+                    return (i, j)
+    
+    # Otherwise, follow priority order (center, corners, edges)
+    priority = [
+        (1, 1),  # Center
+        (0, 0), (0, 2), (2, 0), (2, 2),  # Corners
+        (0, 1), (1, 0), (1, 2), (2, 1)   # Edges
+    ]
+    for i, j in priority:
+        if board[i][j] == 0:
+            return (i, j)
+    
+    # Fallback (should never be reached)
+    return (0, 0)

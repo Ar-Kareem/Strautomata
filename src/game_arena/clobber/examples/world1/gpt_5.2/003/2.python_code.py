@@ -1,0 +1,286 @@
+
+import time
+from typing import List, Tuple, Dict, Optional
+
+# Board: 5 rows x 6 cols = 30 cells, row-major index = r*6 + c
+R, C, N = 5, 6, 30
+
+INF = 10**9
+
+# Precompute neighbors: for each idx, store (dir_char, neighbor_idx) for 4 orthogonal directions
+_NEI: List[List[Tuple[str, int]]] = [[] for _ in range(N)]
+for r in range(R):
+    for c in range(C):
+        i = r * C + c
+        if r > 0:
+            _NEI[i].append(("U", (r - 1) * C + c))
+        if c < C - 1:
+            _NEI[i].append(("R", r * C + (c + 1)))
+        if r < R - 1:
+            _NEI[i].append(("D", (r + 1) * C + c))
+        if c > 0:
+            _NEI[i].append(("L", r * C + (c - 1)))
+
+# Transposition table entry:
+# (depth, flag, value, best_move)
+# flag: 0 exact, -1 upperbound, +1 lowerbound
+TTEntry = Tuple[int, int, int, Optional[Tuple[int, int, str]]]
+_TT: Dict[Tuple[int, int], TTEntry] = {}
+
+# Simple killer move storage by depth (improves ordering)
+_KILLER1: Dict[int, Tuple[int, int, str]] = {}
+_KILLER2: Dict[int, Tuple[int, int, str]] = {}
+
+
+def _popcount(x: int) -> int:
+    return x.bit_count()
+
+
+def _to_bitboards(you: List[int], opp: List[int]) -> Tuple[int, int]:
+    # Expect 30-length lists or 5x6 flattened; arena says "5x6 arrays" but passed as list[int].
+    # We handle both nested and flat.
+    if len(you) == R and isinstance(you[0], (list, tuple)):
+        # nested
+        y = 0
+        o = 0
+        for r in range(R):
+            for c in range(C):
+                idx = r * C + c
+                if you[r][c]:
+                    y |= 1 << idx
+                if opp[r][c]:
+                    o |= 1 << idx
+        return y, o
+    # flat
+    y = 0
+    o = 0
+    for idx in range(N):
+        if you[idx]:
+            y |= 1 << idx
+        if opp[idx]:
+            o |= 1 << idx
+    return y, o
+
+
+def _gen_moves(y: int, o: int) -> List[Tuple[int, int, str]]:
+    # Returns list of (src_idx, dst_idx, dir_char)
+    moves: List[Tuple[int, int, str]] = []
+    yy = y
+    while yy:
+        lsb = yy & -yy
+        src = (lsb.bit_length() - 1)
+        for dch, nb in _NEI[src]:
+            if (o >> nb) & 1:
+                moves.append((src, nb, dch))
+        yy ^= lsb
+    return moves
+
+
+def _apply_move(y: int, o: int, mv: Tuple[int, int, str]) -> Tuple[int, int]:
+    src, dst, _ = mv
+    srcb = 1 << src
+    dstb = 1 << dst
+    # move onto opponent piece at dst, capturing it
+    y2 = (y ^ srcb) | dstb
+    o2 = o ^ dstb
+    return y2, o2
+
+
+def _mobility(y: int, o: int) -> int:
+    # Count capture moves quickly
+    cnt = 0
+    yy = y
+    while yy:
+        lsb = yy & -yy
+        src = (lsb.bit_length() - 1)
+        for _, nb in _NEI[src]:
+            if (o >> nb) & 1:
+                cnt += 1
+        yy ^= lsb
+    return cnt
+
+
+def _pressure(y: int, o: int) -> int:
+    # Counts adjacent enemy contacts (more contact can be good/bad; used lightly)
+    # Here used as slight bonus: having options/contact is generally good.
+    p = 0
+    yy = y
+    while yy:
+        lsb = yy & -yy
+        src = (lsb.bit_length() - 1)
+        for _, nb in _NEI[src]:
+            p += (o >> nb) & 1
+        yy ^= lsb
+    return p
+
+
+def _evaluate(y: int, o: int) -> int:
+    mym = _mobility(y, o)
+    if mym == 0:
+        return -INF + 1  # losing terminal for side to move
+    oppm = _mobility(o, y)
+
+    # Mobility is the main driver in Clobber; small extras stabilize choices.
+    score = 0
+    score += 7 * (mym - oppm)
+    score += 2 * (_popcount(y) - _popcount(o))
+    score += 1 * (_pressure(y, o) - _pressure(o, y))
+    return score
+
+
+def _order_moves(y: int, o: int, moves: List[Tuple[int, int, str]],
+                 tt_best: Optional[Tuple[int, int, str]],
+                 depth: int) -> List[Tuple[int, int, str]]:
+    # Move ordering:
+    # 1) TT best
+    # 2) Killer moves
+    # 3) Immediate mobility-reduction heuristic
+    k1 = _KILLER1.get(depth)
+    k2 = _KILLER2.get(depth)
+
+    def key(mv: Tuple[int, int, str]) -> int:
+        bonus = 0
+        if tt_best is not None and mv == tt_best:
+            bonus += 10_000_000
+        if k1 is not None and mv == k1:
+            bonus += 2_000_000
+        elif k2 is not None and mv == k2:
+            bonus += 1_000_000
+
+        # Heuristic: prefer moves that reduce opponent mobility after the swap.
+        y2, o2 = _apply_move(y, o, mv)
+        # Next to move will be opponent with position (o2, y2)
+        opp_mob_after = _mobility(o2, y2)
+        my_mob_after = _mobility(y2, o2)
+        bonus += (50 * (20 - opp_mob_after))  # reduce opponent moves
+        bonus += (10 * my_mob_after)          # keep our own options
+        return bonus
+
+    moves.sort(key=key, reverse=True)
+    return moves
+
+
+def _negamax(y: int, o: int, depth: int, alpha: int, beta: int,
+             end_time: float) -> Tuple[int, Optional[Tuple[int, int, str]]]:
+    # Time check
+    if time.perf_counter() >= end_time:
+        return _evaluate(y, o), None
+
+    key = (y, o)
+    tt = _TT.get(key)
+    if tt is not None:
+        tt_depth, flag, val, best_mv = tt
+        if tt_depth >= depth:
+            if flag == 0:
+                return val, best_mv
+            if flag == -1 and val <= alpha:
+                return val, best_mv
+            if flag == 1 and val >= beta:
+                return val, best_mv
+
+    if depth <= 0:
+        return _evaluate(y, o), None
+
+    moves = _gen_moves(y, o)
+    if not moves:
+        return -INF + 1, None
+
+    # Immediate win check at node (cheap and helpful)
+    for mv in moves:
+        y2, o2 = _apply_move(y, o, mv)
+        if _mobility(o2, y2) == 0:
+            return INF - 1, mv
+
+    tt_best = tt[3] if tt is not None else None
+    moves = _order_moves(y, o, moves, tt_best, depth)
+
+    best_move: Optional[Tuple[int, int, str]] = None
+    orig_alpha = alpha
+    best_val = -INF
+
+    for mv in moves:
+        if time.perf_counter() >= end_time:
+            break
+
+        y2, o2 = _apply_move(y, o, mv)
+        # swap sides for negamax
+        val, _ = _negamax(o2, y2, depth - 1, -beta, -alpha, end_time)
+        val = -val
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+
+        if best_val > alpha:
+            alpha = best_val
+        if alpha >= beta:
+            # store killer
+            if _KILLER1.get(depth) != mv:
+                _KILLER2[depth] = _KILLER1.get(depth)
+                _KILLER1[depth] = mv
+            break
+
+    # Store TT
+    flag = 0
+    store_val = best_val
+    if best_val <= orig_alpha:
+        flag = -1  # upperbound
+    elif best_val >= beta:
+        flag = 1   # lowerbound
+    else:
+        flag = 0   # exact
+    _TT[key] = (depth, flag, store_val, best_move)
+
+    return best_val, best_move
+
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    y, o = _to_bitboards(you, opponent)
+    moves = _gen_moves(y, o)
+
+    # If no legal moves exist, the game is already lost; return something deterministic.
+    # (Arena should not request a move in terminal positions.)
+    if not moves:
+        return "0,0,U"
+
+    # 1) Play immediate winning move if available
+    for mv in moves:
+        y2, o2 = _apply_move(y, o, mv)
+        if _mobility(o2, y2) == 0:
+            src, _, dch = mv
+            r, c = divmod(src, C)
+            return f"{r},{c},{dch}"
+
+    # 2) Iterative deepening alpha-beta within time budget
+    start = time.perf_counter()
+    # Slightly under 1s to be safe in arena overhead
+    end_time = start + 0.93
+
+    best_move = moves[0]
+    best_val = -INF
+
+    # Small opening ordering to stabilize before search
+    moves = _order_moves(y, o, moves, None, depth=1)
+    best_move = moves[0]
+
+    # Iterative deepening
+    depth = 1
+    while True:
+        if time.perf_counter() >= end_time:
+            break
+        val, mv = _negamax(y, o, depth, -INF, INF, end_time)
+        if time.perf_counter() >= end_time:
+            break
+        if mv is not None:
+            best_move = mv
+            best_val = val
+        # If we found a forced win, can stop early
+        if best_val >= INF - 10:
+            break
+        depth += 1
+        if depth > 18:  # hard cap for safety
+            break
+
+    src, _, dch = best_move
+    r, c = divmod(src, C)
+    return f"{r},{c},{dch}"

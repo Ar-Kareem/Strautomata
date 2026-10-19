@@ -1,0 +1,231 @@
+
+import numpy as np
+import random
+from typing import List, Tuple
+
+# Hex board size
+N = 11
+
+# The six neighbours of a cell in the axial‑like representation described in the prompt
+NEIGHBORS = [(0, -1), (0, 1), (-1, 0), (1, 0), (-1, 1), (1, -1)]
+
+def label_clusters(board: np.ndarray, player: int) -> Tuple[np.ndarray, List[dict]]:
+    """
+    Returns (label, info) where
+    - label[i,j] is the cluster id of cell (i,j) for 'player', -1 if empty or not belonging to the player.
+    - info[id] is a dict with boolean flags 'touches_top', 'touches_bottom', 'touches_left', 'touches_right'.
+    """
+    label = np.full((N, N), -1, dtype=np.int8)
+    info = []  # list of dicts, index = cluster id
+    cid = 0
+    for i in range(N):
+        for j in range(N):
+            if board[i, j] == player and label[i, j] == -1:
+                # start new BFS for this cluster
+                stack = [(i, j)]
+                label[i, j] = cid
+                touches_top = (i == 0)
+                touches_bottom = (i == N - 1)
+                touches_left = (j == 0)
+                touches_right = (j == N - 1)
+                while stack:
+                    x, y = stack.pop()
+                    for dx, dy in NEIGHBORS:
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < N and 0 <= ny < N and board[nx, ny] == player and label[nx, ny] == -1:
+                            label[nx, ny] = cid
+                            if nx == 0:
+                                touches_top = True
+                            if nx == N - 1:
+                                touches_bottom = True
+                            if ny == 0:
+                                touches_left = True
+                            if ny == N - 1:
+                                touches_right = True
+                            stack.append((nx, ny))
+                info.append({
+                    'touches_top': touches_top,
+                    'touches_bottom': touches_bottom,
+                    'touches_left': touches_left,
+                    'touches_right': touches_right
+                })
+                cid += 1
+    return label, info
+
+def has_win_after_move(board: np.ndarray, player: int, start_i: int, start_j: int) -> bool:
+    """
+    Assumes board[start_i, start_j] == player (the stone has already been placed).
+    Returns True iff the player now has a connecting path between its two opposite sides.
+    """
+    visited = np.zeros((N, N), dtype=bool)
+    stack = [(start_i, start_j)]
+    visited[start_i, start_j] = True
+    touches_top = (start_i == 0)
+    touches_bottom = (start_i == N - 1)
+    touches_left = (start_j == 0)
+    touches_right = (start_j == N - 1)
+    while stack:
+        x, y = stack.pop()
+        for dx, dy in NEIGHBORS:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < N and 0 <= ny < N and board[nx, ny] == player and not visited[nx, ny]:
+                visited[nx, ny] = True
+                if nx == 0:
+                    touches_top = True
+                if nx == N - 1:
+                    touches_bottom = True
+                if ny == 0:
+                    touches_left = True
+                if ny == N - 1:
+                    touches_right = True
+                stack.append((nx, ny))
+    if player == 1:  # Black connects top ↔ bottom
+        return touches_top and touches_bottom
+    else:            # White connects left ↔ right
+        return touches_left and touches_right
+
+def score_move(board: np.ndarray,
+               i: int, j: int,
+               our_val: int, opp_val: int,
+               our_label: np.ndarray, opp_label: np.ndarray,
+               our_info: List[dict], opp_info: List[dict]) -> float:
+    """
+    Heuristic score for playing at (i, j). The board is the current position (the move is NOT yet applied).
+    """
+    adj_our = 0
+    adj_opp = 0
+    neighbor_our_clusters = set()
+    neighbor_opp_clusters = set()
+    for dx, dy in NEIGHBORS:
+        nx, ny = i + dx, j + dy
+        if 0 <= nx < N and 0 <= ny < N:
+            v = board[nx, ny]
+            if v == our_val:
+                adj_our += 1
+                cid = our_label[nx, ny]
+                if cid != -1:
+                    neighbor_our_clusters.add(cid)
+            elif v == opp_val:
+                adj_opp += 1
+                cid = opp_label[nx, ny]
+                if cid != -1:
+                    neighbor_opp_clusters.add(cid)
+
+    # Centrality: prefer the centre (row≈5, col≈5)
+    centrality = -abs(i - (N // 2)) - abs(j - (N // 2))
+
+    # Merge potential: joining distinct neighbour clusters is valuable
+    merge_score = max(0, len(neighbor_our_clusters) - 1)
+
+    # Reach: does a neighbour cluster already touch one of our sides?
+    reach_score = 0
+    if our_val == 1:  # Black – top/bottom sides
+        for cid in neighbor_our_clusters:
+            inf = our_info[cid]
+            if inf['touches_top'] or inf['touches_bottom']:
+                reach_score += 1
+    else:            # White – left/right sides
+        for cid in neighbor_our_clusters:
+            inf = our_info[cid]
+            if inf['touches_left'] or inf['touches_right']:
+                reach_score += 1
+
+    # Threat: opponent cluster already touches both of its sides (one move away)
+    threat_score = 0
+    if opp_val == 1:  # Opponent is Black – top/bottom
+        for cid in neighbor_opp_clusters:
+            inf = opp_info[cid]
+            if inf['touches_top'] and inf['touches_bottom']:
+                threat_score += 2
+    else:            # Opponent is White – left/right
+        for cid in neighbor_opp_clusters:
+            inf = opp_info[cid]
+            if inf['touches_left'] and inf['touches_right']:
+                threat_score += 2
+
+    # Edge bonus: playing on the edge that blocks the opponent’s shortest direction
+    edge_bonus = 0
+    if our_val == 1:  # Black wants to block White’s left/right → left/right edges are good
+        if j == 0 or j == N - 1:
+            edge_bonus += 1
+    else:            # White wants to block Black’s top/bottom → top/bottom edges are good
+        if i == 0 or i == N - 1:
+            edge_bonus += 1
+
+    # Combine the components (weights tuned experimentally)
+    score = (2.0 * adj_our
+             - 1.0 * adj_opp
+             + 0.5 * centrality
+             + 3.0 * merge_score
+             + 5.0 * reach_score
+             + 1.0 * threat_score
+             + 1.0 * edge_bonus)
+    return score
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    # Map colours to board values
+    if color == 'b':
+        our_val, opp_val = 1, 2
+    else:
+        our_val, opp_val = 2, 1
+
+    # Initialise board
+    board = np.zeros((N, N), dtype=np.int8)
+    for (i, j) in me:
+        board[i, j] = our_val
+    for (i, j) in opp:
+        board[i, j] = opp_val
+
+    # List of empty cells
+    empty_cells = [(i, j) for i in range(N) for j in range(N) if board[i, j] == 0]
+    if not empty_cells:
+        return (0, 0)  # should never happen in a real game
+
+    # Pre‑compute cluster information for both players
+    our_label, our_info = label_clusters(board, our_val)
+    opp_label, opp_info = label_clusters(board, opp_val)
+
+    # 1. Immediate winning move for us
+    for (i, j) in empty_cells:
+        board[i, j] = our_val
+        if has_win_after_move(board, our_val, i, j):
+            board[i, j] = 0
+            return (i, j)
+        board[i, j] = 0
+
+    # 2. Immediate winning move for opponent – we must block
+    opponent_wins = []
+    for (i, j) in empty_cells:
+        board[i, j] = opp_val
+        if has_win_after_move(board, opp_val, i, j):
+            opponent_wins.append((i, j))
+        board[i, j] = 0
+
+    if opponent_wins:
+        # Choose the block with the best heuristic score
+        best_score = -1e9
+        best_moves = []
+        for (i, j) in opponent_wins:
+            s = score_move(board, i, j, our_val, opp_val,
+                           our_label, opp_label, our_info, opp_info)
+            if s > best_score:
+                best_score = s
+                best_moves = [(i, j)]
+            elif s == best_score:
+                best_moves.append((i, j))
+        return random.choice(best_moves)
+
+    # 3. General heuristic evaluation of all empty cells
+    best_score = -1e9
+    best_moves = []
+    for (i, j) in empty_cells:
+        s = score_move(board, i, j, our_val, opp_val,
+                       our_label, opp_label, our_info, opp_info)
+        if s > best_score:
+            best_score = s
+            best_moves = [(i, j)]
+        elif s == best_score:
+            best_moves.append((i, j))
+
+    # Random tie‑break
+    return random.choice(best_moves)

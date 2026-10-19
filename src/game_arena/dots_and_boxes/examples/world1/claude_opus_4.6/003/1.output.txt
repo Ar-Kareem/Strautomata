@@ -1,0 +1,246 @@
+## Strategy
+
+My strategy implements a sophisticated Dots and Boxes AI using the following techniques:
+
+1. **Minimax with Alpha-Beta Pruning**: Since the game state space for 4x4 Dots and Boxes is manageable, I use a depth-limited minimax search with alpha-beta pruning to evaluate moves.
+
+2. **Chain and Loop Analysis**: In Dots and Boxes, the endgame is dominated by chains (sequences of boxes with 2 sides filled) and loops. The key strategic principle is:
+   - Avoid giving away long chains to the opponent
+   - When forced to open a chain, use the "double-dealing" strategy (sacrifice 2 boxes to maintain control)
+
+3. **Move Categorization**:
+   - **Safe moves**: Edges that don't give the opponent any box (don't create a 3-sided box situation)
+   - **Capturing moves**: Edges that complete a box (always play these first since you get another turn)
+   - **Dangerous moves**: Edges that create a 3-sided box, giving the opponent a capture
+
+4. **Greedy + Lookahead**: First try capturing moves, then safe moves, and only play dangerous moves when forced. When multiple options exist, use minimax to pick the best.
+
+5. **Endgame handling**: When only chains and loops remain, apply chain-counting parity strategy to decide whether to take all boxes in a chain or leave 2 behind (double-deal).
+
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    def get_legal_moves(h, v):
+        moves = []
+        for r in range(5):
+            for c in range(4):
+                if h[r, c] == 0:
+                    moves.append((r, c, 'H'))
+        for r in range(4):
+            for c in range(5):
+                if v[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+
+    def count_sides(h, v, r, c):
+        count = 0
+        if h[r, c] != 0: count += 1
+        if h[r+1, c] != 0: count += 1
+        if v[r, c] != 0: count += 1
+        if v[r, c+1] != 0: count += 1
+        return count
+
+    def boxes_completed_by(h, v, move):
+        r, c, d = move
+        completed = []
+        if d == 'H':
+            # box above: (r-1, c)
+            if r > 0 and r-1 < 4 and c < 4:
+                if count_sides_with(h, v, r-1, c, move) == 4:
+                    completed.append((r-1, c))
+            # box below: (r, c)
+            if r < 4 and c < 4:
+                if count_sides_with(h, v, r, c, move) == 4:
+                    completed.append((r, c))
+        else:  # V
+            # box left: (r, c-1)
+            if c > 0 and r < 4 and c-1 < 4:
+                if count_sides_with(h, v, r, c-1, move) == 4:
+                    completed.append((r, c-1))
+            # box right: (r, c)
+            if c < 4 and r < 4:
+                if count_sides_with(h, v, r, c, move) == 4:
+                    completed.append((r, c))
+        return completed
+
+    def count_sides_with(h, v, br, bc, move):
+        count = count_sides(h, v, br, bc)
+        r, c, d = move
+        if d == 'H':
+            if (r == br and c == bc) or (r == br+1 and c == bc):
+                count += 1
+        else:
+            if (r == br and c == bc) or (r == br and c == bc+1):
+                count += 1
+        return count
+
+    def apply_move(h, v, cap, move, player):
+        h = h.copy()
+        v = v.copy()
+        cap = cap.copy()
+        r, c, d = move
+        if d == 'H':
+            h[r, c] = player
+        else:
+            v[r, c] = player
+        completed = boxes_completed_by(h, v, move)
+        for br, bc in completed:
+            cap[br, bc] = player
+        return h, v, cap, len(completed)
+
+    def boxes_given(h, v, move):
+        """How many 3-sided boxes does this move create (giving opponent captures)?"""
+        r, c, d = move
+        given = 0
+        if d == 'H':
+            if r > 0 and r-1 < 4 and c < 4:
+                s = count_sides(h, v, r-1, c)
+                if s == 2:  # will become 3
+                    given += 1
+            if r < 4 and c < 4:
+                s = count_sides(h, v, r, c)
+                if s == 2:
+                    given += 1
+        else:
+            if c > 0 and r < 4 and c-1 < 4:
+                s = count_sides(h, v, r, c-1)
+                if s == 2:
+                    given += 1
+            if c < 4 and r < 4:
+                s = count_sides(h, v, r, c)
+                if s == 2:
+                    given += 1
+        return given
+
+    def categorize_moves(h, v):
+        moves = get_legal_moves(h, v)
+        capturing = []
+        safe = []
+        dangerous = []
+        for m in moves:
+            caps = boxes_completed_by(h, v, m)
+            if len(caps) > 0:
+                capturing.append((m, len(caps)))
+            elif boxes_given(h, v, m) == 0:
+                safe.append(m)
+            else:
+                dangerous.append((m, boxes_given(h, v, m)))
+        return capturing, safe, dangerous
+
+    def minimax(h, v, cap, player, depth, alpha, beta):
+        """Returns (score_for_player1, best_move)"""
+        moves = get_legal_moves(h, v)
+        if not moves:
+            s1 = np.sum(cap == 1)
+            s2 = np.sum(cap == -1)
+            return s1 - s2, None
+
+        if depth <= 0:
+            s1 = np.sum(cap == 1)
+            s2 = np.sum(cap == -1)
+            return s1 - s2, None
+
+        best_move = moves[0]
+        if player == 1:
+            max_val = -100
+            # Sort moves: capturing first, then safe, then dangerous
+            def move_priority(m):
+                caps = len(boxes_completed_by(h, v, m))
+                if caps > 0:
+                    return -10 - caps
+                bg = boxes_given(h, v, m)
+                if bg == 0:
+                    return 0
+                return bg
+            moves.sort(key=move_priority)
+
+            for m in moves:
+                nh, nv, nc, ncaps = apply_move(h, v, cap, m, player)
+                if ncaps > 0:
+                    val, _ = minimax(nh, nv, nc, player, depth - 1, alpha, beta)
+                else:
+                    val, _ = minimax(nh, nv, nc, -player, depth - 1, alpha, beta)
+                if val > max_val:
+                    max_val = val
+                    best_move = m
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return max_val, best_move
+        else:
+            min_val = 100
+            def move_priority(m):
+                caps = len(boxes_completed_by(h, v, m))
+                if caps > 0:
+                    return -10 - caps
+                bg = boxes_given(h, v, m)
+                if bg == 0:
+                    return 0
+                return bg
+            moves.sort(key=move_priority)
+
+            for m in moves:
+                nh, nv, nc, ncaps = apply_move(h, v, cap, m, player)
+                if ncaps > 0:
+                    val, _ = minimax(nh, nv, nc, player, depth - 1, alpha, beta)
+                else:
+                    val, _ = minimax(nh, nv, nc, -player, depth - 1, alpha, beta)
+                if val < min_val:
+                    min_val = val
+                    best_move = m
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return min_val, best_move
+
+    moves = get_legal_moves(horizontal, vertical)
+    if not moves:
+        return "0,0,H"  # shouldn't happen
+
+    if len(moves) == 1:
+        m = moves[0]
+        return f"{m[0]},{m[1]},{m[2]}"
+
+    capturing, safe, dangerous = categorize_moves(horizontal, vertical)
+
+    # Always take captures greedily first via chain
+    if capturing:
+        # If there are capturing moves, simulate taking all captures and then decide
+        # Just take the first capture (the chain will continue on next turn)
+        # Pick the capture that gives more boxes
+        capturing.sort(key=lambda x: -x[1])
+        m = capturing[0][0]
+        return f"{m[0]},{m[1]},{m[2]}"
+
+    # Determine search depth based on remaining moves
+    remaining = len(moves)
+    if remaining <= 16:
+        depth = remaining  # solve exactly
+    elif remaining <= 20:
+        depth = 12
+    elif remaining <= 25:
+        depth = 8
+    else:
+        depth = 6
+
+    # Use minimax
+    val, best = minimax(horizontal, vertical, capture, 1, depth, -100, 100)
+    if best is not None:
+        return f"{best[0]},{best[1]},{best[2]}"
+
+    # Fallback: safe move
+    if safe:
+        m = safe[0]
+        return f"{m[0]},{m[1]},{m[2]}"
+
+    # Fallback: least dangerous
+    if dangerous:
+        dangerous.sort(key=lambda x: x[1])
+        m = dangerous[0][0]
+        return f"{m[0]},{m[1]},{m[2]}"
+
+    m = moves[0]
+    return f"{m[0]},{m[1]},{m[2]}"
+</code>

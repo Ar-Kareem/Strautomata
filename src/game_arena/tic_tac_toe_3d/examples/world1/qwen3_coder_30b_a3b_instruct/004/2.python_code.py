@@ -1,0 +1,102 @@
+
+import random
+import numpy as np
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Convert to numpy array for easier manipulation
+    board_np = np.array(board)
+    
+    # All possible lines (rows, columns, diagonals) in 3D
+    lines = []
+    
+    # Generate all possible lines
+    # Lines along x-axis (same y,z)
+    for y in range(3):
+        for z in range(3):
+            lines.append([(x, y, z) for x in range(3)])
+    
+    # Lines along y-axis (same x,z)
+    for x in range(3):
+        for z in range(3):
+            lines.append([(x, y, z) for y in range(3)])
+    
+    # Lines along z-axis (same x,y)
+    for x in range(3):
+        for y in range(3):
+            lines.append([(x, y, z) for z in range(3)])
+    
+    # Diagonal lines in each 3x3 face
+    # XY faces (z constant)
+    for z in range(3):
+        # Main diagonal
+        lines.append([(x, x, z) for x in range(3)])
+        # Anti-diagonal
+        lines.append([(x, 2-x, z) for x in range(3)])
+    
+    # XZ faces (y constant)
+    for y in range(3):
+        # Main diagonal
+        lines.append([(x, y, x) for x in range(3)])
+        # Anti-diagonal
+        lines.append([(x, y, 2-x) for x in range(3)])
+    
+    # YZ faces (x constant)
+    for x in range(3):
+        # Main diagonal
+        lines.append([(x, y, y) for y in range(3)])
+        # Anti-diagonal
+        lines.append([(x, y, 2-y) for y in range(3)])
+    
+    # Space diagonals (4 main ones)
+    # From (0,0,0) to (2,2,2)
+    lines.append([(i, i, i) for i in range(3)])
+    # From (0,0,2) to (2,2,0)
+    lines.append([(i, i, 2-i) for i in range(3)])
+    # From (0,2,0) to (2,0,2)
+    lines.append([(i, 2-i, i) for i in range(3)])
+    # From (0,2,2) to (2,0,0)
+    lines.append([(i, 2-i, 2-i) for i in range(3)])
+    
+    # Check if I can win
+    for line in lines:
+        values = [board_np[x][y][z] for x, y, z in line]
+        if values.count(1) == 2 and values.count(0) == 1:
+            # Find the empty spot
+            for i, (x, y, z) in enumerate(line):
+                if board_np[x][y][z] == 0:
+                    return (x, y, z)
+    
+    # Check if opponent can win and block
+    for line in lines:
+        values = [board_np[x][y][z] for x, y, z in line]
+        if values.count(-1) == 2 and values.count(0) == 1:
+            # Find the empty spot to block
+            for i, (x, y, z) in enumerate(line):
+                if board_np[x][y][z] == 0:
+                    return (x, y, z)
+    
+    # If no immediate win or block, try to take center
+    if board_np[1][1][1] == 0:
+        return (1, 1, 1)
+    
+    # Try corners
+    corners = [(0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]
+    available_corners = [pos for pos in corners if board_np[pos[0]][pos[1]][pos[2]] == 0]
+    if available_corners:
+        return random.choice(available_corners)
+    
+    # Try edges
+    edges = [(0,0,1), (0,1,0), (0,1,2), (0,2,1), (1,0,0), (1,0,2), (1,2,0), (1,2,2), (2,0,1), (2,1,0), (2,1,2), (2,2,1)]
+    available_edges = [pos for pos in edges if board_np[pos[0]][pos[1]][pos[2]] == 0]
+    if available_edges:
+        return random.choice(available_edges)
+    
+    # Fallback: pick any available position
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board_np[x][y][z] == 0:
+                    return (x, y, z)
+    
+    # This shouldn't happen in a valid game state
+    return (0, 0, 0)

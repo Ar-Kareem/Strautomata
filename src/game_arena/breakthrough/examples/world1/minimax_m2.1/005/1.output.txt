@@ -1,0 +1,251 @@
+# Strategy: Minimax Search with Alpha-Beta Pruning
+
+This policy uses a sophisticated game tree search with the following key features:
+
+1. **Minimax with Alpha-Beta Pruning**: Efficiently explores the game tree within time constraints
+2. **Multi-Factor Evaluation Function**: Considers material, advancement, mobility, central control, and safety
+3. **Dynamic Depth Adjustment**: Reduces search depth in endgame for faster computation
+4. **Threat Detection**: Prioritizes moves that avoid immediate capture or threaten opponent pieces
+
+The strategy balances aggressive advancement toward promotion with defensive considerations, while maintaining computational efficiency to fit within the 1-second time limit.
+
+<code>
+import random
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Breakthrough policy using minimax search with alpha-beta pruning.
+    """
+    
+    # Convert to sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Determine movement direction
+    direction = -1 if color == 'b' else 1  # black moves down (lower row), white moves up (higher row)
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(me, opp, direction)
+    
+    if not legal_moves:
+        # Shouldn't happen in normal play, but just in case
+        return ((0, 0), (0, 0))
+    
+    # Check for immediate winning moves (promotion)
+    for move in legal_moves:
+        from_pos, to_pos = move
+        if is_promotion(to_pos[0], color):
+            return move
+    
+    # Use minimax search with adaptive depth
+    best_move = None
+    best_value = float('-inf')
+    
+    # Adjust depth based on position complexity
+    total_pieces = len(me) + len(opp)
+    if total_pieces <= 6:
+        depth = 4
+    elif total_pieces <= 10:
+        depth = 3
+    else:
+        depth = 2
+    
+    for move in legal_moves:
+        # Simulate the move
+        new_me, new_opp = simulate_move(me, opp, move)
+        new_me_set = set(new_me)
+        new_opp_set = set(new_opp)
+        
+        # Evaluate the resulting position
+        value = minimax(new_me_set, new_opp_set, direction, depth-1, float('-inf'), float('inf'), False)
+        
+        # Add small random noise to break ties deterministically
+        value += random.random() * 0.01
+        
+        if value > best_value:
+            best_value = value
+            best_move = move
+    
+    return best_move
+
+
+def generate_legal_moves(pieces: List[Tuple[int, int]], opp_pieces: List[Tuple[int, int]], direction: int) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """
+    Generate all legal moves for the current player.
+    """
+    moves = []
+    opp_set = set(opp_pieces)
+    
+    for row, col in pieces:
+        # Move forward one square
+        new_row = row + direction
+        if 0 <= new_row < 8:
+            if (new_row, col) not in opp_set:
+                moves.append(((row, col), (new_row, col)))
+            
+            # Capture diagonally left
+            if col > 0 and (new_row, col-1) in opp_set:
+                moves.append(((row, col), (new_row, col-1)))
+            
+            # Capture diagonally right
+            if col < 7 and (new_row, col+1) in opp_set:
+                moves.append(((row, col), (new_row, col+1)))
+    
+    return moves
+
+
+def simulate_move(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], move: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """
+    Simulate a move and return the new board state.
+    """
+    from_pos, to_pos = move
+    new_me = [p for p in me if p != from_pos]
+    new_opp = [p for p in opp if p != to_pos]
+    new_me.append(to_pos)
+    return new_me, new_opp
+
+
+def is_promotion(row: int, color: str) -> bool:
+    """
+    Check if a move reaches the promotion row.
+    """
+    return (color == 'b' and row == 0) or (color == 'w' and row == 7)
+
+
+def minimax(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], direction: int, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    """
+    Minimax algorithm with alpha-beta pruning.
+    """
+    # Terminal conditions
+    if len(opp_set) == 0:
+        return 1000  # Win
+    
+    if len(me_set) == 0:
+        return -1000  # Loss
+    
+    if depth == 0:
+        return evaluate_position(me_set, opp_set, direction)
+    
+    # Generate legal moves
+    legal_moves = generate_legal_moves_list(list(me_set), list(opp_set), direction)
+    
+    if not legal_moves:
+        return -1000 if maximizing else 1000  # No moves available
+    
+    if maximizing:
+        max_eval = float('-inf')
+        for move in legal_moves:
+            new_me, new_opp = simulate_move_list(list(me_set), list(opp_set), move)
+            eval_score = minimax(set(new_me), set(new_opp), direction, depth-1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_me, new_opp = simulate_move_list(list(me_set), list(opp_set), move)
+            eval_score = minimax(set(new_me), set(new_opp), direction, depth-1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+
+def generate_legal_moves_list(pieces: List[Tuple[int, int]], opp_pieces: List[Tuple[int, int]], direction: int) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    """
+    Generate all legal moves for the current player.
+    """
+    moves = []
+    opp_set = set(opp_pieces)
+    
+    for row, col in pieces:
+        # Move forward one square
+        new_row = row + direction
+        if 0 <= new_row < 8:
+            if (new_row, col) not in opp_set:
+                moves.append(((row, col), (new_row, col)))
+            
+            # Capture diagonally left
+            if col > 0 and (new_row, col-1) in opp_set:
+                moves.append(((row, col), (new_row, col-1)))
+            
+            # Capture diagonally right
+            if col < 7 and (new_row, col+1) in opp_set:
+                moves.append(((row, col), (new_row, col+1)))
+    
+    return moves
+
+
+def simulate_move_list(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], move: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[List[Tuple[int, int]], List[Tuple[int, int]]]:
+    """
+    Simulate a move and return the new board state.
+    """
+    from_pos, to_pos = move
+    new_me = [p for p in me if p != from_pos]
+    new_opp = [p for p in opp if p != to_pos]
+    new_me.append(to_pos)
+    return new_me, new_opp
+
+
+def evaluate_position(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], direction: int) -> float:
+    """
+    Evaluate the current board position.
+    Returns a positive score if the position is favorable for the player to move.
+    """
+    score = 0.0
+    
+    # Material count (most important)
+    score += len(me_set) - len(opp_set)
+    
+    # Check if opponent has no pieces (win)
+    if len(opp_set) == 0:
+        return 1000
+    
+    # Check if we have no pieces (loss)
+    if len(me_set) == 0:
+        return -1000
+    
+    # Piece advancement
+    for row, col in me_set:
+        forward_row = row if direction == 1 else 7 - row
+        score += 0.1 * forward_row
+        
+        # Bonus for central squares
+        if 2 <= col <= 5:
+            score += 0.2
+            
+        # Safety check - penalize pieces that can be captured
+        if not is_safe(row, col, me_set, opp_set, direction):
+            score -= 0.3
+    
+    # Opponent piece vulnerability
+    for row, col in opp_set:
+        backward_row = row if direction == -1 else 7 - row
+        if is_safe(row, col, opp_set, me_set, -direction):
+            score -= 0.1 * backward_row
+    
+    return score
+
+
+def is_safe(row: int, col: int, me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], direction: int) -> bool:
+    """
+    Check if a piece is safe from immediate capture.
+    """
+    # Check if opponent can capture this piece
+    # Opponent would move from opposite direction
+    # So our piece is safe if opponent pieces can't move diagonally into our position
+    
+    # Our piece is at (row, col)
+    # Opponent would try to move from (row - direction, col-1) or (row - direction, col+1)
+    for dc in [-1, 1]:
+        check_row = row - direction
+        check_col = col + dc
+        if 0 <= check_row < 8 and 0 <= check_col < 8:
+            if (check_row, check_col) in opp_set:
+                return False
+    return True
+</code>

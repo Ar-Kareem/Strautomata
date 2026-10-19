@@ -1,0 +1,334 @@
+I'll design a strategic Backgammon policy with multiple considerations: safety, aggression, and positional play. The strategy will prioritize:
+1. Getting checkers off the bar first
+2. Making safe moves that don't leave blots when possible
+3. Hitting opponent blots when advantageous
+4. Bearing off efficiently when in home board
+5. Building primes and controlling key points
+6. Running with back checkers when appropriate
+
+<code>
+import random
+import copy
+from typing import List, Tuple, Dict
+
+def policy(state: dict) -> str:
+    """
+    Strategic Backgammon policy that balances safety, aggression, and position.
+    """
+    # Generate all legal moves
+    legal_moves = generate_all_legal_moves(state)
+    
+    if not legal_moves:
+        return "H:P,P"
+    
+    # Evaluate each move and choose the best one
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(state, move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+
+def generate_all_legal_moves(state: dict) -> List[str]:
+    """
+    Generate all legal moves for the current state.
+    Returns list of move strings in format "ORDER:FROM1,FROM2"
+    """
+    dice = state['dice']
+    if not dice:
+        return ["H:P,P"]
+    
+    moves = []
+    
+    # Handle doubles differently (can use same die multiple times)
+    if len(dice) == 2 and dice[0] == dice[1]:
+        # For doubles, we have 4 moves of the same value
+        # Simplified: we'll just generate moves using two dice
+        die = dice[0]
+        all_sequences = generate_move_sequences(state, [die, die])
+        moves.extend(format_moves(all_sequences, die, die))
+    else:
+        # Normal roll
+        if len(dice) == 1:
+            die1 = die2 = dice[0]
+        else:
+            die1, die2 = sorted(dice, reverse=True)  # Higher first
+        
+        # Generate moves for both orders: H (higher first) and L (lower first)
+        if len(dice) == 2:
+            # Order H: higher die first
+            sequences_h = generate_move_sequences(state, [die1, die2])
+            moves.extend(format_moves(sequences_h, die1, die2))
+            
+            # Order L: lower die first (swap if dice are different)
+            if die1 != die2:
+                sequences_l = generate_move_sequences(state, [die2, die1])
+                moves.extend(format_moves(sequences_l, die2, die1))
+        else:
+            # Single die
+            sequences = generate_move_sequences(state, [die1])
+            moves.extend(format_moves(sequences, die1, die1))
+    
+    # Filter to only legal moves (engine will validate, but we try to be correct)
+    return moves
+
+
+def generate_move_sequences(state: dict, dice: List[int]) -> List[List[str]]:
+    """
+    Generate all possible move sequences for given dice order.
+    Returns list of sequences like [from1, from2]
+    """
+    sequences = []
+    
+    if not dice:
+        return [['P', 'P']]
+    
+    # If on bar, must enter first
+    if state['my_bar'] > 0:
+        first_moves = get_bar_moves(state, dice[0])
+        if not first_moves:
+            return [['P', 'P']]
+        
+        for from1 in first_moves:
+            if len(dice) == 1:
+                sequences.append([from1, 'P'])
+            else:
+                # Apply first move
+                new_state = apply_move(state, from1, dice[0])
+                second_moves = get_available_moves(new_state, dice[1])
+                if not second_moves:
+                    sequences.append([from1, 'P'])
+                else:
+                    for from2 in second_moves:
+                        sequences.append([from1, from2])
+    else:
+        # Normal moves
+        first_moves = get_available_moves(state, dice[0])
+        if not first_moves:
+            if len(dice) == 1:
+                return [['P', 'P']]
+            # Try second die first if we have two dice
+            if len(dice) > 1:
+                first_moves2 = get_available_moves(state, dice[1])
+                if not first_moves2:
+                    return [['P', 'P']]
+                for from1 in first_moves2:
+                    sequences.append([from1, 'P'])
+        
+        for from1 in first_moves:
+            if len(dice) == 1:
+                sequences.append([from1, 'P'])
+            else:
+                new_state = apply_move(state, from1, dice[0])
+                second_moves = get_available_moves(new_state, dice[1])
+                if not second_moves:
+                    sequences.append([from1, 'P'])
+                else:
+                    for from2 in second_moves:
+                        sequences.append([from1, from2])
+    
+    return sequences if sequences else [['P', 'P']]
+
+
+def get_bar_moves(state: dict, die: int) -> List[str]:
+    """Get possible moves from bar for given die."""
+    moves = []
+    target = die - 1  # Bar enters at opponent's home board (0-5)
+    
+    # Check if point is open (fewer than 2 opponent checkers)
+    if state['opp_pts'][target] < 2:
+        moves.append('B')
+    
+    return moves
+
+
+def get_available_moves(state: dict, die: int) -> List[str]:
+    """Get all possible from-points for a die when not on bar."""
+    moves = []
+    
+    # Check if we can bear off
+    can_bear_off = all(state['my_pts'][i] == 0 for i in range(0, 18))
+    
+    for point in range(24):
+        if state['my_pts'][point] > 0:
+            target = point - die
+            
+            if target >= 0:
+                # Normal move
+                if state['opp_pts'][target] < 2:
+                    moves.append(f'A{point}')
+            elif can_bear_off and point >= 18:
+                # Bearing off
+                moves.append(f'A{point}')
+    
+    return moves
+
+
+def apply_move(state: dict, from_point: str, die: int) -> dict:
+    """
+    Apply a move to create a new state (simplified, doesn't handle all rules perfectly).
+    Used for move generation only.
+    """
+    new_state = copy.deepcopy(state)
+    
+    if from_point == 'B':
+        target = die - 1
+        new_state['my_bar'] -= 1
+        if new_state['opp_pts'][target] == 1:  # Hit
+            new_state['opp_pts'][target] = 0
+            new_state['opp_bar'] += 1
+        new_state['my_pts'][target] += 1
+    elif from_point.startswith('A'):
+        point = int(from_point[1:])
+        target = point - die
+        
+        new_state['my_pts'][point] -= 1
+        
+        if target >= 0:
+            if new_state['opp_pts'][target] == 1:  # Hit
+                new_state['opp_pts'][target] = 0
+                new_state['opp_bar'] += 1
+            new_state['my_pts'][target] += 1
+        else:
+            # Bear off
+            new_state['my_off'] += 1
+    
+    return new_state
+
+
+def format_moves(sequences: List[List[str]], die1: int, die2: int) -> List[str]:
+    """Format move sequences into proper move strings."""
+    moves = []
+    
+    for seq in sequences:
+        if len(seq) == 1:
+            seq.append('P')
+        
+        # Determine order
+        if die1 >= die2:
+            order = 'H'
+        else:
+            order = 'L'
+        
+        moves.append(f"{order}:{seq[0]},{seq[1]}")
+    
+    return moves
+
+
+def evaluate_move(state: dict, move: str) -> float:
+    """
+    Evaluate a move with multiple strategic factors.
+    Higher score is better.
+    """
+    if move.endswith(",P") or "P,P" in move:
+        return -1000  # Avoid passing if possible
+    
+    # Parse move
+    order, moves_str = move.split(':')
+    from1, from2 = moves_str.split(',')
+    
+    # Simulate the move
+    temp_state = copy.deepcopy(state)
+    dice = sorted(state['dice'], reverse=True)
+    
+    if order == 'H':
+        die1, die2 = dice[0], dice[1] if len(dice) > 1 else dice[0]
+    else:
+        die1, die2 = dice[-1], dice[0] if len(dice) > 1 else dice[0]
+    
+    # Apply first move
+    if from1 != 'P':
+        temp_state = apply_move(temp_state, from1, die1)
+    
+    # Apply second move
+    if from2 != 'P' and len(dice) > 1:
+        temp_state = apply_move(temp_state, from2, die2)
+    
+    score = 0.0
+    
+    # 1. Safety: minimize blots (single checkers)
+    my_blots = sum(1 for i in range(24) if temp_state['my_pts'][i] == 1)
+    opp_blots = sum(1 for i in range(24) if temp_state['opp_pts'][i] == 1)
+    score -= my_blots * 50  # Penalize leaving blots
+    score += opp_blots * 30  # Reward hitting blots
+    
+    # 2. Progress: move toward home board
+    my_total_distance = 0
+    my_checkers = 0
+    for i in range(24):
+        if temp_state['my_pts'][i] > 0:
+            # Distance to bear off (0-23 scale, lower is better)
+            distance = i  # We move from high to low (23->0)
+            my_total_distance += distance * temp_state['my_pts'][i]
+            my_checkers += temp_state['my_pts'][i]
+    
+    if my_checkers > 0:
+        avg_distance = my_total_distance / my_checkers
+        score -= avg_distance * 10  # Lower average distance is better
+    
+    # 3. Block opponent's progress
+    opp_total_distance = 0
+    opp_checkers = 0
+    for i in range(24):
+        if temp_state['opp_pts'][i] > 0:
+            # Opponent moves from low to high (0->23)
+            distance = 23 - i
+            opp_total_distance += distance * temp_state['opp_pts'][i]
+            opp_checkers += temp_state['opp_pts'][i]
+    
+    if opp_checkers > 0:
+        avg_opp_distance = opp_total_distance / opp_checkers
+        score += avg_opp_distance * 8  # Keep opponent far
+    
+    # 4. Control key points (build primes)
+    for i in range(24):
+        if temp_state['my_pts'][i] >= 2:
+            # Bonus for points with 2+ checkers
+            score += 15
+            if i >= 18:  # Home board points extra valuable
+                score += 20
+            if temp_state['opp_pts'][23-i] > 0:  # Opposite point
+                score += 10
+    
+    # 5. Get off the bar
+    if temp_state['my_bar'] < state['my_bar']:
+        score += 100  # Bonus for getting off bar
+    
+    # 6. Hit opponent
+    if temp_state['opp_bar'] > state['opp_bar']:
+        score += 80  # Bonus for hitting
+    
+    # 7. Bear off
+    if temp_state['my_off'] > state['my_off']:
+        score += 120  # Bonus for bearing off
+    
+    # 8. Avoid being hit (points with only 1 checker near opponent)
+    for i in range(24):
+        if temp_state['my_pts'][i] == 1:
+            # Check if opponent can hit from nearby points
+            for die in range(1, 7):
+                source = i + die
+                if source < 24 and temp_state['opp_pts'][source] > 0:
+                    score -= 40  # Penalty for vulnerable blot
+    
+    # 9. Anchor in opponent's home board (good defense)
+    for i in range(0, 6):  # Opponent's home board
+        if temp_state['my_pts'][i] >= 2:
+            score += 60  # Anchor bonus
+    
+    # 10. Run with back checkers
+    back_checkers = sum(temp_state['my_pts'][i] for i in range(0, 12))
+    if back_checkers > 0 and temp_state['my_off'] > 8:
+        # If we have borne off many, run with back checkers
+        score += back_checkers * 5
+    
+    # Add small randomness to break ties
+    score += random.random() * 0.1
+    
+    return score
+</code>

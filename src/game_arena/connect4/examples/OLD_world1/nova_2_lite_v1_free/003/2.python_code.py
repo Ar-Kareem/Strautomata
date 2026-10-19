@@ -1,0 +1,90 @@
+
+import copy
+
+def policy(board: list[list[int]]) -> int:
+    rows = len(board)
+    cols = len(board[0]) if rows > 0 else 0
+    
+    def check_win(b, player):
+        # Check horizontal
+        for r in range(rows):
+            for c in range(cols - 3):
+                if all(b[r][c + i] == player for i in range(4)):
+                    return True
+        # Check vertical
+        for c in range(cols):
+            for r in range(rows - 3):
+                if all(b[r + i][c] == player for i in range(4)):
+                    return True
+        # Check diagonal down-right
+        for r in range(rows - 3):
+            for c in range(cols - 3):
+                if all(b[r + i][c + i] == player for i in range(4)):
+                    return True
+        # Check diagonal down-left
+        for r in range(rows - 3):
+            for c in range(3, cols):
+                if all(b[r + i][c - i] == player for i in range(4)):
+                    return True
+        return False
+
+    valid_cols = [c for c in range(cols) if board[rows - 1][c] == 0]
+    if not valid_cols:
+        return -1  # Should not happen as per problem statement
+
+    # Check for immediate win
+    for col in valid_cols:
+        new_board = [row[:] for row in board]
+        row = rows - 1
+        while row >= 0 and new_board[row][col] != 0:
+            row -= 1
+        if row < 0:
+            continue
+        new_board[row][col] = 1
+        if check_win(new_board, 1):
+            return col
+
+    # Block opponent's immediate win
+    opponent_wins = []
+    for col in range(cols):
+        if board[rows - 1][col] == 0:
+            new_board = [row[:] for row in board]
+            row = rows - 1
+            while row >= 0 and new_board[row][col] != 0:
+                row -= 1
+            if row < 0:
+                continue
+            new_board[row][col] = -1
+            if check_win(new_board, -1):
+                opponent_wins.append(col)
+
+    if opponent_wins:
+        for col in valid_cols:
+            new_board = [row[:] for row in board]
+            row = rows - 1
+            while row >= 0 and new_board[row][col] != 0:
+                row -= 1
+            if row < 0:
+                continue
+            new_board[row][col] = 1
+            can_opp_win = False
+            for opp_col in range(cols):
+                if new_board[rows - 1][opp_col] == 0:
+                    temp = [r[:] for r in new_board]
+                    r_opp = rows - 1
+                    while r_opp >= 0 and temp[r_opp][opp_col] != 0:
+                        r_opp -= 1
+                    if r_opp < 0:
+                        continue
+                    temp[r_opp][opp_col] = -1
+                    if check_win(temp, -1):
+                        can_opp_win = True
+                        break
+            if not can_opp_win:
+                return col
+
+    # Fallback: prefer center columns
+    for c in sorted(valid_cols, key=lambda x: abs(x - cols // 2)):
+        return c
+
+    return valid_cols[0] if valid_cols else -1

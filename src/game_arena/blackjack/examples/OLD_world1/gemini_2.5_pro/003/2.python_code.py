@@ -1,0 +1,122 @@
+
+"""
+This Python file implements a policy for a simplified Blackjack-like game.
+The AI's goal is to achieve a hand value as close as possible to a target
+score T without exceeding it.
+"""
+
+# The game is played with a single suit of 13 distinct cards.
+# Using a frozenset for efficient set operations.
+FULL_DECK = frozenset([
+    "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"
+])
+
+
+def _calculate_score(hand: list[str], target: int) -> int:
+    """
+    Calculates the score of a given hand according to the game rules.
+
+    - "2" through "10" have their face value.
+    - "J", "Q", "K" each have a value of 10.
+    - "A" is flexible: its value is 11 unless that would make the total
+      score exceed the target, in which case its value is 1.
+
+    This function computes the highest possible score for the hand, intelligently
+    choosing the value of Aces to avoid busting if possible.
+    """
+    score = 0
+    num_aces = 0
+    
+    for card in hand:
+        if card == "A":
+            num_aces += 1
+        elif card in ("J", "Q", "K"):
+            score += 10
+        else:
+            # This handles cards "2" through "10" by their face value.
+            score += int(card)
+
+    # Initially, assume all Aces contribute 11 to the score.
+    score += num_aces * 11
+
+    # If the score is over the target, convert Aces from 11 to 1 one by one
+    # until the score is no longer over the target.
+    while score > target and num_aces > 0:
+        score -= 10
+        num_aces -= 1
+        
+    return score
+
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Implements a policy for a simplified Blackjack-like game.
+
+    The policy decides whether to "HIT" or "STAY" based on an Expected
+    Value (EV) calculation. It compares the value of staying with the current
+    hand against the expected value of hitting one more card.
+
+    The "value" of a hand is determined by its closeness to the target score 'T'.
+    A non-busting score 's' has a value of -abs(T - s). A busting score has a
+    large negative penalty. The policy aims to maximize this value (i.e., bring
+    it closer to zero).
+
+    The decision process is as follows:
+    1. Calculate the value of staying: `value_stay = -abs(target - current_score)`.
+    2. For each card remaining in the deck, calculate the potential outcome of hitting:
+       - If hitting leads to a bust, assign a large `bust_penalty`.
+       - If hitting is safe, calculate the new score 's_new' and its value
+         `-abs(target - s_new)`.
+    3. Compute the average of these outcomes to find the expected value of hitting.
+    4. If EV(HIT) is greater than EV(STAY), the policy returns "HIT".
+    5. Otherwise, the policy returns "STAY".
+    """
+    
+    # Calculate the score of the current hand.
+    current_score = _calculate_score(hand, target)
+
+    # An obvious "STAY": if we are already at the target, there's no way to improve.
+    if current_score == target:
+        return "STAY"
+
+    # The value of standing pat with the current score. The value is defined as the
+    # negative of the absolute distance to the target. A score closer to the
+    # target has a value closer to 0 (i.e., a higher/less negative value).
+    value_stay = -abs(target - current_score)
+
+    # Determine which cards are still in our personal deck and can be drawn.
+    remaining_cards = list(FULL_DECK - set(hand))
+
+    # If there are no cards left to draw, we must stay.
+    if not remaining_cards:
+        return "STAY"
+
+    # The penalty for busting must be more severe than the worst possible non-busting
+    # outcome. The maximum possible distance from the target for a non-busting hand
+    # is `target - 2`. A penalty larger than `target` ensures
+    # busting is always considered the worst option in the EV calculation.
+    bust_penalty = -(target + 5)
+    
+    # Calculate the sum of values of all possible outcomes if we choose to "HIT".
+    total_value_hit = 0
+    for card in remaining_cards:
+        # Create a potential new hand by adding the card.
+        new_hand = hand + [card]
+        new_score = _calculate_score(new_hand, target)
+
+        if new_score > target:
+            # This card causes a bust. Add the bust penalty to the total value.
+            total_value_hit += bust_penalty
+        else:
+            # This card is safe. Calculate its value based on closeness to the target.
+            total_value_hit += -abs(target - new_score)
+
+    # The expected value of hitting is the average of all possible single-draw outcomes.
+    expected_value_hit = total_value_hit / len(remaining_cards)
+
+    # Compare the expected value of hitting with the value of staying.
+    # If the expectation from hitting is better (greater, i.e., less negative), we hit.
+    if expected_value_hit > value_stay:
+        return "HIT"
+    else:
+        return "STAY"

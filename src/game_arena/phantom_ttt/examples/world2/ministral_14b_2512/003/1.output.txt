@@ -1,0 +1,104 @@
+### Strategy for Phantom Tic Tac Toe Policy
+
+The strategy for this policy is a **hybrid approach** combining:
+1. **Pattern Recognition and Forced Wins**: Check for immediate winning moves or blocking opponent's potential wins (even with imperfect information).
+2. **Probabilistic Opponent Modeling**: Estimate opponent's likely moves based on the current board state and historical patterns (e.g., symmetry, center preference).
+3. **Risk-Averse Placement**: Prioritize moves that minimize the chance of failed placements (avoiding cells marked as `1` unless necessary).
+4. **Randomized Tie-Breaking**: For ambiguous cases, introduce controlled randomness to avoid predictable patterns.
+
+Key components:
+- **Win/Block Detection**: Use a modified version of standard Tic-Tac-Toe logic, accounting for uncertainty (e.g., if two of your marks are in a row, assume the third is yours unless the opponent could have blocked it).
+- **Center and Corner Preference**: Prefer the center (highest probability of winning) and corners (strategic positions).
+- **Opponent Simulation**: Simulate possible opponent moves to anticipate threats, assuming they play optimally or with common heuristics.
+- **Fallback to Randomness**: If no clear move is found, choose a random valid cell to avoid predictability.
+
+---
+
+### Python Implementation
+```python
+import random
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Convert board to numpy array for easier manipulation
+    board_np = np.array(board, dtype=int)
+
+    # Get all empty or uncertain cells (0 or -1, but -1 is not in input; 0 is uncertain)
+    empty_cells = [(i, j) for i in range(3) for j in range(3) if board_np[i, j] != 1]
+
+    # Check for immediate win (3 in a row with 1s)
+    def check_win(player):
+        # Check rows, columns, diagonals
+        for i in range(3):
+            if all(board_np[i, j] == player for j in range(3)):
+                return True
+            if all(board_np[j, i] == player for j in range(3)):
+                return True
+        if all(board_np[i, i] == player for i in range(3)) or all(board_np[i, 2-i] == player for i in range(3)):
+            return True
+        return False
+
+    # Check if current player can win in next move
+    for (i, j) in empty_cells:
+        board_np[i, j] = 1
+        if check_win(1):
+            board_np[i, j] = 0  # revert
+            return (i, j)
+        board_np[i, j] = 0  # revert
+
+    # Check if opponent could win next turn (assuming they play optimally)
+    # Opponent's marks are unknown, but we can infer based on uncertainty
+    # Simulate opponent's possible moves (assuming they have 1s in some cells)
+    # This is tricky; instead, we'll assume opponent is trying to win and block accordingly
+    # For simplicity, we'll assume opponent has placed in some cells (0s could be theirs)
+    # We'll try to block any potential 2-in-a-row for opponent (assuming 0s are theirs)
+    # This is imperfect but better than nothing
+    for (i, j) in empty_cells:
+        # Assume opponent has placed in this cell (temporarily)
+        board_np[i, j] = -1  # mark as opponent's (but input only has 0/1)
+        # Check if opponent would win
+        # Since we don't know opponent's marks, we'll check if two 0s are in a row/col/diag
+        # and the third is empty (could be opponent's)
+        # This is a heuristic
+        # Check rows
+        for k in range(3):
+            if board_np[k, j] == 0 and board_np[k, (j+1)%3] == 0 and board_np[k, (j+2)%3] == 0:
+                board_np[i, j] = 0  # revert
+                return (k, j)  # block
+        # Check columns
+        for k in range(3):
+            if board_np[i, k] == 0 and board_np[(i+1)%3, k] == 0 and board_np[(i+2)%3, k] == 0:
+                board_np[i, j] = 0  # revert
+                return (i, k)  # block
+        # Check diagonals
+        if i == j and board_np[0, 0] == 0 and board_np[1, 1] == 0 and board_np[2, 2] == 0:
+            board_np[i, j] = 0  # revert
+            return (0, 0)  # block
+        if i == 2-j and board_np[0, 2] == 0 and board_np[1, 1] == 0 and board_np[2, 0] == 0:
+            board_np[i, j] = 0  # revert
+            return (0, 2)  # block
+        board_np[i, j] = 0  # revert
+
+    # Prefer center, then corners, then edges
+    priority = [
+        (1, 1),  # center
+        (0, 0), (0, 2), (2, 0), (2, 2),  # corners
+        (0, 1), (1, 0), (1, 2), (2, 1)   # edges
+    ]
+
+    # Filter priority moves to only those in empty_cells
+    valid_priority = [(i, j) for (i, j) in priority if (i, j) in empty_cells]
+
+    if valid_priority:
+        return valid_priority[0]  # pick highest priority
+
+    # Fallback: random valid move
+    return random.choice(empty_cells)
+```
+
+### Explanation:
+1. **Win/Block Detection**: The policy first checks if it can win in the next move by placing a `1` in an empty cell. If not, it checks if the opponent could win (assuming `0`s are opponent's marks) and blocks accordingly.
+2. **Priority-Based Placement**: The policy prioritizes the center, then corners, then edges to maximize strategic advantage.
+3. **Randomness**: If no clear move is found, it randomly selects from valid cells to avoid predictability.
+
+This strategy balances aggression (winning/blocking) with caution (avoiding known occupied cells) and adaptability (randomness for ambiguity). It should perform well against other policies in the arena.

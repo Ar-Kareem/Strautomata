@@ -1,0 +1,204 @@
+**Strategy Overview**  
+Our policy follows a three‑stage decision process:
+
+1. **Capture Opportunism** – First scan all legal points for any move that would immediately capture an opponent group. A capture is detected when an empty point is the *sole liberty* of a living opponent group. Among all such capture candidates we choose the one that removes the largest opponent group (higher‑order captives are preferred).  
+2. **Safety Check (Suicide Prevention)** – If no capture exists, we prune all moves that would be suicide for us. A move is considered suicidal if it is the only liberty of any *alive* of our own groups. We only keep points that are safe for all our stones.  
+3. **Heuristic Play** – From the safe points we evaluate a simple “influence” heuristic:
+   - **Corner Bonus** – The four corner positions `(1,1)`, `(1,18)`, `(18,1)`, `(18,18)` receive a large bonus if they are still empty, because corner points are valuable in Go.
+   - **Influence Score** – For each empty point we count +1 for each adjacent own stone and –1 for each adjacent opponent stone (essentially a raw territorial influence estimate).  
+   The point with the highest total score (corner bonus + influence) is selected.  
+
+If the board is completely filled and no legal move exists we return the pass move `(0, 0)`. All steps are O(19²) and easily satisfy the 1‑second execution limit.
+
+**Full Python Implementation**  
+
+```python
+<code>
+import numpy as np
+from collections import defaultdict
+from typing import List, Tuple, Dict
+
+def policy(me: List[Tuple[int, int]],
+          opponent: List[Tuple[int, int]],
+          memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    """
+    Return the next move as a (row, col) tuple and an updated memory dict.
+    The board is indexed 1‑19, so rows and columns run from 1 to 19 inclusive.
+    """
+    # ------------------------------------------------------------------
+    # 1. Board construction (store in memory for reuse)
+    # ------------------------------------------------------------------
+    if 'board' not in memory:
+        board = np.zeros((20, 20), dtype=int)   # 0 means empty, 1 = us, -1 = opponent
+    else:
+        board = memory['board']
+
+    # Ensure the 19×19 region is cleared each call
+    board[1:19, 1:19] = 0
+
+    # Fill in the new stones
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = -1
+
+    memory['board'] = board
+
+    # ------------------------------------------------------------------
+    # 2. Legal moves (empty points)
+    # ------------------------------------------------------------------
+    empties = [(r, c) for r in range(1, 20) for c in range(1, 20)
+               if board[r, c] == 0]
+
+    if not empties:
+        # No legal moves → pass (always legal)
+        return ((0, 0), memory)
+
+    # ------------------------------------------------------------------
+    # 3. Helper constants
+    # ------------------------------------------------------------------
+    offsets = [(-1, -1), (-1, 0), (-1, 1),
+               (0, -1),          (0, 1),
+               (1, -1), (1, 0), (1, 1)]
+    corners = {(1, 1), (1, 18), (18, 1), (18, 18)}
+    corner_bonus = 30
+
+    # ------------------------------------------------------------------
+    # 4. Group labeling (BFS for both sides)
+    # ------------------------------------------------------------------
+    visited_me = np.zeros((20, 20), dtype=int)
+    visited_opp = np.zeros((20, 20), dtype=int)
+
+    groups_me: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+    groups_opp: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+
+    def label_groups(stones: List[Tuple[int, int]],
+                     visited: np.ndarray,
+                     side: int) -> Dict[int, List[Tuple[int, int]]]:
+        """
+        Perform a flood‑fill (BFS) to label all connected stones belonging
+        to the same player. Returns a dict mapping group id → list of coordinates.
+        """
+        groups = defaultdict(list)
+        current_id = 0
+        for r, c in stones:
+            if visited[r, c] == 0:
+                current_id += 1
+                queue = [(r, c)]
+                visited[r, c] = current_id
+                while queue:
+                    x, y = queue.pop()
+                    groups[current_id].append((x, y))
+                    for dr, dc in offsets:
+                        nx, ny = x + dr, y + dc
+                        if 1 <= nx <= 19 and 1 <= ny <= 19:
+                            if board[nx, ny] == side and visited[nx, ny] == 0:
+                                visited[nx, ny] = current_id
+                                queue.append((nx, ny))
+        return groups
+
+    groups_me.update(label_groups(me, visited_me, side=1))
+    groups_opp.update(label_groups(opponent, visited_opp, side=-1))
+
+    # ------------------------------------------------------------------
+    # 5. Capture detection (largest group first)
+    # ------------------------------------------------------------------
+    capture_moves: List[Tuple[Tuple[int, int], int]] = []   # (point, size_of_captured_group)
+
+    for pt in empties:
+        adjacent_opp_group_ids = set()
+        for dr, dc in offsets:
+            nr, nc = pt[0] + dr, pt[1] + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if board[nr, nc] == -1:
+                    gid = visited_opp[nr, nc]
+                    adjacent_opp_group_ids.add(gid)
+
+        if not adjacent_opp_group_ids:
+            continue
+
+        best_gid = None
+        best_group_size = -1
+        for gid in adjacent_opp_group_ids:
+            # Compute liberties of this opponent group
+            liberties = set()
+            for (x, y) in groups_opp[gid]:
+                for dr, dc in offsets:
+                    nx, ny = x + dr, y + dc
+                    if 1 <= nx <= 19 and 1 <= ny <= 19:
+                        if board[nx, ny] == 0:
+                            liberties.add((nx, ny))
+            # If this empty point is the *only* liberty, playing there captures
+            if len(liberties) == 1 and pt in liberties:
+                group_size = len(groups_opp[gid])
+                if group_size > best_group_size:
+                    best_group_size = group_size
+                    best_gid = gid
+                    # Note: capture_moves already stores the point as pt
+        # If we found a capture possibility, add it
+        if best_gid is not None:
+            capture_moves.append((pt, best_group_size))
+
+    # If any capture move exists, pick the one that kills the biggest group
+    if capture_moves:
+        move, _ = max(capture_moves, key=lambda x: x[1])
+        return (move, memory)
+
+    # ------------------------------------------------------------------
+    # 6. Suicide‑safe filtering
+    # ------------------------------------------------------------------
+    safe_points = []
+    for pt in empties:
+        safe = True
+        for dr, dc in offsets:
+            nr, nc = pt[0] + dr, pt[1] + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if board[nr, nc] == 1:
+                    gid = visited_me[nr, nc]
+                    # Get liberties of this group
+                    liberties = set()
+                    for (x, y) in groups_me[gid]:
+                        for ddr, ddc in offsets:
+                            nx, ny = x + ddr, y + ddc
+                            if board[nx, ny] == 0:
+                                liberties.add((nx, ny))
+                    # If group is already dead (no liberties) we consider it safe.
+                    if liberties and len(liberties) == 1 and pt in liberties:
+                        safe = False
+                        break
+        if safe:
+            safe_points.append(pt)
+
+    # ------------------------------------------------------------------
+    # 7. Heuristic evaluation on safe points
+    # ------------------------------------------------------------------
+    # Influence score: +1 for each adjacent own stone, –1 for each adjacent opponent stone
+    def influence_score(pt: Tuple[int, int]) -> int:
+        score = 0
+        for dr, dc in offsets:
+            nr, nc = pt[0] + dr, pt[1] + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if board[nr, nc] == 1:
+                    score += 1
+                elif board[nr, nc] == -1:
+                    score -= 1
+        # Corner bonus
+        if pt in corners:
+            score += corner_bonus
+        return score
+
+    # Choose point with highest influence (break ties arbitrarily)
+    move = max(safe_points, key=influence_score, default=None)
+    if move is not None:
+        return (move, memory)
+
+    # ------------------------------------------------------------------
+    # 8. If everything fails (should not happen) – pass
+    # ------------------------------------------------------------------
+    return ((0, 0), memory)
+
+# The function above is deliberately self‑contained and does not rely on
+# any external input other than the API arguments. It stores the board
+# in memory so that future calls receive a consistent view of the state.
+</code>
+```

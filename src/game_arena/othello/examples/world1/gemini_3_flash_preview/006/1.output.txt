@@ -1,0 +1,73 @@
+The strategy for this policy is a combination of greedy mobility, positional weightings, and corner occupancy. 
+
+1.  **Static Weights**: A 8x8 matrix assigns high positive values to corners (a1, a8, h1, h8) and high negative values to squares adjacent to corners (X-squares and C-squares) to prevent gifting corners to the opponent.
+2.  **Move Generation**: The code implements the standard Othello rules to identify all legal moves by checking the 8 cardinal and ordinal directions for "sandwiched" opponent pieces.
+3.  **Heuristic Evaluation**: For each legal move, the policy calculates a score based on the positional weight of the square and the number of opponent pieces flipped. This ensures the agent prioritizes "stable" positions over simply flipping the maximum number of pieces.
+4.  **Corner Focused**: It specifically prioritizes taking corners immediately if they are available.
+5.  **Safety**: If no legal moves are found, it returns "pass" to comply with game rules.
+
+<code>
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Positional weights for an 8x8 Othello board
+    weights = np.array([
+        [100, -20,  10,   5,   5,  10, -20, 100],
+        [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+        [ 10,  -2,   5,   1,   1,   5,  -2,  10],
+        [  5,  -2,   1,   0,   0,   1,  -2,   5],
+        [  5,  -2,   1,   0,   0,   1,  -2,   5],
+        [ 10,  -2,   5,   1,   1,   5,  -2,  10],
+        [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+        [100, -20,  10,   5,   5,  10, -20, 100]
+    ])
+
+    def get_legal_moves(player, opp):
+        legal_moves = []
+        directions = [
+            (0, 1), (1, 0), (0, -1), (-1, 0),
+            (1, 1), (1, -1), (-1, 1), (-1, -1)
+        ]
+        
+        for r in range(8):
+            for c in range(8):
+                if player[r][c] == 0 and opp[r][c] == 0:
+                    total_flipped = 0
+                    for dr, dc in directions:
+                        nr, nc = r + dr, c + dc
+                        count = 0
+                        while 0 <= nr < 8 and 0 <= nc < 8 and opp[nr][nc] == 1:
+                            nr += dr
+                            nc += dc
+                            count += 1
+                        if count > 0 and 0 <= nr < 8 and 0 <= nc < 8 and player[nr][nc] == 1:
+                            total_flipped += count
+                    
+                    if total_flipped > 0:
+                        legal_moves.append((r, c, total_flipped))
+        return legal_moves
+
+    def to_algebraic(r, c):
+        return f"{chr(ord('a') + c)}{r + 1}"
+
+    moves = get_legal_moves(you, opponent)
+    
+    if not moves:
+        return "pass"
+
+    best_score = -float('inf')
+    best_move = None
+
+    for r, c, flipped in moves:
+        # Score is primarily based on position, secondarily on flips
+        # We add the weight to a small fraction of flipped coins
+        move_score = weights[r][c] + (flipped * 0.5)
+        
+        # Priority 1: High weight positions (Corners)
+        # Priority 2: Higher score based on heuristic
+        if move_score > best_score:
+            best_score = move_score
+            best_move = (r, c)
+
+    return to_algebraic(best_move[0], best_move[1])
+</code>

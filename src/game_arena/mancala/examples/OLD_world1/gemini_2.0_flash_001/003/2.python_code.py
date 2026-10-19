@@ -1,0 +1,19 @@
+
+import random
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Selects a move for Kalah.
+
+    Args:
+        you: Your board state.
+        opponent: Opponent's board state.
+
+    Returns:
+        The index of the house to move (0-5).
+    """
+
+    legal_moves = [i for i in range(6) if you[i] > 0]
+
+    # Simple strategy: choose a random legal move
+    return random.choice(legal_moves)

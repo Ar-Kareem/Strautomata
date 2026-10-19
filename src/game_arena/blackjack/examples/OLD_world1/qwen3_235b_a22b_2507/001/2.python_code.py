@@ -1,0 +1,113 @@
+
+import random
+from typing import List
+
+def policy(hand: List[str], target: int) -> str:
+    """
+    A Blackjack-like policy that balances risk of busting with need to get close to target.
+    
+    Strategy:
+    - Calculate current hand value (with A=11 if possible, A=1 otherwise)
+    - If already above target, must STAY (but should never happen due to busting)
+    - If under target, decide whether to hit based on:
+        1. Current hand value
+        2. How close we are to the target
+        3. Risk assessment based on remaining cards
+    """
+    
+    # Card value mapping
+    def card_value(card: str, current_sum: int = 0) -> int:
+        if card in ["J", "Q", "K"]:
+            return 10
+        elif card == "A":
+            # Ace is 11 if it doesn't make us exceed target, otherwise 1
+            if current_sum + 11 <= target:
+                return 11
+            else:
+                return 1
+        else:
+            return int(card)
+    
+    # Calculate current hand value
+    def hand_value(cards: List[str]) -> int:
+        total = 0
+        aces = 0
+        
+        # First pass: count non-ace cards and count aces
+        for card in cards:
+            if card == "A":
+                aces += 1
+            else:
+                total += card_value(card)
+        
+        # Add aces optimally
+        for _ in range(aces):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+                
+        return total
+    
+    current_value = hand_value(hand)
+    
+    # If we're already at or above target, stay
+    if current_value >= target:
+        return "STAY"
+    
+    # Calculate how far we are from target
+    distance = target - current_value
+    
+    # If we're very close, stay
+    if distance == 0:
+        return "STAY"
+    elif distance == 1:
+        return "STAY"
+    elif distance == 2:
+        # Very risky to hit, only do so sometimes
+        return "STAY"
+    
+    # Build list of remaining cards (cards not in hand)
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining_cards = [card for card in all_cards if card not in hand]
+    
+    # Estimate risk of busting if we draw
+    safe_draws = 0
+    total_remaining = len(remaining_cards)
+    
+    for card in remaining_cards:
+        # Calculate what this card would add to our hand
+        if card == "A":
+            # Ace will be 11 if possible, otherwise 1
+            if current_value + 11 <= target:
+                card_val = 11
+            else:
+                card_val = 1
+        else:
+            card_val = card_value(card)
+            
+        if current_value + card_val <= target:
+            safe_draws += 1
+    
+    bust_risk = 1.0 - (safe_draws / total_remaining) if total_remaining > 0 else 1.0
+    
+    # Decision logic
+    if distance <= 4:
+        # We're close - high risk tolerance only if necessary
+        if bust_risk < 0.3:
+            return "HIT"
+        else:
+            return "STAY"
+    elif distance <= 8:
+        # Moderate distance - willing to take moderate risks
+        if bust_risk < 0.5:
+            return "HIT"
+        else:
+            return "STAY"
+    else:
+        # Far from target - need to hit regardless of risk (unless risk is very high)
+        if bust_risk < 0.8:
+            return "HIT"
+        else:
+            # Even if risk is high, occasionally take a chance when far behind
+            return "HIT" if random.random() < 0.3 else "STAY"

@@ -1,0 +1,306 @@
+
+import numpy as np
+import time
+
+# Predefined weights for heuristic evaluation
+SCORES = {
+    (5, 0): 100000,  # Win
+    (4, 0): 10000,   # Open 4
+    (3, 0): 1000,    # Open 3
+    (2, 0): 100,     # Open 2
+    (1, 0): 10,      # Open 1
+    (4, 1): 10,      # Blocked 4 (Low value)
+    (3, 1): 5,       # Blocked 3
+    (2, 1): 2,       # Blocked 2
+    (0, 5): -100000, # Opponent Win
+    (0, 4): -10000,  # Opponent Open 4
+    (0, 3): -1000,   # Opponent Open 3
+    (0, 2): -100,    # Opponent Open 2
+    (1, 4): -10,     # Opponent Blocked 4
+    (1, 3): -5,      # Opponent Blocked 3
+}
+
+def get_line_scores(board_me, board_opp):
+    """
+    Heuristic evaluation function.
+    Scans all rows, cols, and diagonals for windows of length 5.
+    Returns a score sum.
+    """
+    score = 0
+    rows, cols = 6, 6
+    
+    # Check rows
+    for r in range(rows):
+        for c in range(cols - 4):
+            s_me = np.sum(board_me[r, c:c+5])
+            s_opp = np.sum(board_opp[r, c:c+5])
+            score += SCORES.get((s_me, s_opp), 0)
+            
+    # Check cols
+    for c in range(cols):
+        for r in range(rows - 4):
+            s_me = np.sum(board_me[r:r+5, c])
+            s_opp = np.sum(board_opp[r:r+5, c])
+            score += SCORES.get((s_me, s_opp), 0)
+            
+    # Check diagonals (Top-left to Bottom-right)
+    # Main diagonals and offsets
+    # Simplified diagonal scan by iterating all 5x5 windows that fit
+    # There are 2x2 main sliding windows for diags of length 6
+    # And others for length 5. Total 8 diagonal windows.
+    
+    # Helper to extract diagonal sum
+    def check_diag(r, c):
+        s_me = np.sum(np.array([board_me[r+i, c+i] for i in range(5)]))
+        s_opp = np.sum(np.array([board_opp[r+i, c+i] for i in range(5)]))
+        return SCORES.get((s_me, s_opp), 0)
+
+    def check_anti_diag(r, c):
+        s_me = np.sum(np.array([board_me[r+i, c-i] for i in range(5)]))
+        s_opp = np.sum(np.array([board_opp[r+i, c-i] for i in range(5)]))
+        return SCORES.get((s_me, s_opp), 0)
+
+    # Diagonals
+    for r in range(rows - 4):
+        for c in range(cols - 4):
+            score += check_diag(r, c)
+            score += check_anti_diag(r, 5 - c) # Anti-diag logic
+            # Wait, anti-diag window sliding:
+            # Top-right anchor (r, c) goes to (r+4, c-4).
+            # c ranges 4 to 5.
+    
+    # Correct Anti-diag iteration
+    for r in range(rows - 4):
+        for c in range(4, cols):
+            score += check_anti_diag(r, c)
+
+    return score
+
+def rotate_subgrid(board, quad, direction):
+    """
+    Returns a new board with the specified quadrant rotated.
+    Quad indices: 0:TL, 1:TR, 2:BL, 3:BR
+    Direction: 'L' (CCW) or 'R' (CW)
+    """
+    new_board = board.copy()
+    # Define slice indices
+    r_start = 0 if quad < 2 else 3
+    c_start = 0 if quad % 2 == 0 else 3
+    
+    subgrid = new_board[r_start:r_start+3, c_start:c_start+3]
+    
+    if direction == 'L':
+        # Counter-clockwise
+        new_board[r_start:r_start+3, c_start:c_start+3] = np.rot90(subgrid, 1)
+    else:
+        # Clockwise
+        new_board[r_start:r_start+3, c_start:c_start+3] = np.rot90(subgrid, 3)
+        
+    return new_board
+
+def check_win(board):
+    """Check if there is a 5-in-a-row on the board."""
+    # Rows
+    for r in range(6):
+        if np.any(np.sum(board[r, c:c+5]) == 5 for c in range(2)):
+            return True
+    # Cols
+    for c in range(6):
+        if np.any(np.sum(board[r:r+5, c]) == 5 for r in range(2)):
+            return True
+    # Diags
+    for r in range(2):
+        for c in range(2):
+            if np.sum(np.diag(board[r:r+5, c:c+5])) == 5:
+                return True
+    # Anti-diags
+    for r in range(2):
+        for c in range(4, 6):
+            if np.sum(np.diag(np.fliplr(board[r:r+5, c-4:c+1]))) == 5:
+                return True
+    return False
+
+def get_result_score(board_me, board_opp):
+    """Returns score if terminal, else None."""
+    i_win = check_win(board_me)
+    opp_win = check_win(board_opp)
+    
+    if i_win and not opp_win:
+        return 100000
+    if opp_win and not i_win:
+        return -100000
+    if i_win and opp_win:
+        return 0 # Draw
+    return None
+
+def generate_all_moves(board_me, board_opp):
+    moves = []
+    # Iterate all empty cells
+    empties = np.argwhere((board_me == 0) & (board_opp == 0))
+    
+    for r, c in empties:
+        for q in range(4):
+            for d in ['L', 'R']:
+                moves.append((r, c, q, d))
+    return moves
+
+def apply_move(board_me, board_opp, move):
+    r, c, q, d = move
+    
+    # 1. Place marble
+    me_next = board_me.copy()
+    me_next[r, c] = 1
+    
+    # 2. Rotate quadrant for both boards
+    # Since rotation affects the geometry, we rotate the slices
+    me_final = rotate_subgrid(me_next, q, d)
+    opp_final = rotate_subgrid(board_opp, q, d)
+    
+    return me_final, opp_final
+
+def policy(you, opponent):
+    """
+    Main policy function.
+    """
+    # Convert inputs to numpy arrays if they aren't already
+    you = np.array(you, dtype=int)
+    opponent = np.array(opponent, dtype=int)
+    
+    start_time = time.time()
+    
+    # 1. Check all legal moves for immediate win
+    all_moves = generate_all_moves(you, opponent)
+    # Shuffle moves to randomize equal-quality moves (avoiding bias)
+    np.random.shuffle(all_moves)
+    
+    # Fast check for immediate win
+    for move in all_moves:
+        me_next, opp_next = apply_move(you, opponent, move)
+        if check_win(me_next):
+            # Verify we didn't just give opponent a win too (draw is better than loss, but win is best)
+            if not check_win(opp_next):
+                # Return 1-indexed string
+                return f"{move[0]+1},{move[1]+1},{move[2]},{move[3]}"
+    
+    # 2. If no immediate win, perform search
+    # Evaluate all moves statically to sort them (Beam Search approach)
+    scored_moves = []
+    for move in all_moves:
+        me_next, opp_next = apply_move(you, opponent, move)
+        
+        # Terminal check in static eval
+        term_score = get_result_score(me_next, opp_next)
+        if term_score is not None:
+            # If we found a winning move that we missed in step 1 (unlikely), or a draw
+            if term_score > 0: return f"{move[0]+1},{move[1]+1},{move[2]},{move[3]}"
+            # If it's a loss (opp wins), score is -inf essentially
+            scored_moves.append((term_score, move))
+        else:
+            # Heuristic score
+            h_score = get_line_scores(me_next, opp_next)
+            scored_moves.append((h_score, move))
+            
+    # Sort descending by score
+    scored_moves.sort(key=lambda x: x[0], reverse=True)
+    
+    # Select top K moves for deeper search
+    # K depends on time, but let's fix it to 15 for consistency in 1s
+    TOP_K = 15
+    best_moves = scored_moves[:TOP_K]
+    
+    # If we have very few moves (end game), search all
+    if len(scored_moves) < TOP_K:
+        best_moves = scored_moves
+
+    best_val = -float('inf')
+    best_move_str = None
+    
+    # Depth 2 Search (Lookahead 1 move ahead)
+    # Maximize my score, minimize opponent's response
+    
+    for val, move in best_moves:
+        if time.time() - start_time > 0.95:
+            break
+            
+        me_next, opp_next = apply_move(you, opponent, move)
+        
+        # Check terminal state for me
+        res = get_result_score(me_next, opp_next)
+        if res is not None:
+            if res >= best_val:
+                best_val = res
+                best_move_str = f"{move[0]+1},{move[1]+1},{move[2]},{move[3]}"
+            # If we found a win, stop searching
+            if res >= 100000: 
+                return best_move_str
+            continue
+            
+        # Opponent's turn (Minimize score)
+        # Generate opponent moves
+        opp_moves = generate_all_moves(opp_next, me_next)
+        
+        # Pruning: Only look at opponent's top moves that look good for them (or bad for us)
+        # To save time, we can sample or just use a heuristic sort for opponent too
+        # If we don't sort opponent moves, we might miss a threat.
+        # Let's just do a shallow check on opponent's moves.
+        
+        worst_case_for_me = float('inf')
+        
+        # We can't check all 288 opponent moves for each of 15 moves (4320 checks) deeply.
+        # But we can check them shallowly.
+        # Let's try to find the opponent's BEST response to our move.
+        
+        # Heuristic sort for opponent
+        opp_scores = []
+        for om in opp_moves:
+            # Apply opponent move
+            # Note: swap boards because in 'apply_move', 'me' is the one placing.
+            # Here 'opp_next' places.
+            o_board_final, m_board_final = apply_move(opp_next, me_next, om)
+            
+            o_res = get_result_score(m_board_final, o_board_final)
+            if o_res is not None:
+                opp_scores.append((o_res, om))
+            else:
+                # Score from opponent perspective (negative of our heuristic)
+                o_h = get_line_scores(m_board_final, o_board_final)
+                opp_scores.append((o_h, om))
+        
+        # Opponent wants to minimize our score, so sort ascending (most negative first)
+        opp_scores.sort(key=lambda x: x[0])
+        
+        # Look at top few opponent threats
+        # Check top 10 opponent responses
+        opp_moves_to_check = opp_scores[:10]
+        
+        move_score = float('inf') # This represents the outcome of this branch
+        
+        # If opponent can win, this branch is bad
+        if len(opp_scores) > 0 and opp_scores[0][0] <= -100000:
+            move_score = -100000
+        else:
+            # Evaluate the best case for me (worst for opponent) among the top responses
+            # Or simply take the score of the best opponent response (minimax)
+            # Since we can't explore full tree, we use the heuristic value of the resulting state
+            # assuming opponent plays the best heuristic move.
+            if len(opp_scores) > 0:
+                move_score = opp_scores[0][0]
+            else:
+                move_score = val # No moves left?
+        
+        # Update best move
+        if move_score > best_val:
+            best_val = move_score
+            best_move_str = f"{move[0]+1},{move[1]+1},{move[2]},{move[3]}"
+
+    # Fallback: if no search done or all moves were terrible, pick the static best
+    if best_move_str is None and len(best_moves) > 0:
+        move = best_moves[0][1]
+        best_move_str = f"{move[0]+1},{move[1]+1},{move[2]},{move[3]}"
+    elif best_move_str is None:
+         # Should not happen unless board full, but prompt says legal move exists
+         # Pick first legal move
+         move = all_moves[0]
+         best_move_str = f"{move[0]+1},{move[1]+1},{move[2]},{move[3]}"
+
+    return best_move_str

@@ -1,0 +1,92 @@
+# Strategy
+
+This is a two-player knight hunting game where each player has 16 moves to capture as many opponent pawns as possible on a 5x3 board.
+
+**Key observations from the examples:**
+1. Each player starts with a knight at position (1,1) and 15 pawns scattered on the board
+2. Knights move in an L-shape (2 squares in one direction, 1 square perpendicular)
+3. Actions alternate: a player either makes a `move(role, x1, y1, x2, y2)` or `tick` (after opponent plays)
+4. The game tracks captures and steps/turns
+5. Legal moves for a knight at (x,y) follow standard chess knight movement patterns
+6. When a knight lands on an opponent's pawn, it captures it
+
+**Winning Strategy:**
+1. **Generate all legal knight moves** from current position (8 possible L-shaped moves)
+2. **Prioritize capturing moves** - moves that land on opponent pawns get maximum value
+3. **Greedy approach**: Always take a capture if available
+4. **Positional strategy**: If no captures available, move toward opponent pawns
+5. **Handle tick action**: When `["played", role]` appears in state, return `tick`
+
+**Move generation:**
+A knight at (x, y) can move to positions: (x±2, y±1) or (x±1, y±2), ensuring moves stay within bounds (1-5 for x, 1-3 for y).
+
+**Priority order:**
+1. If `played` fact exists for our role, play `tick`
+2. Otherwise, find all legal knight moves
+3. Rank by captures first, then by proximity to opponent pawns
+4. Return the best move
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Check if we need to tick
+    for fact in state:
+        if fact[0] == "played" and fact[1] == role:
+            return "tick"
+    
+    # Find our knight position
+    knight_pos = None
+    for fact in state:
+        if fact[0] == "cell" and fact[1] == role and fact[4] == "knight":
+            knight_pos = (int(fact[2]), int(fact[3]))
+            break
+    
+    if knight_pos is None:
+        return "tick"
+    
+    # Build set of opponent pawns
+    opponent = "right" if role == "left" else "left"
+    opponent_pawns = set()
+    for fact in state:
+        if fact[0] == "cell" and fact[1] == opponent and fact[4] == "pawn":
+            opponent_pawns.add((int(fact[2]), int(fact[3])))
+    
+    # Generate all possible knight moves (L-shaped)
+    x, y = knight_pos
+    knight_moves = [
+        (x+2, y+1), (x+2, y-1), (x-2, y+1), (x-2, y-1),
+        (x+1, y+2), (x+1, y-2), (x-1, y+2), (x-1, y-2)
+    ]
+    
+    # Filter valid moves (within board bounds)
+    legal_moves = []
+    for nx, ny in knight_moves:
+        if 1 <= nx <= 5 and 1 <= ny <= 3:
+            legal_moves.append((nx, ny))
+    
+    if not legal_moves:
+        return "tick"
+    
+    # Rank moves: captures first, then closest to opponent pawns
+    best_move = None
+    best_score = (-1, float('inf'))  # (has_capture, distance_to_nearest_pawn)
+    
+    for nx, ny in legal_moves:
+        has_capture = 1 if (nx, ny) in opponent_pawns else 0
+        
+        # Distance to nearest opponent pawn
+        if opponent_pawns:
+            min_dist = min(abs(nx - px) + abs(ny - py) for px, py in opponent_pawns)
+        else:
+            min_dist = 0
+        
+        score = (-has_capture, min_dist)  # Negative for capture so higher captures rank first
+        
+        if score > best_score:
+            best_score = score
+            best_move = (nx, ny)
+    
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    return f"move({role},{x},{y},{best_move[0]},{best_move[1]})"
+</code>

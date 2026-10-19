@@ -1,0 +1,134 @@
+
+
+The strategy for this policy focuses on two main objectives: maximizing connectivity of the player's pieces while minimizing the opponent's connectivity. It evaluates moves based on the following criteria:
+1. **Connectivity**: Minimize the number of connected components of the player's pieces. Prioritize moves that directly reduce the number of separate groups.
+2. **Captures**: Encourage capturing opponent pieces to reduce their count and potentially increase the player's piece count.
+3. **Piece Count**: Favor positions where the player has more pieces than the opponent.
+4. **Opponent Disruption**: Increase the opponent's connected components to hinder their progress.
+
+The policy generates all legal moves, simulates each move, and selects the one with the highest evaluation score. It uses a greedy approach with a 1-step lookahead, prioritizing immediate wins if available.
+
+<code>
+import copy
+from collections import deque
+
+def policy(board):
+    moves = get_legal_moves(board)
+    if not moves:
+        return "0,0:0,0"  # Fallback, should not occur
+    best_move = None
+    best_score = -float('inf')
+    for move in moves:
+        new_board = apply_move(copy.deepcopy(board), move)
+        # Immediate win check
+        if count_connected_components(new_board, 1) == 1:
+            return format_move(move)
+        score = evaluate_board(new_board)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    return format_move(best_move)
+
+def get_legal_moves(board):
+    moves = []
+    directions = [(dr, dc) for dr in (-1,0,1) for dc in (-1,0,1) if dr != 0 or dc != 0]
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == 1:
+                for dr, dc in directions:
+                    line_count = count_line_pieces(board, r, c, dr, dc)
+                    if line_count == 0:
+                        continue
+                    step = line_count
+                    new_r = r + dr * step
+                    new_c = c + dc * step
+                    if not (0 <= new_r < 8 and 0 <= new_c < 8):
+                        continue
+                    # Check path for opponents
+                    valid = True
+                    for i in range(1, step):
+                        check_r = r + dr * i
+                        check_c = c + dc * i
+                        if board[check_r][check_c] == -1:
+                            valid = False
+                            break
+                    if valid and board[new_r][new_c] != 1:
+                        moves.append(((r, c), (new_r, new_c)))
+    return moves
+
+def count_line_pieces(board, r, c, dr, dc):
+    if dr == 0:  # Horizontal
+        return sum(1 for cell in board[r] if cell != 0)
+    elif dc == 0:  # Vertical
+        return sum(1 for i in range(8) if board[i][c] != 0)
+    elif dr == dc:  # Diagonal (slope 1)
+        count = 0
+        i, j = r, c
+        while i >= 0 and j >= 0:
+            if board[i][j] != 0:
+                count += 1
+            i -= 1
+            j -= 1
+        i, j = r + 1, c + 1
+        while i < 8 and j < 8:
+            if board[i][j] != 0:
+                count += 1
+            i += 1
+            j += 1
+        return count
+    else:  # Diagonal (slope -1)
+        count = 0
+        i, j = r, c
+        while i >= 0 and j < 8:
+            if board[i][j] != 0:
+                count += 1
+            i -= 1
+            j += 1
+        i, j = r + 1, c - 1
+        while i < 8 and j >= 0:
+            if board[i][j] != 0:
+                count += 1
+            i += 1
+            j -= 1
+        return count
+
+def apply_move(board, move):
+    (from_r, from_c), (to_r, to_c) = move
+    board[from_r][from_c] = 0
+    board[to_r][to_c] = 1  # Captures opponent if present
+    return board
+
+def evaluate_board(board):
+    my_groups = count_connected_components(board, 1)
+    enemy_groups = count_connected_components(board, -1)
+    my_pieces = sum(row.count(1) for row in board)
+    enemy_pieces = sum(row.count(-1) for row in board)
+    # Connectivity is prioritized (lower my_groups = better)
+    score = -my_groups * 100 + enemy_groups * 20
+    score += (my_pieces - enemy_pieces) * 50
+    return score
+
+def count_connected_components(board, player):
+    visited = set()
+    count = 0
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == player and (r, c) not in visited:
+                stack = [(r, c)]
+                visited.add((r, c))
+                while stack:
+                    cr, cc = stack.pop()
+                    for dr in (-1, 0, 1):
+                        for dc in (-1, 0, 1):
+                            nr, nc = cr + dr, cc + dc
+                            if 0 <= nr < 8 and 0 <= nc < 8:
+                                if board[nr][nc] == player and (nr, nc) not in visited:
+                                    visited.add((nr, nc))
+                                    stack.append((nr, nc))
+                count += 1
+    return count
+
+def format_move(move):
+    (from_r, from_c), (to_r, to_c) = move
+    return f"{from_r},{from_c}:{to_r},{to_c}"
+</code>

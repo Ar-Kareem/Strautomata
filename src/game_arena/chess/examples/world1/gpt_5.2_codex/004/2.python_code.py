@@ -1,0 +1,51 @@
+
+import re
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    color = 'w' if to_play == 'white' else 'b'
+    opp = 'b' if color == 'w' else 'w'
+    piece_values = {'P': 1, 'N': 3, 'B': 3.1, 'R': 5, 'Q': 9, 'K': 0}
+
+    def score(move: str) -> float:
+        # Checkmate wins immediately
+        if '#' in move:
+            return 10000.0
+
+        s = 0.0
+
+        # Castling bonus
+        if move.startswith('O-O'):
+            s += 0.5
+
+        # Check bonus
+        if '+' in move:
+            s += 0.3
+
+        # Promotion bonus
+        if '=' in move:
+            promo = move.split('=')[1][0]
+            s += piece_values.get(promo, 0) + 5
+
+        # Capture bonus based on captured piece
+        if 'x' in move:
+            squares = re.findall(r'([a-h][1-8])', move)
+            dest = squares[-1] if squares else None
+            if dest and dest in pieces and pieces[dest][0] == opp:
+                s += piece_values.get(pieces[dest][1], 0) * 1.2
+            else:
+                # en passant or unknown capture
+                s += 1.0
+
+        # Small centralization bonus
+        squares = re.findall(r'([a-h][1-8])', move)
+        dest = squares[-1] if squares else None
+        if dest in ('d4', 'e4', 'd5', 'e5'):
+            s += 0.2
+
+        return s
+
+    scores = [score(m) for m in legal_moves]
+    max_score = max(scores)
+    best_moves = [m for m, s in zip(legal_moves, scores) if s == max_score]
+    return random.choice(best_moves)

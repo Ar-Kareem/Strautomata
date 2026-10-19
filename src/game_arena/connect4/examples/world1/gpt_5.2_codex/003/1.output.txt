@@ -1,0 +1,170 @@
+The strategy for this policy is a rule-based and search-based hybrid: it first looks for immediate winning moves, then blocks any immediate opponent wins, and otherwise performs a depth-limited alpha–beta minimax search with a heuristic evaluation that favors center control and strong connect‑4 patterns. This balances tactical awareness with strategic positioning while staying within the time limit.
+
+<code>
+import random
+import math
+import time
+
+ROWS = 6
+COLS = 7
+
+def policy(board):
+    valid_cols = get_valid_locations(board)
+    if not valid_cols:
+        return 0  # should not happen
+    
+    # 1. Check for immediate winning move
+    for col in valid_cols:
+        r = get_next_open_row(board, col)
+        temp = copy_board(board)
+        temp[r][col] = 1
+        if winning_move(temp, 1):
+            return col
+
+    # 2. Block opponent's immediate winning move
+    for col in valid_cols:
+        r = get_next_open_row(board, col)
+        temp = copy_board(board)
+        temp[r][col] = -1
+        if winning_move(temp, -1):
+            return col
+
+    # 3. Minimax with alpha-beta pruning
+    best_col, _ = minimax(board, depth=5, alpha=-math.inf, beta=math.inf, maximizing=True)
+    if best_col is None:
+        return random.choice(valid_cols)
+    return best_col
+
+def copy_board(board):
+    return [row[:] for row in board]
+
+def get_valid_locations(board):
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+def get_next_open_row(board, col):
+    for r in range(ROWS-1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return None
+
+def winning_move(board, piece):
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS-3):
+            if all(board[r][c+i] == piece for i in range(4)):
+                return True
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS-3):
+            if all(board[r+i][c] == piece for i in range(4)):
+                return True
+    # Diagonal /
+    for r in range(ROWS-3):
+        for c in range(COLS-3):
+            if all(board[r+i][c+i] == piece for i in range(4)):
+                return True
+    # Diagonal \
+    for r in range(3, ROWS):
+        for c in range(COLS-3):
+            if all(board[r-i][c+i] == piece for i in range(4)):
+                return True
+    return False
+
+def score_position(board, piece):
+    score = 0
+
+    # Center column preference
+    center_col = [board[r][COLS//2] for r in range(ROWS)]
+    center_count = center_col.count(piece)
+    score += center_count * 3
+
+    # Score Horizontal
+    for r in range(ROWS):
+        row_array = board[r]
+        for c in range(COLS-3):
+            window = row_array[c:c+4]
+            score += evaluate_window(window, piece)
+
+    # Score Vertical
+    for c in range(COLS):
+        col_array = [board[r][c] for r in range(ROWS)]
+        for r in range(ROWS-3):
+            window = col_array[r:r+4]
+            score += evaluate_window(window, piece)
+
+    # Score Diagonal /
+    for r in range(ROWS-3):
+        for c in range(COLS-3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    # Score Diagonal \
+    for r in range(3, ROWS):
+        for c in range(COLS-3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window, piece)
+
+    return score
+
+def evaluate_window(window, piece):
+    score = 0
+    opp_piece = -piece
+    if window.count(piece) == 4:
+        score += 100
+    elif window.count(piece) == 3 and window.count(0) == 1:
+        score += 5
+    elif window.count(piece) == 2 and window.count(0) == 2:
+        score += 2
+
+    if window.count(opp_piece) == 3 and window.count(0) == 1:
+        score -= 4
+    return score
+
+def is_terminal_node(board):
+    return winning_move(board, 1) or winning_move(board, -1) or len(get_valid_locations(board)) == 0
+
+def minimax(board, depth, alpha, beta, maximizing):
+    valid_cols = get_valid_locations(board)
+    terminal = is_terminal_node(board)
+    if depth == 0 or terminal:
+        if terminal:
+            if winning_move(board, 1):
+                return None, 1000000000
+            elif winning_move(board, -1):
+                return None, -1000000000
+            else:
+                return None, 0
+        else:
+            return None, score_position(board, 1)
+
+    if maximizing:
+        value = -math.inf
+        best_col = random.choice(valid_cols)
+        for col in valid_cols:
+            r = get_next_open_row(board, col)
+            temp = copy_board(board)
+            temp[r][col] = 1
+            _, new_score = minimax(temp, depth-1, alpha, beta, False)
+            if new_score > value:
+                value = new_score
+                best_col = col
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return best_col, value
+    else:
+        value = math.inf
+        best_col = random.choice(valid_cols)
+        for col in valid_cols:
+            r = get_next_open_row(board, col)
+            temp = copy_board(board)
+            temp[r][col] = -1
+            _, new_score = minimax(temp, depth-1, alpha, beta, True)
+            if new_score < value:
+                value = new_score
+                best_col = col
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return best_col, value
+</code>

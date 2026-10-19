@@ -1,0 +1,511 @@
+
+import numpy as np
+import time
+
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+INF = 10**18
+
+# Standard strong Othello positional matrix
+PST = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120]
+], dtype=np.int16)
+
+CORNERS = [(0, 0), (0, 7), (7, 0), (7, 7)]
+X_SQUARES = [(1, 1), (1, 6), (6, 1), (6, 6)]
+C_SQUARES = [(0, 1), (1, 0), (0, 6), (1, 7), (6, 0), (7, 1), (6, 7), (7, 6)]
+
+CORNER_ADJ = {
+    (0, 0): [(0, 1), (1, 0), (1, 1)],
+    (0, 7): [(0, 6), (1, 7), (1, 6)],
+    (7, 0): [(6, 0), (7, 1), (6, 1)],
+    (7, 7): [(6, 7), (7, 6), (6, 6)],
+}
+
+
+def inside(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def bitboards_from_arrays(you, opp):
+    me = 0
+    op = 0
+    idx = 0
+    for r in range(8):
+        for c in range(8):
+            if int(you[r][c]) == 1:
+                me |= (1 << idx)
+            elif int(opp[r][c]) == 1:
+                op |= (1 << idx)
+            idx += 1
+    return me, op
+
+
+def arrays_from_bitboards(me, op):
+    a = np.zeros((8, 8), dtype=np.int8)
+    b = np.zeros((8, 8), dtype=np.int8)
+    idx = 0
+    for r in range(8):
+        for c in range(8):
+            if (me >> idx) & 1:
+                a[r, c] = 1
+            elif (op >> idx) & 1:
+                b[r, c] = 1
+            idx += 1
+    return a, b
+
+
+def rc_to_idx(r, c):
+    return r * 8 + c
+
+
+def idx_to_rc(i):
+    return divmod(i, 8)
+
+
+def idx_to_move(i):
+    r, c = idx_to_rc(i)
+    return chr(ord('a') + c) + str(r + 1)
+
+
+def popcount(x):
+    return x.bit_count()
+
+
+def legal_moves(me, op):
+    occ = me | op
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            i = rc_to_idx(r, c)
+            if (occ >> i) & 1:
+                continue
+            flips_any = False
+            for dr, dc in DIRS:
+                rr, cc = r + dr, c + dc
+                seen_op = False
+                while inside(rr, cc):
+                    j = rc_to_idx(rr, cc)
+                    if (op >> j) & 1:
+                        seen_op = True
+                        rr += dr
+                        cc += dc
+                        continue
+                    if (me >> j) & 1:
+                        if seen_op:
+                            flips_any = True
+                        break
+                    break
+                if flips_any:
+                    moves.append(i)
+                    break
+    return moves
+
+
+def apply_move(me, op, move):
+    r, c = idx_to_rc(move)
+    flipped = 0
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        line = 0
+        seen_op = False
+        while inside(rr, cc):
+            j = rc_to_idx(rr, cc)
+            bit = 1 << j
+            if op & bit:
+                seen_op = True
+                line |= bit
+                rr += dr
+                cc += dc
+                continue
+            if me & bit:
+                if seen_op:
+                    flipped |= line
+                break
+            break
+    bit = 1 << move
+    me2 = me | bit | flipped
+    op2 = op & ~flipped
+    return op2, me2  # swapped side to move
+
+
+def game_over(me, op):
+    if (me | op) == (1 << 64) - 1:
+        return True
+    return len(legal_moves(me, op)) == 0 and len(legal_moves(op, me)) == 0
+
+
+def frontier_count(player, empty):
+    cnt = 0
+    for i in range(64):
+        if ((player >> i) & 1) == 0:
+            continue
+        r, c = idx_to_rc(i)
+        for dr, dc in DIRS:
+            rr, cc = r + dr, c + dc
+            if inside(rr, cc):
+                j = rc_to_idx(rr, cc)
+                if (empty >> j) & 1:
+                    cnt += 1
+                    break
+    return cnt
+
+
+def corner_score(me, op):
+    s = 0
+    for r, c in CORNERS:
+        i = rc_to_idx(r, c)
+        bit = 1 << i
+        if me & bit:
+            s += 1
+        elif op & bit:
+            s -= 1
+    return s
+
+
+def approx_stability(me, op):
+    # Conservative edge stability from owned corners
+    ms = 0
+    os = 0
+
+    def count_from_corner(player, corner):
+        r, c = corner
+        i = rc_to_idx(r, c)
+        if ((player >> i) & 1) == 0:
+            return 0
+        cnt = 1
+        # Along row
+        if r == 0:
+            rr = 0
+            if c == 0:
+                for cc in range(1, 8):
+                    j = rc_to_idx(rr, cc)
+                    if (player >> j) & 1:
+                        cnt += 1
+                    else:
+                        break
+            else:
+                for cc in range(6, -1, -1):
+                    j = rc_to_idx(rr, cc)
+                    if (player >> j) & 1:
+                        cnt += 1
+                    else:
+                        break
+        else:
+            rr = 7
+            if c == 0:
+                for cc in range(1, 8):
+                    j = rc_to_idx(rr, cc)
+                    if (player >> j) & 1:
+                        cnt += 1
+                    else:
+                        break
+            else:
+                for cc in range(6, -1, -1):
+                    j = rc_to_idx(rr, cc)
+                    if (player >> j) & 1:
+                        cnt += 1
+                    else:
+                        break
+        # Along col
+        if c == 0:
+            cc = 0
+            if r == 0:
+                for rr in range(1, 8):
+                    j = rc_to_idx(rr, cc)
+                    if (player >> j) & 1:
+                        cnt += 1
+                    else:
+                        break
+            else:
+                for rr in range(6, -1, -1):
+                    j = rc_to_idx(rr, cc)
+                    if (player >> j) & 1:
+                        cnt += 1
+                    else:
+                        break
+        else:
+            cc = 7
+            if r == 0:
+                for rr in range(1, 8):
+                    j = rc_to_idx(rr, cc)
+                    if (player >> j) & 1:
+                        cnt += 1
+                    else:
+                        break
+            else:
+                for rr in range(6, -1, -1):
+                    j = rc_to_idx(rr, cc)
+                    if (player >> j) & 1:
+                        cnt += 1
+                    else:
+                        break
+        return cnt
+
+    for cr in CORNERS:
+        ms += count_from_corner(me, cr)
+        os += count_from_corner(op, cr)
+    return ms - os
+
+
+def danger_adjustment(me, op):
+    # Penalize occupying X/C squares next to empty corners; reward if corner owned.
+    s = 0
+    for corner, adjs in CORNER_ADJ.items():
+        cr, cc = corner
+        cidx = rc_to_idx(cr, cc)
+        cbit = 1 << cidx
+        corner_empty = ((me | op) & cbit) == 0
+        corner_me = (me & cbit) != 0
+        corner_op = (op & cbit) != 0
+        for ar, ac in adjs:
+            i = rc_to_idx(ar, ac)
+            bit = 1 << i
+            if me & bit:
+                if corner_empty:
+                    s -= 25 if (ar, ac) in X_SQUARES else 12
+                elif corner_me:
+                    s += 6
+                elif corner_op:
+                    s -= 6
+            elif op & bit:
+                if corner_empty:
+                    s += 25 if (ar, ac) in X_SQUARES else 12
+                elif corner_op:
+                    s -= 6
+                elif corner_me:
+                    s += 6
+    return s
+
+
+def positional_score(me, op):
+    s = 0
+    for i in range(64):
+        r, c = idx_to_rc(i)
+        bit = 1 << i
+        if me & bit:
+            s += int(PST[r, c])
+        elif op & bit:
+            s -= int(PST[r, c])
+    return s
+
+
+def evaluate(me, op):
+    if game_over(me, op):
+        diff = popcount(me) - popcount(op)
+        if diff > 0:
+            return 1000000 + diff
+        if diff < 0:
+            return -1000000 + diff
+        return 0
+
+    empty = ~ (me | op) & ((1 << 64) - 1)
+    empties = popcount(empty)
+
+    my_moves = legal_moves(me, op)
+    op_moves = legal_moves(op, me)
+    mym = len(my_moves)
+    opm = len(op_moves)
+
+    disc_diff = popcount(me) - popcount(op)
+    mob = 0 if mym + opm == 0 else 100 * (mym - opm) / (mym + opm)
+    corners = 25 * corner_score(me, op)
+    pos = positional_score(me, op)
+    frontier = frontier_count(op, empty) - frontier_count(me, empty)
+    stability = approx_stability(me, op)
+    danger = danger_adjustment(me, op)
+
+    if empties > 40:
+        return int(
+            7 * mob +
+            2 * pos +
+            35 * corner_score(me, op) +
+            4 * frontier +
+            8 * stability +
+            3 * danger -
+            1 * disc_diff
+        )
+    elif empties > 14:
+        return int(
+            8 * mob +
+            2 * pos +
+            corners +
+            5 * frontier +
+            10 * stability +
+            3 * danger +
+            1 * disc_diff
+        )
+    else:
+        parity = 8 if (empties % 2 == 1) else -8
+        return int(
+            3 * mob +
+            1 * pos +
+            30 * corner_score(me, op) +
+            4 * frontier +
+            12 * stability +
+            2 * danger +
+            12 * disc_diff +
+            parity
+        )
+
+
+def move_order_key(me, op, move):
+    r, c = idx_to_rc(move)
+    score = int(PST[r, c])
+
+    if (r, c) in CORNERS:
+        score += 10000
+    if (r, c) in X_SQUARES:
+        score -= 250
+    if (r, c) in C_SQUARES:
+        score -= 80
+
+    nme, nop = apply_move(me, op, move)
+    # apply_move swaps sides; after move, original player discs are nop
+    new_my_discs = popcount(nop)
+    old_my_discs = popcount(me)
+    flipped = new_my_discs - old_my_discs - 1
+    score += 8 * flipped
+
+    opp_moves = legal_moves(nme, nop)
+    score -= 20 * len(opp_moves)
+
+    # Strong corner access heuristic
+    for m in opp_moves:
+        rr, cc = idx_to_rc(m)
+        if (rr, cc) in CORNERS:
+            score -= 5000
+
+    return score
+
+
+class Searcher:
+    def __init__(self, deadline):
+        self.deadline = deadline
+        self.tt = {}
+
+    def time_up(self):
+        return time.perf_counter() >= self.deadline
+
+    def search(self, me, op):
+        moves = legal_moves(me, op)
+        if not moves:
+            return None
+
+        moves = sorted(moves, key=lambda m: move_order_key(me, op, m), reverse=True)
+        best_move = moves[0]
+
+        empties = 64 - popcount(me | op)
+        if empties <= 10:
+            max_depth = empties + 2
+        elif empties <= 14:
+            max_depth = 12
+        else:
+            max_depth = 7
+
+        depth = 1
+        while depth <= max_depth:
+            if self.time_up():
+                break
+            alpha = -INF
+            beta = INF
+            current_best = None
+            current_best_val = -INF
+
+            ordered = sorted(moves, key=lambda m: move_order_key(me, op, m), reverse=True)
+            for mv in ordered:
+                if self.time_up():
+                    break
+                nme, nop = apply_move(me, op, mv)
+                val = -self.alphabeta(nme, nop, depth - 1, -beta, -alpha, 1)
+                if val > current_best_val:
+                    current_best_val = val
+                    current_best = mv
+                if val > alpha:
+                    alpha = val
+
+            if not self.time_up() and current_best is not None:
+                best_move = current_best
+                # principal variation move ordering boost
+                moves.remove(best_move)
+                moves.insert(0, best_move)
+
+            depth += 1
+
+        return best_move
+
+    def alphabeta(self, me, op, depth, alpha, beta, passed):
+        if self.time_up():
+            return evaluate(me, op)
+
+        key = (me, op, depth, passed)
+        ttv = self.tt.get(key)
+        if ttv is not None:
+            return ttv
+
+        moves = legal_moves(me, op)
+        if not moves:
+            if passed or not legal_moves(op, me):
+                val = evaluate(me, op)
+                self.tt[key] = val
+                return val
+            val = -self.alphabeta(op, me, depth, -beta, -alpha, 1)
+            self.tt[key] = val
+            return val
+
+        empties = 64 - popcount(me | op)
+        if depth <= 0:
+            if empties <= 12:
+                depth = empties  # near-end exact extension
+            else:
+                val = evaluate(me, op)
+                self.tt[key] = val
+                return val
+
+        ordered = sorted(moves, key=lambda m: move_order_key(me, op, m), reverse=True)
+
+        best = -INF
+        for mv in ordered:
+            nme, nop = apply_move(me, op, mv)
+            val = -self.alphabeta(nme, nop, depth - 1, -beta, -alpha, 0)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        self.tt[key] = best
+        return best
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    me, op = bitboards_from_arrays(you, opponent)
+    moves = legal_moves(me, op)
+    if not moves:
+        return "pass"
+
+    # Immediate corner if available
+    for mv in moves:
+        if idx_to_rc(mv) in CORNERS:
+            return idx_to_move(mv)
+
+    # Time management
+    deadline = time.perf_counter() + 0.92
+    searcher = Searcher(deadline)
+    best = searcher.search(me, op)
+
+    if best is None or best not in moves:
+        # Safe fallback: choose best heuristic legal move
+        best = max(moves, key=lambda m: move_order_key(me, op, m))
+
+    return idx_to_move(best)

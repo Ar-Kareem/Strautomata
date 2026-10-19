@@ -1,0 +1,176 @@
+
+import heapq
+import time
+import random
+import math
+
+def policy(me, opp, color):
+    SIZE = 11
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+    empty = [(r, c) for r in range(SIZE) for c in range(SIZE) if (r, c) not in occupied]
+    
+    if not empty:
+        return (0, 0)
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                yield nr, nc
+    
+    def shortest_path(player_set, opponent_set, player_color):
+        # Dijkstra: cost 0 for own stones, 1 for empty, inf for opponent
+        # Connect top-bottom for 'b', left-right for 'w'
+        dist = [[float('inf')] * SIZE for _ in range(SIZE)]
+        heap = []
+        
+        if player_color == 'b':
+            # Connect top (row=0) to bottom (row=10)
+            for c in range(SIZE):
+                if (0, c) in opponent_set:
+                    continue
+                cost = 0 if (0, c) in player_set else 1
+                if cost < dist[0][c]:
+                    dist[0][c] = cost
+                    heapq.heappush(heap, (cost, 0, c))
+        else:
+            # Connect left (col=0) to right (col=10)
+            for r in range(SIZE):
+                if (r, 0) in opponent_set:
+                    continue
+                cost = 0 if (r, 0) in player_set else 1
+                if cost < dist[r][0]:
+                    dist[r][0] = cost
+                    heapq.heappush(heap, (cost, r, 0))
+        
+        while heap:
+            d, r, c = heapq.heappop(heap)
+            if d > dist[r][c]:
+                continue
+            # Check if reached goal
+            if player_color == 'b' and r == SIZE - 1:
+                return d
+            if player_color == 'w' and c == SIZE - 1:
+                return d
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) in opponent_set:
+                    continue
+                cost = 0 if (nr, nc) in player_set else 1
+                nd = d + cost
+                if nd < dist[nr][nc]:
+                    dist[nr][nc] = nd
+                    heapq.heappush(heap, (nd, nr, nc))
+        return float('inf')
+    
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    # Evaluate a position
+    def evaluate(my_stones, opp_stones):
+        my_dist = shortest_path(my_stones, opp_stones, color)
+        opp_dist = shortest_path(opp_stones, my_stones, opp_color)
+        return opp_dist - my_dist
+    
+    # For each candidate move, compute evaluation
+    start_time = time.time()
+    
+    # Reduce candidate moves if too many
+    # Prioritize moves near existing stones and center
+    def move_priority(move):
+        r, c = move
+        center_dist = abs(r - 5) + abs(c - 5)
+        near_own = min((abs(r - mr) + abs(c - mc) for mr, mc in me), default=5)
+        near_opp = min((abs(r - or_) + abs(c - oc) for or_, oc in opp), default=5)
+        return center_dist + near_own * 0.5 + near_opp * 0.3
+    
+    if len(empty) > 40:
+        candidates = sorted(empty, key=move_priority)[:30]
+    elif len(empty) > 25:
+        candidates = sorted(empty, key=move_priority)[:25]
+    else:
+        candidates = list(empty)
+    
+    best_move = candidates[0]
+    best_score = -float('inf')
+    
+    # Quick greedy pass
+    for move in candidates:
+        if time.time() - start_time > 0.85:
+            break
+        new_me = me_set | {move}
+        score = evaluate(new_me, opp_set)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # If we have time, do MCTS-lite: random rollouts from top candidates
+    # Sort candidates by greedy score
+    scored = []
+    for move in candidates:
+        new_me = me_set | {move}
+        score = evaluate(new_me, opp_set)
+        scored.append((score, move))
+    scored.sort(reverse=True)
+    
+    top_candidates = [m for _, m in scored[:min(10, len(scored))]]
+    
+    # MCTS-lite: for each top candidate, do random rollouts
+    wins = {m: 0 for m in top_candidates}
+    visits = {m: 0 for m in top_candidates}
+    
+    total_sims = 0
+    while time.time() - start_time < 0.9 and top_candidates:
+        # UCB1 selection
+        best_ucb_move = None
+        best_ucb = -float('inf')
+        for m in top_candidates:
+            if visits[m] == 0:
+                best_ucb_move = m
+                break
+            ucb = wins[m] / visits[m] + 1.4 * math.sqrt(math.log(total_sims + 1) / visits[m])
+            if ucb > best_ucb:
+                best_ucb = ucb
+                best_ucb_move = m
+        
+        move = best_ucb_move
+        # Simulate a random game from this move
+        sim_me = me_set | {move}
+        sim_opp = set(opp_set)
+        remaining = [c for c in empty if c != move]
+        random.shuffle(remaining)
+        
+        # Assign remaining moves alternately (opponent moves next)
+        turn_opp = True
+        for cell in remaining:
+            if turn_opp:
+                sim_opp.add(cell)
+            else:
+                sim_me.add(cell)
+            turn_opp = not turn_opp
+        
+        # Check who won
+        my_dist = shortest_path(sim_me, sim_opp, color)
+        opp_dist = shortest_path(sim_opp, sim_me, opp_color)
+        
+        if my_dist == 0:
+            wins[move] += 1
+        elif opp_dist == 0:
+            pass  # opponent won
+        elif my_dist <= opp_dist:
+            wins[move] += 1
+        
+        visits[move] += 1
+        total_sims += 1
+    
+    # Pick best move by win rate
+    if total_sims > 0:
+        best_wr = -1
+        for m in top_candidates:
+            if visits[m] > 0:
+                wr = wins[m] / visits[m]
+                if wr > best_wr:
+                    best_wr = wr
+                    best_move = m
+    
+    return best_move

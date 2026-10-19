@@ -1,0 +1,193 @@
+```python
+import random
+from typing import List, Tuple, Set
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Battleship targeting policy using hunt and target strategy.
+    """
+    n = len(board)
+    
+    # Find all available cells (not yet fired)
+    available_cells = []
+    for i in range(n):
+        for j in range(n):
+            if board[i][j] == 0:
+                available_cells.append((i, j))
+    
+    if not available_cells:
+        return (0, 0)  # Should not happen in valid game
+    
+    # Find all hit cells that are not part of a fully sunk ship
+    hit_cells = []
+    for i in range(n):
+        for j in range(n):
+            if board[i][j] == 1:
+                hit_cells.append((i, j))
+    
+    # If we have hits, try to find and sink ships (target mode)
+    if hit_cells:
+        target = find_best_target(board, hit_cells, available_cells)
+        if target:
+            return target
+    
+    # Hunt mode - use probability density
+    return hunt_mode(board, available_cells)
+
+def find_best_target(board: List[List[int]], hit_cells: List[Tuple[int, int]], 
+                    available_cells: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Target mode: find the best cell adjacent to hits to continue sinking ships.
+    """
+    n = len(board)
+    
+    # Group hits into potential ship segments
+    ship_segments = find_ship_segments(board, hit_cells)
+    
+    target_cells = []
+    
+    for segment in ship_segments:
+        if len(segment) == 1:
+            # Single hit - check all 4 directions
+            r, c = segment[0]
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < n and 0 <= nc < n and board[nr][nc] == 0:
+                    target_cells.append((nr, nc))
+        else:
+            # Multi-hit segment - continue in the same direction
+            segment.sort()
+            
+            # Check if it's horizontal or vertical
+            if len(set(r for r, c in segment)) == 1:  # Horizontal
+                r = segment[0][0]
+                min_c = min(c for r, c in segment)
+                max_c = max(c for r, c in segment)
+                
+                # Check both ends
+                if min_c > 0 and board[r][min_c - 1] == 0:
+                    target_cells.append((r, min_c - 1))
+                if max_c < n - 1 and board[r][max_c + 1] == 0:
+                    target_cells.append((r, max_c + 1))
+                    
+            elif len(set(c for r, c in segment)) == 1:  # Vertical
+                c = segment[0][1]
+                min_r = min(r for r, c in segment)
+                max_r = max(r for r, c in segment)
+                
+                # Check both ends
+                if min_r > 0 and board[min_r - 1][c] == 0:
+                    target_cells.append((min_r - 1, c))
+                if max_r < n - 1 and board[max_r + 1][c] == 0:
+                    target_cells.append((max_r + 1, c))
+    
+    if target_cells:
+        # Remove duplicates and filter available cells
+        target_cells = list(set(target_cells))
+        valid_targets = [cell for cell in target_cells if cell in available_cells]
+        if valid_targets:
+            return random.choice(valid_targets)
+    
+    return None
+
+def find_ship_segments(board: List[List[int]], hit_cells: List[Tuple[int, int]]) -> List[List[Tuple[int, int]]]:
+    """
+    Group connected hit cells into ship segments.
+    """
+    n = len(board)
+    visited = set()
+    segments = []
+    
+    for hit_cell in hit_cells:
+        if hit_cell in visited:
+            continue
+            
+        # BFS to find connected hits
+        segment = []
+        queue = [hit_cell]
+        visited.add(hit_cell)
+        
+        while queue:
+            r, c = queue.pop(0)
+            segment.append((r, c))
+            
+            # Check 4 directions
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if (0 <= nr < n and 0 <= nc < n and 
+                    board[nr][nc] == 1 and (nr, nc) not in visited):
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        
+        segments.append(segment)
+    
+    return segments
+
+def hunt_mode(board: List[List[int]], available_cells: List[Tuple[int, int]]) -> Tuple[int, int]:
+    """
+    Hunt mode: use probability density to find the most likely cell containing a ship.
+    """
+    n = len(board)
+    ship_lengths = [5, 4, 3, 3, 2]
+    
+    # Calculate probability for each available cell
+    probability = {}
+    
+    for cell in available_cells:
+        probability[cell] = 0
+    
+    for ship_length in ship_lengths:
+        # Try placing ship at each position and orientation
+        for r in range(n):
+            for c in range(n):
+                # Horizontal placement
+                if c + ship_length <= n:
+                    if can_place_ship(board, r, c, ship_length, horizontal=True):
+                        for i in range(ship_length):
+                            if (r, c + i) in probability:
+                                probability[(r, c + i)] += 1
+                
+                # Vertical placement
+                if r + ship_length <= n:
+                    if can_place_ship(board, r, c, ship_length, horizontal=False):
+                        for i in range(ship_length):
+                            if (r + i, c) in probability:
+                                probability[(r + i, c)] += 1
+    
+    if not probability:
+        return random.choice(available_cells)
+    
+    # Find cells with maximum probability
+    max_prob = max(probability.values())
+    best_cells = [cell for cell, prob in probability.items() if prob == max_prob]
+    
+    # Add some checkerboard pattern preference for early game
+    if len(available_cells) > 50:  # Early game
+        checkerboard_cells = [cell for cell in best_cells 
+                            if (cell[0] + cell[1]) % 2 == 0]
+        if checkerboard_cells:
+            best_cells = checkerboard_cells
+    
+    return random.choice(best_cells)
+
+def can_place_ship(board: List[List[int]], r: int, c: int, length: int, horizontal: bool) -> bool:
+    """
+    Check if a ship can be placed at the given position without conflicting with known misses.
+    """
+    n = len(board)
+    
+    if horizontal:
+        if c + length > n:
+            return False
+        for i in range(length):
+            if board[r][c + i] == -1:  # Can't place on known miss
+                return False
+    else:
+        if r + length > n:
+            return False
+        for i in range(length):
+            if board[r + i][c] == -1:  # Can't place on known miss
+                return False
+    
+    return True
+```

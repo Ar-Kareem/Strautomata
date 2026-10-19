@@ -1,0 +1,245 @@
+The strategy for this policy is to use a **Minimax algorithm with Alpha-Beta pruning** to search the game tree up to a depth of 3 plies. This depth provides a good balance between foresight and the 1-second execution constraint.
+
+The evaluation function focuses heavily on the primary win condition of Lines of Action: **connectivity**. It calculates the number of distinct connected components for both players using a Breadth-First Search (BFS).
+1.  **Win Detection:** If the current player has 1 component, the score is maximized. If the opponent has 1 component, the score is minimized.
+2.  **Component Heuristic:** The score is weighted significantly by the difference in the number of components (Opponent Components - My Components).
+3.  **Material Balance:** A smaller weight is given to the difference in piece count to avoid reckless sacrifices.
+4.  **Centralization:** A slight bias is added towards keeping pieces in the center of the board, which generally increases mobility and connectivity options.
+
+The move generation strictly adheres to Lines of Action rules:
+*   **Distance:** Calculated as the total count of pieces (both colors) in the line of movement.
+*   **Blocking:** Ensures no opponent pieces are jumped over during the move.
+*   **Capture:** Allows landing on opponent pieces.
+
+To ensure robustness and variety, legal moves are shuffled before evaluation, preventing the policy from playing deterministically in positions with equal scores.
+
+<code>
+import random
+import sys
+
+sys.setrecursionlimit(2000)
+
+def policy(board_state):
+    # Create a mutable copy of the board to perform simulations
+    board = [row[:] for row in board_state]
+    
+    ME = 1
+    OPP = -1
+    EMPTY = 0
+    
+    # 8 Directions: (row_delta, col_delta)
+    DIRECTIONS = [
+        (-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)
+    ]
+    
+    def count_pieces_on_line(b, r, c, dr, dc):
+        """
+        Counts the number of pieces in the line (row, col, or diagonal)
+        specified by direction (dr, dc) passing through (r, c).
+        """
+        count = 1  # Start with the piece itself
+        
+        # Scan forward
+        tr, tc = r + dr, c + dc
+        while 0 <= tr < 8 and 0 <= tc < 8:
+            if b[tr][tc] != EMPTY:
+                count += 1
+            tr += dr
+            tc += dc
+            
+        # Scan backward
+        tr, tc = r - dr, c - dc
+        while 0 <= tr < 8 and 0 <= tc < 8:
+            if b[tr][tc] != EMPTY:
+                count += 1
+            tr -= dr
+            tc -= dc
+            
+        return count
+
+    def get_valid_moves(b, player):
+        moves = []
+        opponent = -player
+        
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] != player:
+                    continue
+                
+                for dr, dc in DIRECTIONS:
+                    distance = count_pieces_on_line(b, r, c, dr, dc)
+                    tr, tc = r + dr * distance, c + dc * distance
+                    
+                    # Check bounds
+                    if not (0 <= tr < 8 and 0 <= tc < 8):
+                        continue
+                    
+                    # Cannot land on own piece
+                    if b[tr][tc] == player:
+                        continue
+                        
+                    # Check blocking (cannot jump over opponents)
+                    blocked = False
+                    curr_r, curr_c = r + dr, c + dc
+                    # Check intermediate squares
+                    for _ in range(distance - 1):
+                        if b[curr_r][curr_c] == opponent:
+                            blocked = True
+                            break
+                        curr_r += dr
+                        curr_c += dc
+                    
+                    if not blocked:
+                        moves.append(((r, c), (tr, tc)))
+        return moves
+
+    def count_components(b, player):
+        """
+        Returns the number of connected components for the given player.
+        1 component means all pieces are connected.
+        """
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == player:
+                    pieces.append((r, c))
+        
+        if not pieces:
+            return 0
+            
+        visited = set()
+        components = 0
+        
+        for r, c in pieces:
+            if (r, c) in visited:
+                continue
+            
+            components += 1
+            # BFS
+            queue = [(r, c)]
+            visited.add((r, c))
+            while queue:
+                cr, cc = queue.pop(0)
+                for ddr, ddc in DIRECTIONS:
+                    nr, nc = cr + ddr, cc + ddc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        if b[nr][nc] == player and (nr, nc) not in visited:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+        return components
+
+    def evaluate(b):
+        my_comp = count_components(b, ME)
+        opp_comp = count_components(b, OPP)
+        
+        # Win/Loss detection
+        if my_comp <= 1:
+            return 100000  # Winning
+        if opp_comp <= 1:
+            return -100000 # Losing
+            
+        # Heuristic: Prioritize connecting own pieces, disconnecting opponent
+        score = (opp_comp - my_comp) * 1000
+        
+        # Heuristic: Material difference (secondary)
+        my_pieces = sum(1 for r in b for cell in r if cell == ME)
+        opp_pieces = sum(1 for r in b for cell in r if cell == OPP)
+        score += (my_pieces - opp_pieces) * 50
+        
+        # Heuristic: Centralization (keep pieces near center for better connectivity)
+        centrality_score = 0
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == ME:
+                    # Distance from center (3.5, 3.5)
+                    centrality_score -= (abs(r - 3.5) + abs(c - 3.5))
+        score += centrality_score * 2
+        
+        return score
+
+    def minimax(b, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(b)
+        
+        player = ME if maximizing else OPP
+        moves = get_valid_moves(b, player)
+        
+        if not moves:
+            # No moves available implies loss or game over state
+            return -100000 if maximizing else 100000
+        
+        if maximizing:
+            max_eval = -float('inf')
+            for (fr, fc), (tr, tc) in moves:
+                captured = b[tr][tc]
+                b[tr][tc] = ME
+                b[fr][fc] = EMPTY
+                
+                eval_val = minimax(b, depth - 1, alpha, beta, False)
+                
+                b[fr][fc] = ME
+                b[tr][tc] = captured
+                
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for (fr, fc), (tr, tc) in moves:
+                captured = b[tr][tc]
+                b[tr][tc] = OPP
+                b[fr][fc] = EMPTY
+                
+                eval_val = minimax(b, depth - 1, alpha, beta, True)
+                
+                b[fr][fc] = OPP
+                b[tr][tc] = captured
+                
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # --- Policy Logic ---
+    
+    # Get all legal moves for the current state
+    legal_moves = get_valid_moves(board, ME)
+    
+    # Fallback if no moves (should rarely happen in valid game states)
+    if not legal_moves:
+        return "0,0:0,0"
+        
+    # Shuffle moves to ensure randomness in equally good positions
+    random.shuffle(legal_moves)
+    
+    best_move_str = legal_moves[0] # Default to first move
+    best_score = -float('inf')
+    
+    # Search Depth 3 (1 move + 2 plies of lookahead)
+    # 1 second is usually enough for depth 3 in Python on 8x8
+    search_depth = 2
+    
+    for (fr, fc), (tr, tc) in legal_moves:
+        # Apply move
+        captured = board[tr][tc]
+        board[tr][tc] = ME
+        board[fr][fc] = EMPTY
+        
+        # Evaluate resulting board state
+        score = minimax(board, search_depth, -float('inf'), float('inf'), False)
+        
+        # Undo move
+        board[fr][fc] = ME
+        board[tr][tc] = captured
+        
+        if score > best_score:
+            best_score = score
+            best_move_str = f"{fr},{fc}:{tr},{tc}"
+            
+    return best_move_str
+</code>

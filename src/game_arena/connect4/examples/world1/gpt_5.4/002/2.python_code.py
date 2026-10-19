@@ -1,0 +1,280 @@
+
+from math import inf
+
+ROWS = 6
+COLS = 7
+CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+
+def policy(board: list[list[int]]) -> int:
+    valid = get_valid_moves(board)
+    if not valid:
+        return 0
+
+    # 1) Immediate win
+    for c in ordered_moves(valid):
+        r = get_next_open_row(board, c)
+        if r is not None:
+            board[r][c] = 1
+            win = is_win(board, 1)
+            board[r][c] = 0
+            if win:
+                return c
+
+    # 2) Immediate block
+    for c in ordered_moves(valid):
+        r = get_next_open_row(board, c)
+        if r is not None:
+            board[r][c] = -1
+            win = is_win(board, -1)
+            board[r][c] = 0
+            if win:
+                return c
+
+    # 3) Search
+    empties = sum(1 for row in board for x in row if x == 0)
+    # Slightly adaptive depth to stay fast
+    if empties >= 30:
+        depth = 5
+    elif empties >= 16:
+        depth = 6
+    else:
+        depth = 8
+
+    best_score = -inf
+    best_move = ordered_moves(valid)[0]
+
+    alpha = -inf
+    beta = inf
+
+    for c in ordered_moves(valid):
+        if not is_safe_move(board, c):
+            continue
+        r = get_next_open_row(board, c)
+        board[r][c] = 1
+        score = minimax(board, depth - 1, alpha, beta, False)
+        board[r][c] = 0
+        if score > best_score:
+            best_score = score
+            best_move = c
+        alpha = max(alpha, best_score)
+
+    # If all "safe" filtering removed everything, fall back to normal search
+    if best_move not in valid:
+        best_score = -inf
+        best_move = ordered_moves(valid)[0]
+        alpha = -inf
+        for c in ordered_moves(valid):
+            r = get_next_open_row(board, c)
+            board[r][c] = 1
+            score = minimax(board, depth - 1, alpha, beta, False)
+            board[r][c] = 0
+            if score > best_score:
+                best_score = score
+                best_move = c
+            alpha = max(alpha, best_score)
+
+    # Final legality guarantee
+    if best_move in valid:
+        return best_move
+    return valid[0]
+
+
+def ordered_moves(valid_moves):
+    s = set(valid_moves)
+    return [c for c in CENTER_ORDER if c in s]
+
+
+def get_valid_moves(board):
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+
+def get_next_open_row(board, col):
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return None
+
+
+def is_win(board, piece):
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if (board[r][c] == piece and board[r][c + 1] == piece and
+                board[r][c + 2] == piece and board[r][c + 3] == piece):
+                return True
+
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if (board[r][c] == piece and board[r + 1][c] == piece and
+                board[r + 2][c] == piece and board[r + 3][c] == piece):
+                return True
+
+    # Positive diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if (board[r][c] == piece and board[r + 1][c + 1] == piece and
+                board[r + 2][c + 2] == piece and board[r + 3][c + 3] == piece):
+                return True
+
+    # Negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            if (board[r][c] == piece and board[r - 1][c + 1] == piece and
+                board[r - 2][c + 2] == piece and board[r - 3][c + 3] == piece):
+                return True
+
+    return False
+
+
+def is_terminal(board):
+    return is_win(board, 1) or is_win(board, -1) or len(get_valid_moves(board)) == 0
+
+
+def evaluate_window(window):
+    my_count = window.count(1)
+    opp_count = window.count(-1)
+    empty_count = window.count(0)
+
+    if my_count > 0 and opp_count > 0:
+        return 0
+
+    score = 0
+    if my_count == 4:
+        score += 100000
+    elif my_count == 3 and empty_count == 1:
+        score += 100
+    elif my_count == 2 and empty_count == 2:
+        score += 10
+    elif my_count == 1 and empty_count == 3:
+        score += 1
+
+    if opp_count == 4:
+        score -= 100000
+    elif opp_count == 3 and empty_count == 1:
+        score -= 120
+    elif opp_count == 2 and empty_count == 2:
+        score -= 12
+    elif opp_count == 1 and empty_count == 3:
+        score -= 1
+
+    return score
+
+
+def score_position(board):
+    score = 0
+
+    # Center column preference
+    center_col = COLS // 2
+    center_array = [board[r][center_col] for r in range(ROWS)]
+    score += 6 * center_array.count(1)
+    score -= 6 * center_array.count(-1)
+
+    # Horizontal
+    for r in range(ROWS):
+        row = board[r]
+        for c in range(COLS - 3):
+            score += evaluate_window(row[c:c + 4])
+
+    # Vertical
+    for c in range(COLS):
+        col_arr = [board[r][c] for r in range(ROWS)]
+        for r in range(ROWS - 3):
+            score += evaluate_window(col_arr[r:r + 4])
+
+    # Positive diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += evaluate_window(window)
+
+    # Negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            score += evaluate_window(window)
+
+    return score
+
+
+def count_immediate_wins(board, piece):
+    wins = 0
+    for c in get_valid_moves(board):
+        r = get_next_open_row(board, c)
+        board[r][c] = piece
+        if is_win(board, piece):
+            wins += 1
+        board[r][c] = 0
+    return wins
+
+
+def is_safe_move(board, col):
+    r = get_next_open_row(board, col)
+    if r is None:
+        return False
+
+    board[r][col] = 1
+
+    # If we already win, it's safe
+    if is_win(board, 1):
+        board[r][col] = 0
+        return True
+
+    # Avoid moves that allow opponent immediate win
+    opp_can_win = False
+    for oc in get_valid_moves(board):
+        orow = get_next_open_row(board, oc)
+        board[orow][oc] = -1
+        if is_win(board, -1):
+            opp_can_win = True
+            board[orow][oc] = 0
+            break
+        board[orow][oc] = 0
+
+    board[r][col] = 0
+    return not opp_can_win
+
+
+def minimax(board, depth, alpha, beta, maximizing):
+    valid = get_valid_moves(board)
+    terminal = is_terminal(board)
+
+    if depth == 0 or terminal:
+        if terminal:
+            if is_win(board, 1):
+                return 10**9 + depth
+            elif is_win(board, -1):
+                return -10**9 - depth
+            else:
+                return 0
+        return score_position(board) + 50 * (count_immediate_wins(board, 1) - count_immediate_wins(board, -1))
+
+    if maximizing:
+        value = -inf
+        for c in ordered_moves(valid):
+            r = get_next_open_row(board, c)
+            board[r][c] = 1
+            score = minimax(board, depth - 1, alpha, beta, False)
+            board[r][c] = 0
+            if score > value:
+                value = score
+            if value > alpha:
+                alpha = value
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = inf
+        for c in ordered_moves(valid):
+            r = get_next_open_row(board, c)
+            board[r][c] = -1
+            score = minimax(board, depth - 1, alpha, beta, True)
+            board[r][c] = 0
+            if score < value:
+                value = score
+            if value < beta:
+                beta = value
+            if alpha >= beta:
+                break
+        return value

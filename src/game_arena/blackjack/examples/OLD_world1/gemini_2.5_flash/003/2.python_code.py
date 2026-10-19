@@ -1,0 +1,149 @@
+
+import random
+
+def get_card_value(card: str, current_total: int, target: int) -> int:
+    if card.isdigit():
+        return int(card)
+    elif card in ["J", "Q", "K"]:
+        return 10
+    elif card == "A":
+        # 'A' is 11 unless it makes the hand bust, then it's 1.
+        # However, the problem statement specifies:
+        # "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T)
+        # This implies we can dynamically change its value based on the *final* hand value relative to T.
+        # For simplicity in 'HIT'/'STAY' decision, we evaluate it as 11 first if it doesn't bust immediately.
+        # If the *current_total* + 11 would bust, then consider 1.
+        if current_total + 11 <= target:
+            return 11
+        else:
+            return 1
+    return 0 # Should not happen
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    total = 0
+    num_aces = 0
+    for card in hand:
+        if card.isdigit():
+            total += int(card)
+        elif card in ["J", "Q", "K"]:
+            total += 10
+        elif card == "A":
+            num_aces += 1
+            total += 11 # Assume 11 initially
+
+    # Adjust for Aces if busting or near busting
+    # The rule is "A" → 11 (when the hand value is <= T) or 1 (when the hand value is > T)
+    # This implies we want to keep the hand value <= T as much as possible with 11 for Ace.
+    # If the hand total *after* using 11 for aces is > T, then we start converting Aces to 1.
+    while total > target and num_aces > 0:
+        total -= 10 # Change an Ace from 11 to 1
+        num_aces -= 1
+    
+    return total
+
+def policy(hand: list[str], target: int) -> str:
+    current_value = calculate_hand_value(hand, target)
+
+    # If already busted, we should have stayed, but this handles drawing logic
+    if current_value > target:
+        return "STAY"
+
+    # Define a threshold for staying. This is a heuristic.
+    # The goal is to get as close to target as possible without busting.
+
+    # If current value is very close to target, stay.
+    if target - current_value <= 2: # For instance, if target is 20 and we have 19 or 20, stay.
+                                   # If target is 15 and we have 14 or 15, stay.
+        return "STAY"
+
+    # Consider the remaining cards in a standard deck (13 cards).
+    # We don't know what cards are left in our deck, only what we have in hand.
+    # Assume a fresh deck probability for drawing the next card to inform decision.
+
+    # To make a decision, we need to estimate the probability of busting if we HIT.
+    # This simplified game doesn't track cards already drawn other than hand.
+    # So we assume probability from a full 13-card deck.
+
+    # What are the next cards that would bust us?
+    cards_that_bust = 0
+    for card_rank in ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]:
+        # Simulate drawing this card
+        temp_hand = hand + [card_rank]
+        temp_value = calculate_hand_value(temp_hand, target)
+        if temp_value > target:
+            cards_that_bust += 1
+
+    # Probability of busting if we hit (assuming 13 cards in the deck initially, not subtracting current hand)
+    # This is a simplification as the deck size changes and cards are removed.
+    # For a deterministic "one suit" deck, we *can* track remaining cards.
+    # Let's track remaining cards in our deck. The hand given is what we hold.
+    
+    remaining_deck_cards = [
+        "A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"
+    ]
+    
+    # Remove cards already in hand from the available pool for drawing
+    for card in hand:
+        if card in remaining_deck_cards:
+            remaining_deck_cards.remove(card)
+
+    bust_if_hit_count = 0
+    favorable_if_hit_count = 0 # Cards that get us closer without busting
+    
+    if not remaining_deck_cards: # Should not happen if game is not over, but good for safety
+        return "STAY"
+
+    for card_to_draw in remaining_deck_cards:
+        # Calculate value if this card is drawn
+        potential_value = current_value + get_card_value(card_to_draw, current_value, target) 
+        
+        # Recalculate with full Ace logic for the new potential hand
+        # This is important if initial get_card_value for Ace was simplified.
+        # Better to add and then re-evaluate the full hand.
+        temp_hand_with_draw = hand + [card_to_draw]
+        final_potential_value = calculate_hand_value(temp_hand_with_draw, target)
+
+        if final_potential_value > target:
+            bust_if_hit_count += 1
+        else:
+            favorable_if_hit_count += 1
+
+    total_remaining_cards = len(remaining_deck_cards)
+    
+    # If there are no cards that will cause a bust, always HIT.
+    if bust_if_hit_count == 0:
+        return "HIT"
+
+    # If current value is very low and target is high, it's safer to hit.
+    # This applies when we have many cards to draw without busting.
+    if current_value < target / 2 and current_value < target - 10: 
+        return "HIT"
+
+    # Calculate the probability of busting
+    prob_bust = bust_if_hit_count / total_remaining_cards
+
+    # Dynamic threshold for hitting based on current value and target.
+    # If we are far from the target, we can take more risks.
+    # If we are close to the target, we should be more risk-averse.
+
+    # Example threshold values:
+    # If very close to target, e.g., target - current_value <= 2 or 3, then stay unless prob_bust is 0.
+    if target - current_value <= 3 and prob_bust > 0:
+        return "STAY"
+    
+    # If we have a high chance of busting, STAY.
+    # If we have a low chance of busting AND we are not very close to the target, HIT.
+    
+    # Heuristic: if probability of busting is less than a certain threshold, HIT.
+    # This threshold can be fine-tuned.
+    # Maybe 30% chance of busting is acceptable if we are far from target.
+    # Maybe 0% or 10% if we are close.
+    
+    if prob_bust < 0.25: # If less than 25% chance to bust
+        return "HIT"
+    elif prob_bust >= 0.25: # If 25% or higher chance to bust
+        return "STAY"
+    
+    # Default to STAY if no other condition is met (e.g., if current_value is "good enough")
+    return "STAY"
+

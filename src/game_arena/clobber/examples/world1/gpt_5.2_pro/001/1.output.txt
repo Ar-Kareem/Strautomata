@@ -1,0 +1,338 @@
+The strategy for this policy is an iterative-deepening alpha-beta (negamax) search using fast 30-bit bitboards. It generates only legal capture moves, orders them with tactical heuristics (prefer “safe” captures that cannot be immediately recaptured, and captures that reduce opponent attacking options), and uses a transposition table to reuse results across the search. If the search is cut short by the time limit, it still returns the best legal move found so far (or the first legal move as a guaranteed fallback).
+
+<code>
+import time
+from typing import List, Tuple, Optional, Dict
+
+# Board: 5 rows x 6 cols => 30 cells, index = r*6 + c
+R, C, N = 5, 6, 30
+
+# Directions
+DIRS = {
+    "U": -C,
+    "D": +C,
+    "L": -1,
+    "R": +1,
+}
+DIR_ORDER = ("U", "R", "D", "L")
+
+# Search constants
+INF = 10**9
+MATE = 10**7
+
+# Time management (arena limit ~1s)
+TIME_BUDGET = 0.95  # seconds
+
+
+def _flatten(arr: List[int]) -> List[int]:
+    """Accepts either flat length-30 list or nested 5x6 list."""
+    if len(arr) == N and isinstance(arr[0], int):
+        return arr
+    # nested
+    out = []
+    for row in arr:
+        out.extend(row)
+    return out
+
+
+def _to_bitboard(flat: List[int]) -> int:
+    bb = 0
+    for i, v in enumerate(flat):
+        if v:
+            bb |= 1 << i
+    return bb
+
+
+def _idx_to_rc(idx: int) -> Tuple[int, int]:
+    return idx // C, idx % C
+
+
+# Precompute edge masks and adjacency masks
+COL0 = 0
+COL_LAST = C - 1
+
+NOT_COL0 = 0
+NOT_COL_LAST = 0
+for i in range(N):
+    r, c = _idx_to_rc(i)
+    if c != 0:
+        NOT_COL0 |= 1 << i
+    if c != COL_LAST:
+        NOT_COL_LAST |= 1 << i
+
+ADJ_MASK = [0] * N
+for i in range(N):
+    r, c = _idx_to_rc(i)
+    m = 0
+    if r > 0:
+        m |= 1 << (i - C)
+    if r < R - 1:
+        m |= 1 << (i + C)
+    if c > 0:
+        m |= 1 << (i - 1)
+    if c < C - 1:
+        m |= 1 << (i + 1)
+    ADJ_MASK[i] = m
+
+
+# Move representation: (start_idx, dest_idx, dir_char)
+Move = Tuple[int, int, str]
+
+
+def _gen_moves(y: int, o: int) -> List[Move]:
+    """Generate all legal capture moves for side 'y' against 'o'."""
+    moves: List[Move] = []
+
+    # Up: start at idx, dest = idx-C must contain opponent
+    # Condition: y has start and o has dest => start bits = y & (o << C)
+    starts = y & ((o << C) & ((1 << N) - 1))
+    bb = starts
+    while bb:
+        lsb = bb & -bb
+        s = lsb.bit_length() - 1
+        moves.append((s, s - C, "U"))
+        bb ^= lsb
+
+    # Down: dest = idx+C => start bits = y & (o >> C)
+    starts = y & (o >> C)
+    bb = starts
+    while bb:
+        lsb = bb & -bb
+        s = lsb.bit_length() - 1
+        moves.append((s, s + C, "D"))
+        bb ^= lsb
+
+    # Left: dest = idx-1, no wrap => start bits = y & (o << 1) & NOT_COL0
+    starts = y & ((o << 1) & ((1 << N) - 1)) & NOT_COL0
+    bb = starts
+    while bb:
+        lsb = bb & -bb
+        s = lsb.bit_length() - 1
+        moves.append((s, s - 1, "L"))
+        bb ^= lsb
+
+    # Right: dest = idx+1, no wrap => start bits = y & (o >> 1) & NOT_COL_LAST
+    starts = y & (o >> 1) & NOT_COL_LAST
+    bb = starts
+    while bb:
+        lsb = bb & -bb
+        s = lsb.bit_length() - 1
+        moves.append((s, s + 1, "R"))
+        bb ^= lsb
+
+    return moves
+
+
+def _apply_move(y: int, o: int, mv: Move) -> Tuple[int, int]:
+    s, d, _ = mv
+    sbit = 1 << s
+    dbit = 1 << d
+    # capture: move piece from s to d, remove opponent at d
+    y2 = (y ^ sbit) | dbit
+    o2 = o ^ dbit
+    return y2, o2
+
+
+def _count_moves(y: int, o: int) -> int:
+    # Fast count by generating starts for each direction (no need to list moves)
+    total = 0
+    total += (y & ((o << C) & ((1 << N) - 1))).bit_count()
+    total += (y & (o >> C)).bit_count()
+    total += (y & ((o << 1) & ((1 << N) - 1)) & NOT_COL0).bit_count()
+    total += (y & (o >> 1) & NOT_COL_LAST).bit_count()
+    return total
+
+
+def _eval(y: int, o: int) -> int:
+    """
+    Heuristic evaluation from the perspective of player to move (y).
+    Focus: mobility and restricting opponent mobility.
+    """
+    my_moves = _count_moves(y, o)
+    opp_moves = _count_moves(o, y)
+    my_pieces = y.bit_count()
+    opp_pieces = o.bit_count()
+
+    # Mobility dominates; material is minor.
+    score = 12 * (my_moves - opp_moves) + 1 * (my_pieces - opp_pieces)
+
+    # Small bonus for having "threatened" adjacency (potential captures next turn)
+    # and penalty for being overly exposed.
+    # Approximate: count of y pieces adjacent to any opponent piece.
+    # (This can be good or bad; keep weight small.)
+    adj_contact = 0
+    bb = y
+    while bb:
+        lsb = bb & -bb
+        i = lsb.bit_length() - 1
+        if ADJ_MASK[i] & o:
+            adj_contact += 1
+        bb ^= lsb
+    score += 1 * adj_contact
+
+    return score
+
+
+# Transposition table entry: (depth, value, flag, best_move)
+# flag: 0=EXACT, 1=LOWERBOUND, 2=UPPERBOUND
+TT: Dict[Tuple[int, int], Tuple[int, int, int, Optional[Move]]] = {}
+
+# Timing globals
+_TSTART = 0.0
+_DEADLINE = 0.0
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _time_check():
+    if time.perf_counter() >= _DEADLINE:
+        raise _Timeout
+
+
+def _order_moves(y: int, o: int, moves: List[Move], tt_best: Optional[Move]) -> List[Move]:
+    """
+    Move ordering heuristic:
+    - First: transposition table best move if available.
+    - Prefer moves where the landing square is NOT immediately capturable (safe).
+    - Prefer moves that remove opponent adjacency at the start square.
+    """
+    if not moves:
+        return moves
+
+    scored = []
+    for mv in moves:
+        s, d, _ = mv
+        y2, o2 = _apply_move(y, o, mv)
+        # opponent to move after: they are 'o2' vs 'y2'
+        # "safe" if opponent has no adjacent piece to capture our moved piece at d
+        attackers = (o2 & ADJ_MASK[d]).bit_count()
+        safe = 1 if attackers == 0 else 0
+
+        # If we leave a square that was adjacent to opponent pieces, we may reduce their options
+        opp_adj_to_start = (o & ADJ_MASK[s]).bit_count()
+
+        # Mild center preference (reduce edge sticking)
+        r, c = _idx_to_rc(d)
+        center_dist = abs(r - (R - 1) / 2) + abs(c - (C - 1) / 2)
+        center_bonus = int(10 - 2 * center_dist)  # small
+
+        # Put TT best on top by huge bonus
+        tt_bonus = 1000000 if (tt_best is not None and mv == tt_best) else 0
+
+        score = tt_bonus + 200 * safe + 20 * opp_adj_to_start - 30 * attackers + center_bonus
+        scored.append((score, mv))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [mv for _, mv in scored]
+
+
+def _negamax(y: int, o: int, depth: int, alpha: int, beta: int, ply: int) -> Tuple[int, Optional[Move]]:
+    _time_check()
+
+    moves = _gen_moves(y, o)
+    if not moves:
+        return -MATE + ply, None
+    if depth <= 0:
+        return _eval(y, o), None
+
+    key = (y, o)
+    tt = TT.get(key)
+    tt_best = None
+    if tt is not None:
+        tt_depth, tt_val, tt_flag, tt_move = tt
+        tt_best = tt_move
+        if tt_depth >= depth:
+            if tt_flag == 0:  # EXACT
+                return tt_val, tt_move
+            elif tt_flag == 1:  # LOWERBOUND
+                alpha = max(alpha, tt_val)
+            else:  # UPPERBOUND
+                beta = min(beta, tt_val)
+            if alpha >= beta:
+                return tt_val, tt_move
+
+    moves = _order_moves(y, o, moves, tt_best)
+
+    best_move = moves[0]
+    best_val = -INF
+    orig_alpha = alpha
+
+    for mv in moves:
+        y2, o2 = _apply_move(y, o, mv)
+        # swap roles: opponent becomes player to move
+        val, _ = _negamax(o2, y2, depth - 1, -beta, -alpha, ply + 1)
+        val = -val
+
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+
+    # Store TT
+    flag = 0
+    if best_val <= orig_alpha:
+        flag = 2  # UPPERBOUND
+    elif best_val >= beta:
+        flag = 1  # LOWERBOUND
+    TT[key] = (depth, best_val, flag, best_move)
+
+    return best_val, best_move
+
+
+def _move_to_str(mv: Move) -> str:
+    s, _, dch = mv
+    r, c = _idx_to_rc(s)
+    return f"{r},{c},{dch}"
+
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    global _TSTART, _DEADLINE
+
+    y_flat = _flatten(you)
+    o_flat = _flatten(opponent)
+    y = _to_bitboard(y_flat)
+    o = _to_bitboard(o_flat)
+
+    legal = _gen_moves(y, o)
+    # If no legal moves, the position is terminal; arena should not ask for a move then.
+    # Still, to avoid crashing, return a placeholder (may be judged illegal by engine).
+    if not legal:
+        return "0,0,U"
+
+    if len(legal) == 1:
+        return _move_to_str(legal[0])
+
+    _TSTART = time.perf_counter()
+    _DEADLINE = _TSTART + TIME_BUDGET
+
+    # Iterative deepening
+    best_move = legal[0]
+    best_val = -INF
+
+    # Clear TT occasionally to avoid unbounded growth across many calls
+    # (keeps it effective while controlling memory).
+    if len(TT) > 200000:
+        TT.clear()
+
+    max_depth = 1
+    try:
+        # Depth limit chosen to be safe; iterative deepening stops on time anyway.
+        for depth in range(1, 30):
+            val, mv = _negamax(y, o, depth, -INF, INF, 0)
+            _time_check()
+            if mv is not None:
+                best_move, best_val = mv, val
+            max_depth = depth
+    except _Timeout:
+        pass
+    except Exception:
+        # Safety: always return a legal move even if something unexpected happens.
+        return _move_to_str(legal[0])
+
+    return _move_to_str(best_move)
+</code>

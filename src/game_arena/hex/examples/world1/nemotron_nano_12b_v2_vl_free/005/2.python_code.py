@@ -1,0 +1,85 @@
+
+import sys
+from collections import deque
+
+def get_adjacent_positions(r, c):
+    directions = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, -1)]
+    neighbors = []
+    for dr, dc in directions:
+        nr = r + dr
+        nc = c + dc
+        if 0 <= nr < 11 and 0 <= nc < 11:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def is_winning_move(candidate, me, opp, my_color):
+    me_positions = set(me + [candidate])
+    if my_color == 'b':
+        starts = [(x, y) for (x, y) in me_positions if x == 0]
+        target_row = 10
+    else:
+        starts = [(x, y) for (x, y) in me_positions if y == 0]
+        target_row = 10
+
+    if not starts:
+        return False
+
+    visited = set(starts)
+    queue = deque(starts)
+    while queue:
+        r, c = queue.popleft()
+        if (my_color == 'b' and r == target_row) or (my_color == 'w' and c == target_row):
+            return True
+        for nr, nc in get_adjacent_positions(r, c):
+            if (nr, nc) in me_positions and (nr, nc) not in visited:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+
+    edge_target = []
+    if my_color == 'b':
+        edge_target = [(x, y) for (x, y) in me_positions if x == target_row]
+    else:
+        edge_target = [(x, y) for (x, y) in me_positions if y == target_row]
+
+    return any(node in visited for node in edge_target)
+
+def policy(me, opp, color):
+    me_set = set(me)
+    opp_set = set(opp)
+    empty = [(r, c) for r in range(11) for c in range(11) if (r, c) not in me_set and (r, c) not in opp_set]
+
+    # Check for winning moves
+    winning_moves = []
+    for cell in empty:
+        if is_winning_move(cell, me, opp, color):
+            winning_moves.append(cell)
+
+    if winning_moves:
+        return winning_moves[0]
+
+    # Check blocking opponent's potential winning moves
+    blocking_candidates = []
+    opponent = 'b' if color == 'w' else 'w'
+    for cell in empty:
+        temp_opp = opp + [cell]
+        if is_winning_move(cell, me, temp_opp, opponent):
+            blocking_candidates.append(cell)
+
+    if blocking_candidates:
+        return blocking_candidates[0]
+
+    # Heuristic-based move selection
+    best_score = -float('inf')
+    best_cell = None
+    for cell in empty:
+        r, c = cell
+        count_adjacent = sum(1 for nr, nc in get_adjacent_positions(r, c) if (nr, nc) in me_set)
+        if color == 'b':
+            score = count_adjacent * 3 + (10 - r) * 0.5
+        else:
+            score = count_adjacent * 3 + (10 - c) * 0.5
+        if score > best_score:
+            best_score = score
+            best_cell = cell
+
+    return best_cell

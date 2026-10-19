@@ -1,0 +1,129 @@
+
+def policy(hand: list[str], target: int) -> str:
+    cards = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    N = 13
+    card_idx = {cards[i]: i for i in range(N)}
+    mask = 0
+    for c in hand:
+        i = card_idx[c]
+        mask |= (1 << i)
+    
+    # Precompute popcount
+    total_states = 1 << N
+    pop = [0] * total_states
+    for m in range(1, total_states):
+        pop[m] = pop[m & (m - 1)] + 1
+    
+    # Masks per popcount
+    masks_per_k = [[] for _ in range(14)]
+    for m in range(total_states):
+        masks_per_k[pop[m]].append(m)
+    
+    # Precompute val for this target
+    val = [0] * total_states
+    for m in range(total_states):
+        s = 0
+        aces = 0
+        for i in range(N):
+            if (m & (1 << i)):
+                c = cards[i]
+                if c == 'A':
+                    aces += 1
+                else:
+                    if c.isdigit():
+                        s += int(c)
+                    else:
+                        s += 10
+        v = s + 11 * aces
+        ac = aces
+        while v > target and ac > 0:
+            v -= 10
+            ac -= 1
+        val[m] = v
+    
+    # Policy iteration
+    policy = [1] * total_states  # initial: HIT everywhere possible
+    for iter in range(30):
+        # Forward: compute pi under current policy
+        reach = [0.0] * total_states
+        reach[0] = 1.0
+        pi = [0.0] * (target + 2)
+        for k in range(13):
+            for m in masks_per_k[k]:
+                if reach[m] < 1e-12:
+                    continue
+                v = val[m]
+                if v > target:
+                    pi[0] += reach[m]
+                    continue
+                act = policy[m]
+                if act == 0:
+                    pi[v + 1] += reach[m]
+                    continue
+                # HIT
+                rem = 13 - k
+                contrib = reach[m] / rem
+                for j in range(N):
+                    if (m & (1 << j)) == 0:
+                        nm = m | (1 << j)
+                        reach[nm] += contrib
+        # Handle k=13
+        for m in masks_per_k[13]:
+            if reach[m] > 1e-12:
+                v = val[m]
+                if v > target:
+                    pi[0] += reach[m]
+                else:
+                    pi[v + 1] += reach[m]
+        
+        # Compute cdf (prefix sums): cdf[i] = P(s < s_values[i])
+        # s_values[0]=-1, [1]=0, ..., [target+1]=target
+        cdf = [0.0] * (target + 3)
+        for i in range(target + 2):
+            cdf[i + 1] = cdf[i] + pi[i]
+        
+        # Compute reward_str
+        reward_str = [0.0] * (target + 2)
+        for ss_idx in range(target + 2):
+            ss = -1 if ss_idx == 0 else ss_idx - 1
+            idx_ = ss_idx
+            p_less = cdf[idx_]
+            p_leq = cdf[idx_ + 1]
+            p_eq = pi[idx_]
+            reward_str[ss_idx] = p_less - (1.0 - p_leq)
+        
+        # Backward DP for V and new policy
+        V = [0.0] * total_states
+        new_policy = [0] * total_states
+        for k in range(13, -1, -1):
+            for m in masks_per_k[k]:
+                v = val[m]
+                s = -1 if v > target else v
+                ss_idx = 0 if s == -1 else s + 1
+                stay_val = reward_str[ss_idx]
+                if k == 13 or v > target:
+                    V[m] = stay_val
+                    new_policy[m] = 0
+                    continue
+                # HIT value
+                hit_val = 0.0
+                rem = 13 - k
+                for j in range(N):
+                    if (m & (1 << j)) == 0:
+                        nm = m | (1 << j)
+                        hit_val += V[nm]
+                hit_val /= rem
+                V[m] = max(stay_val, hit_val)
+                new_policy[m] = 0 if stay_val >= hit_val else 1
+        
+        # Check convergence
+        converged = all(policy[m] == new_policy[m] for m in range(total_states))
+        policy = new_policy
+        if converged:
+            break
+    
+    # Decide for current mask
+    if policy[mask] == 0:
+        return "STAY"
+    else:
+        return "HIT"

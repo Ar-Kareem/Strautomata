@@ -1,0 +1,137 @@
+The logic for this policy is based on a multi-layered decision-making approach designed to maximize scoring opportunities while minimizing risks in a 4x4 Dots and Boxes game. The strategy follows these key principles:
+
+1. **Prioritize Chain Reactions and Double-Crosses**: The AI evaluates every legal move to determine whether it completes one or more boxes. If a move leads to a capture, it is considered highly favorable—especially if it leads to a chain reaction (i.e., the opponent is forced to give up another box). This encourages greedy but safe captures when available.
+
+2. **Avoid Giving Away Third Sides**: The most dangerous edge is one that creates a box with exactly three filled sides, as it allows the opponent to complete the box on their turn. Thus, the AI penalizes any move that creates such a situation unless it’s unavoidable or part of a double-cross strategy.
+
+3. **Count Available Moves per Box**: For each box, we count how many of its four edges are already filled. Boxes with three filled edges are "live" and should generally be avoided unless the player is the one who can claim them.
+
+4. **Simulate Move Outcomes**: The policy simulates each legal move and evaluates:
+   - Does it capture one or more boxes? (High priority)
+   - Does it enable the opponent to capture a box on their next move? (Penalize heavily)
+   - Does it maintain control (i.e., continue our turn)? (High reward)
+
+5. **Prioritize Middle Edges for Connectivity**: If no captures are available and no immediate danger, the AI prefers edges that are in central positions and contribute to forming long chains, which can be exploited later.
+
+6. **Greedy with Lookahead-1 Danger Avoidance**: Since full game tree search is expensive in 4x4 (~50 edges), we instead use a depth-1 forward simulation: for each move, simulate the resulting state and assess immediate risks (i.e., whether opponent can score next). This is efficient and effective.
+
+7. **Tie-breaking with Edge Centrality**: When no clear strategic move exists, the AI prefers edges closer to the center to maintain flexibility.
+
+The implementation includes helper functions within `policy` to:
+- Find all legal moves.
+- Simulate the effect of a move (including captures).
+- Count potential future captures for the opponent after a move.
+
+This policy is designed to outperform simple greedy or random agents, and to compete well against other intelligent agents by balancing aggression and caution.
+
+<code>
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Helper: Check if a box at (r, c) has 3 edges (dangerous)
+    def is_dangerous(r, c, h, v):
+        if r < 4 and c < 4:
+            top = h[r, c]
+            bottom = h[r+1, c]
+            left = v[r, c]
+            right = v[r, c+1]
+            filled = int(top != 0) + int(bottom != 0) + int(left != 0) + int(right != 0)
+            return filled == 3
+        return False
+
+    # Simulate a move and return new state and captured boxes
+    def simulate_move(h, v, cap, row, col, dir):
+        h_new = h.copy()
+        v_new = v.copy()
+        cap_new = cap.copy()
+        captures = []
+        if dir == 'H':
+            h_new[row, col] = 1
+            # Check box above
+            if row > 0 and h_new[row, col] and h_new[row-1, col] and v_new[row-1, col] and v_new[row-1, col+1]:
+                if cap_new[row-1, col] == 0:
+                    cap_new[row-1, col] = 1
+                    captures.append((row-1, col))
+            # Check box below
+            if row < 4 and h_new[row, col] and h_new[row+1, col] and v_new[row, col] and v_new[row, col+1]:
+                if cap_new[row, col] == 0:
+                    cap_new[row, col] = 1
+                    captures.append((row, col))
+        else:  # 'V'
+            v_new[row, col] = 1
+            # Check box to the left
+            if col > 0 and v_new[row, col] and v_new[row, col-1] and h_new[row, col-1] and h_new[row+1, col-1]:
+                if cap_new[row, col-1] == 0:
+                    cap_new[row, col-1] = 1
+                    captures.append((row, col-1))
+            # Check box to the right
+            if col < 4 and v_new[row, col] and v_new[row, col+1] and h_new[row, col] and h_new[row+1, col]:
+                if cap_new[row, col] == 0:
+                    cap_new[row, col] = 1
+                    captures.append((row, col))
+        return h_new, v_new, cap_new, captures
+
+    # List all legal moves
+    legal_moves = []
+    for r in range(5):
+        for c in range(5):
+            if c < 4 and horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+            if r < 4 and vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    # If no legal moves, return any (should not happen)
+    if not legal_moves:
+        return "0,0,H"
+
+    # First: prioritize moves that capture boxes
+    capture_moves = []
+    for (r, c, d) in legal_moves:
+        _, _, _, caps = simulate_move(horizontal, vertical, capture, r, c, d)
+        if caps:
+            capture_moves.append((r, c, d, caps))
+
+    if capture_moves:
+        # Among capturing moves, prefer those that capture more boxes
+        capture_moves.sort(key=lambda x: len(x[3]), reverse=True)
+        best_move = capture_moves[0]
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+    # No capture: avoid creating dangerous boxes (with 3 sides)
+    safe_moves = []
+    danger_scores = []
+
+    for (r, c, d) in legal_moves:
+        h_temp, v_temp, cap_temp, _ = simulate_move(horizontal, vertical, capture, r, c, d)
+        danger_count = 0
+        for i in range(4):
+            for j in range(4):
+                if is_dangerous(i, j, h_temp, v_temp) and cap_temp[i, j] == 0:
+                    # If a box is dangerous, but not yet captured, and opponent can take it
+                    # We want to avoid moves that lead to such state
+                    danger_count += 1
+        danger_scores.append((r, c, d, danger_count))
+
+    # Sort by danger score (lower is better)
+    danger_scores.sort(key=lambda x: x[3])
+
+    # Prefer moves that create no new dangerous boxes
+    min_danger = danger_scores[0][3]
+    safe_moves = [move for move in danger_scores if move[3] == min_danger]
+
+    if len(safe_moves) == 1:
+        move = safe_moves[0]
+        return f"{move[0]},{move[1]},{move[2]}"
+
+    # Among equally safe moves, prefer central positions (maximize control)
+    # Center is (2,2) — we want to maximize closeness to center for edges
+    def distance_to_center(r, c):
+        # For an edge at (r,c), approximate center as (r, c)
+        center = 2.0
+        return - (abs(r - center) + abs(c - center))  # negative because we sort descending
+
+    safe_moves.sort(key=lambda x: distance_to_center(x[0], x[1]), reverse=True)
+    best_move = safe_moves[0]
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

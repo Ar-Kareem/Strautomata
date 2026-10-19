@@ -1,0 +1,85 @@
+name: Deploy frontend to GitHub Pages
+
+on:
+  push:
+    branches: [prod]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: src/frontend/arena_fe/package-lock.json
+
+      - name: Install deps
+        working-directory: src/frontend/arena_fe
+        run: npm ci
+
+      # Match replays are gitignored and published as a release asset of this repo by
+      # scripts/public_sync.py; the tag is named by the hash in the committed lock file.
+      - name: Fetch match replays
+        working-directory: src/frontend/arena_fe/public/history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="replays-$(jq -r .hash replays.lock.json)"
+          if gh release download "$tag" --repo "${{ github.repository }}" --pattern replays.tar; then
+            tar -xf replays.tar && rm replays.tar
+            echo "Extracted $tag: $(find replays -type f | wc -l) files"
+          else
+            echo "::warning::Release $tag not found in ${{ github.repository }}; building without match replays"
+          fi
+
+      - name: Build
+        working-directory: src/frontend/arena_fe
+        run: |
+          node scripts/generate_game_arena_manifest.cjs
+          # The site is served from the root of a custom domain (configured in the repo's
+          # Settings -> Pages), so it is built for base path "/".
+          # Serving from <user>.github.io/<repo>/ instead would need --base-href /<repo>/.
+          npx ng build --configuration production --base-href /
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # the Angular application builder writes the site into <outputPath>/browser
+          path: src/frontend/arena_fe/dist/arena_fe/browser
+
+      # GitHub Pages allows one custom domain per repo, so the same build is also pushed to a
+      # mirror repo that serves strautomata.arkareem.com. A single orphan commit keeps the
+      # mirror's history from growing. A mirror failure does not block the main deploy.
+      - name: Mirror to strautomata.arkareem.com
+        uses: peaceiris/actions-gh-pages@v4
+        continue-on-error: true
+        with:
+          deploy_key: ${{ secrets.MIRROR_DEPLOY_KEY }}
+          external_repository: Ar-Kareem/strautomata-mirror
+          publish_branch: gh-pages
+          publish_dir: src/frontend/arena_fe/dist/arena_fe/browser
+          cname: strautomata.arkareem.com
+          force_orphan: true
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

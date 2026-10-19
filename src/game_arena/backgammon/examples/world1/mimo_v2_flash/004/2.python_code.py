@@ -1,0 +1,306 @@
+
+def policy(state: dict) -> str:
+    """
+    Determines the next move for the backgammon player.
+    Strategy: Greedy approach prioritizing bearing off, then maximal advancement.
+    """
+    # Extract state variables
+    my_pts = state['my_pts'] # 0..23
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar'] # Not strictly needed for generation, but useful for context
+    dice = state['dice']
+    
+    # Handle empty dice (should not happen per spec, but good practice)
+    if not dice:
+        return "H:P,P"
+    
+    # Determine lower and higher dice values
+    dice_sorted = sorted(dice, reverse=True) # Higher first: e.g., [6, 3]
+    # If only one die, we need to handle the constraint "play higher die if only one can be played"
+    # The move string requires specifying H or L. 
+    # If we play 1 die, we must use H if possible. 
+    
+    moves_played = []
+    remaining_dice = list(dice_sorted)
+    current_pts = list(my_pts)
+    current_bar = my_bar
+    
+    # Helper to check if a point is available to land on (not blocked)
+    # Destination = start - die (since we move 23 -> 0)
+    def can_land(point_index):
+        if point_index < 0 or point_index > 23:
+            return False
+        return opp_pts[point_index] <= 1
+
+    # Helper to check if we can move from a specific start
+    def can_move_from(start, die_val):
+        if start == 'B':
+            if current_bar > 0:
+                dest = 23 - die_val
+                return can_land(dest)
+            return False
+        else:
+            # start is integer 0..23
+            if current_pts[start] > 0:
+                dest = start - die_val
+                return can_land(dest)
+            return False
+            
+    # Greedy selection function
+    # Returns (start_type, start_idx) for the given die value
+    def select_move(die_val):
+        # Priority 1: Bear off
+        # Can only bear off if all checkers are in home board (points 0..5).
+        # However, for the greedy choice, we just check the specific bear off condition:
+        # Checkers on point 'die_val' can bear off if no checkers on higher points (6..23).
+        can_bear_off = False
+        # Check if we have checkers on points > 5
+        has_checkers_outside_home = any(current_pts[i] > 0 for i in range(6, 24))
+        has_checkers_on_bar = current_bar > 0
+        
+        # Only allowed to bear off if no checkers outside home AND no checkers on bar
+        if not has_checkers_outside_home and not has_checkers_on_bar:
+            # Check if we have a checker exactly at die_val (or lower if die_val > max occupied)
+            # Simple bear off logic:
+            # If we have a checker at die_val, we can bear off.
+            # If we don't, but we have checkers on points < die_val (and no checkers > die_val), 
+            # we must bear off the highest point.
+            
+            occupied_home = [i for i in range(6) if current_pts[i] > 0]
+            if occupied_home:
+                max_occupied = max(occupied_home)
+                if die_val <= max_occupied:
+                    # We must bear off from max_occupied (if die_val == max_occupied) 
+                    # or from max_occupied (if die_val > max_occupied, standard rule: highest checkers bear off)
+                    # However, the move string expects a start point.
+                    # If die_val is specific, we check if we can use it.
+                    # Actually, the engine handles the "highest point" rule if we just try to move?
+                    # No, we must specify the start.
+                    # Let's stick to standard greedy:
+                    # If we have a checker at die_val, use it.
+                    if current_pts[die_val] > 0:
+                        return ('P', die_val)
+                    # Otherwise, if we can bear off a lower point, we usually prioritize moving 
+                    # the one that allows the best future play, but simple greedy:
+                    # Move the furthest back checker if we can't use the exact die?
+                    # Actually, if die_val > max_occupied, we can bear off from max_occupied.
+                    if die_val > max_occupied:
+                        return ('P', max_occupied)
+        
+        # Priority 2: Maximal Advance / Strategic Move
+        # We want to move checkers from higher indices (farther from home) to lower indices.
+        # We prioritize moving checkers that are alone or behind enemy lines.
+        
+        # Candidate starts
+        candidates = []
+        
+        # Check Bar first (mandatory if checkers present)
+        if current_bar > 0:
+            dest = 23 - die_val
+            if can_land(dest):
+                candidates.append(('B', 'B')) # Tuple: (type, start_index)
+        
+        # Check points 23 down to 0
+        for i in range(23, -1, -1):
+            if current_pts[i] > 0:
+                dest = i - die_val
+                if dest < 0: 
+                    continue # Cannot move past 0 unless bearing off (handled above)
+                if can_land(dest):
+                    # Heuristic: higher start index is better (move forward)
+                    # Also, prefer moving checkers that are vulnerable (single checkers)
+                    candidates.append(('P', i))
+        
+        if not candidates:
+            return None # No legal move for this die
+            
+        # Sort candidates:
+        # 1. If on bar, usually good to enter if possible (already filtered).
+        # 2. Prefer moving from furthest back (highest index).
+        # 3. Prefer moving single checkers (value 1) to safety.
+        
+        def sort_key(item):
+            type_, start = item
+            if type_ == 'B': # Bar is high priority usually
+                return (100, 0)
+            
+            # Score based on position
+            # Higher start index is better
+            score_pos = start
+            
+            # Check if the source point is a single checker (good to move)
+            is_single = 1 if current_pts[start] == 1 else 0
+            
+            # Check if the source point is behind opponent (unsafe)
+            # This is a rough heuristic. 
+            # Let's just prioritize high position and singles.
+            return (score_pos, is_single)
+            
+        candidates.sort(key=sort_key, reverse=True)
+        return candidates[0]
+
+    # Determine the order (H or L)
+    # We have up to 2 moves.
+    # We must play the higher die first if possible? 
+    # Actually, the constraint says: "If only one die can be played, you must play the higher die when possible."
+    # And "If both dice can be played, you must play both."
+    # The return format <ORDER> indicates which die is used for the *first* encoded move.
+    # We can choose to play H first or L first, as long as both are played if possible.
+    
+    best_move_string = "H:P,P"
+    best_score = -1
+    
+    # Try playing Higher die first, then Lower die
+    # We need to simulate to see if we can play both.
+    # Since we are greedy, we just try to pick the best move for the first die,
+    # then see if we can play the second die.
+    
+    # To be strictly legal and optimal, we should consider both orders.
+    # However, a simple greedy usually works fine by picking the best immediate move.
+    
+    # Let's try order: H then L
+    # We need to copy state to simulate
+    import copy
+    
+    orders = [('H', dice_sorted[0], dice_sorted[1] if len(dice) > 1 else None),
+              ('L', dice_sorted[-1], dice_sorted[0] if len(dice) > 1 else None)]
+    
+    # If len(dice) == 1, we only play one move. The spec says play higher die if possible.
+    # So we just pick the best move for the single die.
+    
+    if len(dice) == 1:
+        die = dice[0]
+        res = select_move(die)
+        if res is None:
+            # No legal move for the die
+            return "H:P,P"
+        
+        type_, start = res
+        if start == 'B':
+            from_str = "B"
+        else:
+            from_str = f"A{start}"
+            
+        # We must play H if only one die?
+        # The ORDER character relates to the die used.
+        # If we play the higher die (which is the only die), it's H.
+        # If we play the lower die (only die), it's L.
+        # Since there is only one die, it is both H and L.
+        # But the spec says: "If only one die can be played, you must play the higher die when possible."
+        # This implies we should probably default to H if it's a single die.
+        # However, the move string requires an order.
+        # If the die is 5, is it H or L? It's both.
+        # Let's check the examples: "H:A0,A18"
+        # The engine likely doesn't care about H/L if only one move is made, but we must provide one.
+        # Let's stick to 'H' for single die moves.
+        return f"H:{from_str},P"
+
+    # If we have 2 dice
+    # We want to maximize the score of the sequence.
+    # Score heuristic: 1 point per checker moved, 2 points for bearing off, 3 points for entering from bar.
+    # We will simulate both orders.
+    
+    for order_char, die1, die2 in orders:
+        # Deep copy the mutable state parts
+        sim_pts = list(my_pts)
+        sim_bar = my_bar
+        
+        def simulate_move(start, die):
+            nonlocal sim_pts, sim_bar
+            if start == 'B':
+                sim_bar -= 1
+                dest = 23 - die
+                # If we hit opponent (opp_pts > 1 is blocked, but 1 is hittable)
+                # The engine handles hits. We just update our count.
+                # But wait, if we land on a point with 1 enemy, we don't add our checker to the count?
+                # Yes, we do. The engine handles the logic of sending the enemy to the bar.
+                # So we just increment dest.
+                # Actually, we can't simulate the opponent's reaction perfectly without full board state,
+                # but for move legality and greedy choice, we just check if destination is blocked (>1).
+                # If dest has 1 enemy, it's legal (hit). We land there.
+                # Since we don't modify opp_pts in simulation, we just assume we land.
+                sim_pts[dest] += 1
+            else:
+                sim_pts[start] -= 1
+                dest = start - die
+                if dest < 0:
+                    # Bear off
+                    return True # Bear off is valid if constraints met
+                sim_pts[dest] += 1
+            return True
+
+        # Move 1
+        res1 = select_move(die1)
+        if res1 is None:
+            continue # Cannot play this order
+        
+        type1, start1 = res1
+        simulate_move(start1, die1)
+        
+        # Move 2
+        # Re-evaluate candidates with updated state
+        # We need a version of select_move that uses sim_pts and sim_bar
+        def select_move_simulated(die_val, pts, bar):
+            # Bear off check
+            has_outside = any(pts[i] > 0 for i in range(6, 24))
+            if not has_outside and bar == 0:
+                occupied_home = [i for i in range(6) if pts[i] > 0]
+                if occupied_home:
+                    max_occ = max(occupied_home)
+                    if die_val <= max_occ:
+                        if pts[die_val] > 0:
+                            return ('P', die_val)
+                        if die_val > max_occ:
+                            return ('P', max_occ)
+            
+            # Standard move check
+            if bar > 0:
+                dest = 23 - die_val
+                # Check landing (simulated opp is tricky, but for greedy we assume landing unless blocked)
+                # We don't have opp state in the function args, but we have the global state.
+                # We can use the global state for blocking checks (opp_pts doesn't change).
+                if can_land(dest): # Uses global opp_pts
+                    return ('B', 'B')
+            
+            for i in range(23, -1, -1):
+                if pts[i] > 0:
+                    dest = i - die_val
+                    if dest >= 0 and can_land(dest):
+                        return ('P', i)
+            return None
+
+        res2 = select_move_simulated(die2, sim_pts, sim_bar)
+        
+        if res2 is None:
+            # Only 1 move possible
+            # Score: just the first move
+            score = 0
+            if type1 == 'B': score += 3
+            elif start1 - die1 < 0: score += 2 # Bear off
+            else: score += 1
+            
+            if score > best_score:
+                best_score = score
+                from1 = "B" if type1 == 'B' else f"A{start1}"
+                best_move_string = f"{order_char}:{from1},P"
+        else:
+            # Both moves possible
+            type2, start2 = res2
+            score = 0
+            # Move 1 score
+            if type1 == 'B': score += 3
+            elif start1 - die1 < 0: score += 2
+            else: score += 1
+            # Move 2 score
+            if type2 == 'B': score += 3
+            elif start2 - die2 < 0: score += 2
+            else: score += 1
+            
+            if score > best_score:
+                best_score = score
+                from1 = "B" if type1 == 'B' else f"A{start1}"
+                from2 = "B" if type2 == 'B' else f"A{start2}"
+                best_move_string = f"{order_char}:{from1},{from2}"
+
+    return best_move_string

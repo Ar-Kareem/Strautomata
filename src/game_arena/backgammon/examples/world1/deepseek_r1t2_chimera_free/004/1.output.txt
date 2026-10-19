@@ -1,0 +1,115 @@
+The strategy for this policy is focused on efficient movement and risk management. Key elements include:
+1. **Bar Re-entry Priority**: Always clear the bar first using the highest possible die to enter, maximizing blocking opponents.
+2. **Hit and Block**: Prefer moves that hit opponent blots or secure points (two+ checkers) to create anchors.
+3. **Bearing Off**: Maximize bearing off when possible, prioritizing farthest checkers to minimize future risk.
+4. **Blot Avoidance**: Avoid unnecessary exposure by moving checkers from single-checker points last and preventing new blot creation.
+
+This heuristic-driven approach balances aggression and defense, adapting to game stages (early-game blocking vs late-game bearing off).
+
+<code>
+def policy(state: dict) -> str:
+    import copy
+
+    # Helper to check if bearing off is possible
+    def can_bear_off(s):
+        if s['my_bar'] > 0:
+            return False
+        for i in range(18):
+            if s['my_pts'][i] > 0:
+                return False
+        return True
+
+    # Check if bar entry with die is possible
+    def can_enter(die, s):
+        target = 24 - die
+        if not 0 <= target < 24:
+            return False
+        return s['opp_pts'][target] < 2
+
+    # Find best regular move for die, prioritizing hits and safety
+    def find_best_move(die, s):
+        candidates = []
+        bear_off = can_bear_off(s)
+        
+        for src in range(24):
+            if s['my_pts'][src] == 0:
+                continue
+                
+            dst = src - die
+            if dst < 0:
+                if bear_off:
+                    candidates.append((src, -1))
+                continue
+            
+            if dst < 24 and s['opp_pts'][dst] < 2:
+                candidates.append((src, dst))
+
+        # Filter invalid moves
+        valid_moves = []
+        for src, dst in candidates:
+            if dst == -1:  # bearing off
+                valid_moves.append(('bear', src))
+            else:
+                valid_moves.append(('move', src, dst))
+
+        # Prioritize hits (opponent's blot at dst) and blocking
+        for move in valid_moves:
+            if move[0] == 'move':
+                _, src, dst = move
+                if s['opp_pts'][dst] == 1:
+                    return src
+
+        # Then prioritize moving back checkers (highest src)
+        valid_srcs = [src for move in valid_moves for src in (move[1] if move[0]=='bear' else move[1:])]
+        if valid_srcs:
+            return max(src for move in valid_moves for src in ([move[1]] if move[0]=='bear' else [move[1]]))
+
+        return None  # No valid move
+
+    # Generate all possible move strings
+    def get_legal_move_strings():
+        legal_moves = []
+        dice = state['dice']
+        if len(dice) == 0:
+            return ['H:P,P']
+        
+        # Orders to try: H (higher first), then L if needed
+        orders = []
+        if len(dice) == 1:
+            orders.append(('H', [dice[0]]))
+        else:
+            orders.append(('H', [max(dice), min(dice)]))
+            orders.append(('L', [min(dice), max(dice)]))
+
+        for order, dice_vals in orders:
+            # Handle bar moves
+            bar_moves = []
+            temp_my_bar = state['my_bar']
+            remaining_dice = copy.copy(dice_vals)
+            used_dice = []
+            
+            # Enforce bar priority
+            if state['my_bar'] > 0:
+                for die in dice_vals:
+                    if temp_my_bar > 0 and die in remaining_dice and can_enter(die, state):
+                        bar_moves.append('B')
+                        used_dice.append(die)
+                        temp_my_bar -= 1
+                        remaining_dice.remove(die)
+            
+            # Handle regular moves with remaining dice
+            reg_moves = []
+            for die in remaining_dice:
+                src = find_best_move(die, state)
+                reg_moves.append(f"A{src}" if src is not None else "P")
+            
+            moves = bar_moves + reg_moves
+            moves += ['P'] * (2 - len(moves))  # Pad to two moves
+            move_str = f"{order}:{','.join(moves[:2])}"
+            legal_moves.append(move_str)
+        return legal_moves
+
+    # Select first legal move (heuristic prioritization handled in move gen)
+    legal_moves = get_legal_move_strings()
+    return legal_moves[0] if legal_moves else "H:P,P"
+</code>

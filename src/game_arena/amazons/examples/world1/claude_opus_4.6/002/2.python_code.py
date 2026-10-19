@@ -1,0 +1,132 @@
+
+import numpy as np
+from collections import deque
+
+DIRS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+
+def policy(board):
+    board = np.array(board, dtype=int)
+    moves = list(gen_moves(board, 1))
+    if not moves:
+        return "0,0:0,0:0,0"
+    if len(moves) == 1:
+        m = moves[0]
+        return f"{m[0]},{m[1]}:{m[2]},{m[3]}:{m[4]},{m[5]}"
+    
+    best_score = -1e9
+    best_move = moves[0]
+    
+    # Try depth 2 search (my move, opponent response)
+    depth = 2 if len(moves) <= 150 else 1
+    
+    for m in moves:
+        b2 = apply_move(board, m, 1)
+        if depth >= 2:
+            score = alphabeta(b2, depth - 1, -1e9, 1e9, False)
+        else:
+            score = evaluate(b2)
+        if score > best_score:
+            best_score = score
+            best_move = m
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}:{best_move[4]},{best_move[5]}"
+
+def alphabeta(board, depth, alpha, beta, maximizing):
+    player = 1 if maximizing else 2
+    moves = list(gen_moves(board, player))
+    if not moves:
+        return -1e6 if maximizing else 1e6
+    if depth == 0:
+        return evaluate(board)
+    if maximizing:
+        val = -1e9
+        for m in moves:
+            b2 = apply_move(board, m, player)
+            val = max(val, alphabeta(b2, depth-1, alpha, beta, False))
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+        return val
+    else:
+        val = 1e9
+        for m in moves:
+            b2 = apply_move(board, m, player)
+            val = min(val, alphabeta(b2, depth-1, alpha, beta, True))
+            beta = min(beta, val)
+            if alpha >= beta:
+                break
+        return val
+
+def evaluate(board):
+    t1, t2 = territory(board)
+    m1 = len(list(gen_moves(board, 1)))
+    m2 = len(list(gen_moves(board, 2)))
+    if m2 == 0: return 1e6
+    if m1 == 0: return -1e6
+    return (t1 - t2) * 3 + (m1 - m2) * 1
+
+def territory(board):
+    dist1 = bfs_dist(board, 1)
+    dist2 = bfs_dist(board, 2)
+    t1 = t2 = 0
+    for r in range(6):
+        for c in range(6):
+            if board[r,c] == 0:
+                d1, d2 = dist1[r,c], dist2[r,c]
+                if d1 < d2: t1 += 1
+                elif d2 < d1: t2 += 1
+                else:
+                    if d1 < 999: t1 += 0.5; t2 += 0.5
+    return t1, t2
+
+def bfs_dist(board, player):
+    dist = np.full((6,6), 999, dtype=int)
+    q = deque()
+    for r in range(6):
+        for c in range(6):
+            if board[r,c] == player:
+                for dr,dc in DIRS:
+                    nr,nc = r+dr,c+dc
+                    while 0<=nr<6 and 0<=nc<6 and board[nr,nc]==0:
+                        if dist[nr,nc] > 1:
+                            dist[nr,nc] = 1
+                            q.append((nr,nc))
+                        nr+=dr; nc+=dc
+    while q:
+        r,c = q.popleft()
+        d = dist[r,c]
+        for dr,dc in DIRS:
+            nr,nc = r+dr,c+dc
+            while 0<=nr<6 and 0<=nc<6 and board[nr,nc]==0:
+                if dist[nr,nc] > d+1:
+                    dist[nr,nc] = d+1
+                    q.append((nr,nc))
+                nr+=dr; nc+=dc
+    return dist
+
+def gen_moves(board, player):
+    amazons = list(zip(*np.where(board == player)))
+    for fr, fc in amazons:
+        for dr, dc in DIRS:
+            tr, tc = fr+dr, fc+dc
+            while 0<=tr<6 and 0<=tc<6 and board[tr,tc]==0:
+                # shoot arrow from (tr,tc) with (fr,fc) vacated
+                for adr, adc in DIRS:
+                    ar, ac = tr+adr, tc+adc
+                    while 0<=ar<6 and 0<=ac<6:
+                        if ar==fr and ac==fc:
+                            yield (fr,fc,tr,tc,ar,ac)
+                        elif board[ar,ac]==0:
+                            yield (fr,fc,tr,tc,ar,ac)
+                        else:
+                            break
+                        ar+=adr; ac+=adc
+                tr+=dr; tc+=dc
+
+def apply_move(board, m, player):
+    b = board.copy()
+    fr,fc,tr,tc,ar,ac = m
+    b[fr,fc] = 0
+    b[tr,tc] = player
+    b[ar,ac] = -1
+    return b

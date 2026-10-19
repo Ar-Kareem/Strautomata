@@ -1,0 +1,182 @@
+```
+This policy implements a tactical Go AI with three layers of decision-making:
+
+1. **Capture Priority**: Immediately captures any opponent groups with only one liberty (atari)
+2. **Self-Preservation**: Saves our own groups that are in atari by playing their last liberty
+3. **Heuristic Scoring**: Evaluates remaining legal moves based on:
+   - Connection strength (adjacent to our stones)
+   - Attack potential (adjacent to opponent stones)
+   - Liberty count after move
+   - Center control (early game) vs edge control (late game)
+   - Bonus for extending our groups
+
+The AI uses BFS for group detection, checks for suicide moves, and implements basic Ko detection using a global state variable. It always returns a legal move or pass (0,0).
+```
+
+<code>
+import numpy as np
+
+# Global state to detect Ko situations
+_prev_board_state = None
+
+def get_group_and_liberties(board, r, c, color):
+    """Find all stones in a group and their liberties using BFS."""
+    if board[r, c] != color:
+        return set(), set()
+    
+    group = set()
+    liberties = set()
+    stack = [(r, c)]
+    
+    while stack:
+        cr, cc = stack.pop()
+        if (cr, cc) in group:
+            continue
+        
+        group.add((cr, cc))
+        
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = cr + dr, cc + dc
+            neighbor = board[nr, nc]
+            if neighbor == color:
+                stack.append((nr, nc))
+            elif neighbor == 0:
+                liberties.add((nr, nc))
+    
+    return group, liberties
+
+def is_suicide(board, r, c, color):
+    """Check if playing at (r,c) would be suicide (illegal)."""
+    opp_color = -color
+    temp_board = board.copy()
+    temp_board[r, c] = color
+    
+    # Check each adjacent opponent group for capture
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r + dr, c + dc
+        if temp_board[nr, nc] == opp_color:
+            _, libs = get_group_and_liberties(temp_board, nr, nc, opp_color)
+            if len(libs) == 0:
+                return False  # Captures, so legal
+    
+    # Check if our stone has liberties
+    _, libs = get_group_and_liberties(temp_board, r, c, color)
+    return len(libs) == 0
+
+def is_ko(board, r, c, prev_board):
+    """Detect Ko by comparing with previous board state."""
+    if prev_board is None:
+        return False
+    
+    temp_board = board.copy()
+    temp_board[r, c] = 1  # Place our stone
+    
+    return np.array_equal(temp_board, prev_board)
+
+def get_legal_moves(board, prev_board):
+    """Generate all legal moves (non-suicidal, non-Ko)."""
+    moves = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r, c] == 0 and not is_suicide(board, r, c, 1):
+                if not is_ko(board, r, c, prev_board):
+                    moves.append((r, c))
+    return moves
+
+def score_move(board, r, c, move_count):
+    """Heuristic evaluation of a potential move."""
+    score = 0.0
+    
+    # Center preference (decays as game progresses)
+    center_dist = abs(r - 10) + abs(c - 10)
+    score -= center_dist * (3.0 / (1 + move_count / 40))
+    
+    # Adjacent stone bonuses
+    our_adj = 0
+    opp_adj = 0
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r + dr, c + dc
+        neighbor = board[nr, nc]
+        if neighbor == 1:
+            our_adj += 1
+        elif neighbor == -1:
+            opp_adj += 1
+    
+    score += our_adj * 20.0  # Connection is highest priority
+    score += opp_adj * 8.0   # Attacking is secondary
+    
+    # Edge bonus (increases in late game)
+    if r == 1 or r == 19 or c == 1 or c == 19:
+        score += 3.0 * (move_count / 80)
+    
+    # Liberty count after playing
+    temp_board = board.copy()
+    temp_board[r, c] = 1
+    _, libs = get_group_and_liberties(temp_board, r, c, 1)
+    score += len(libs) * 12.0
+    
+    # Bonus for being a direct extension of our group
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nr, nc = r + dr, c + dc
+        if board[nr, nc] == 1:
+            _, libs = get_group_and_liberties(board, nr, nc, 1)
+            if (r, c) in libs:
+                score += 25.0
+                break
+    
+    return score
+
+def policy(me, opponent):
+    """Main decision function."""
+    global _prev_board_state
+    
+    # Initialize padded board (indices 1-19 are actual board)
+    board = np.zeros((21, 21), dtype=int)
+    
+    # Place stones
+    for r, c in me:
+        if 1 <= r <= 19 and 1 <= c <= 19:
+            board[r, c] = 1
+    
+    for r, c in opponent:
+        if 1 <= r <= 19 and 1 <= c <= 19:
+            board[r, c] = -1
+    
+    move_count = len(me) + len(opponent)
+    
+    # LAYER 1: Capture opponent groups in atari
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r, c] == -1:
+                _, libs = get_group_and_liberties(board, r, c, -1)
+                if len(libs) == 1:
+                    capture_move = next(iter(libs))
+                    if not is_suicide(board, capture_move[0], capture_move[1], 1):
+                        if not is_ko(board, capture_move[0], capture_move[1], _prev_board_state):
+                            _prev_board_state = board.copy()
+                            return capture_move
+    
+    # LAYER 2: Save our groups in atari
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r, c] == 1:
+                _, libs = get_group_and_liberties(board, r, c, 1)
+                if len(libs) == 1:
+                    save_move = next(iter(libs))
+                    if not is_suicide(board, save_move[0], save_move[1], 1):
+                        if not is_ko(board, save_move[0], save_move[1], _prev_board_state):
+                            _prev_board_state = board.copy()
+                            return save_move
+    
+    # LAYER 3: Evaluate all legal moves
+    legal_moves = get_legal_moves(board, _prev_board_state)
+    
+    if not legal_moves:
+        _prev_board_state = board.copy()
+        return (0, 0)  # Pass
+    
+    best_move = max(legal_moves, key=lambda m: score_move(board, m[0], m[1], move_count))
+    
+    _prev_board_state = board.copy()
+    return best_move
+</code>

@@ -1,0 +1,237 @@
+The strategy for this policy is to use a combination of minimax with alpha-beta pruning and a heuristic evaluation function to select the best move. We'll implement a recursive search that evaluates all possible moves up to a certain depth and tries to maximize our score while minimizing the opponent's score.
+
+Our evaluation function will:
+1. Count the number of available moves for both players
+2. Consider the distance between our amazons and the opponent's amazons
+3. Reward moves that lead to positions with more mobility
+4. Prefer to place arrows in locations that block future opponent moves
+
+We'll implement a smart move generator that only considers queen-like movements in all 8 directions, and we'll use a depth limit to keep the computation within 1 second.
+
+```python
+</code>
+<code>
+import numpy as np
+import copy
+
+# Define constants
+EMPTY = 0
+MY_AMAZON = 1
+OPPONENT = 2
+ARROW = -1
+BOARD_SIZE = 6
+
+def get_valid_moves(board, player, from_pos=None):
+    """Get all valid moves for the given player at the given position if specified, otherwise all amazons."""
+    moves = []
+    if from_pos is None:
+        # Find all amazons belonging to the player
+        amazons = np.argwhere(board == player)
+        for from_row, from_col in amazons:
+            from_pos = (from_row, from_col)
+            moves.extend(get_valid_moves(board, player, from_pos))
+        return moves
+    
+    from_row, from_col = from_pos
+    directions = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+    
+    # Check movements in all eight directions for queen-like movement
+    for dr, dc in directions:
+        r, c = from_row + dr, from_col + dc
+        while 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE:
+            if board[r, c] != EMPTY:
+                break  # Stop at the first non-empty square
+            # For each valid 'to' position, check valid shoot positions
+            new_board = copy.deepcopy(board)
+            new_board[from_row, from_col] = EMPTY
+            new_board[r, c] = player
+            shoot_moves = get_valid_shoots(new_board, r, c)
+            for arrow_row, arrow_col in shoot_moves:
+                moves.append(f"{from_row},{from_col}:{r},{c}:{arrow_row},{arrow_col}")
+            r += dr
+            c += dc
+    
+    return moves
+
+def get_valid_shoots(board, r, c):
+    """Check all valid shoot positions from (r,c) considering the current state."""
+    arrow_moves = []
+    directions = [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+    
+    for dr, dc in directions:
+        temp_r, temp_c = r + dr, c + dc
+        while 0 <= temp_r < BOARD_SIZE and 0 <= temp_c < BOARD_SIZE:
+            if board[temp_r, temp_c] != EMPTY:
+                break
+            # We don't add arrow positions that block the path of the next cell
+            if temp_r != r or temp_c != c:  # don't count the amazons original position
+                arrow_moves.append((temp_r, temp_c))
+            temp_r += dr
+            temp_c += dc
+    
+    return arrow_moves
+
+def apply_move(board, move, player):
+    """Apply the given move to the board and return the new state."""
+    from_pos, to_pos, arrow_pos = parse_move(move)
+    
+    # Create a copy of the board to modify
+    new_board = copy.deepcopy(board)
+    
+    # Apply the amazon move
+    new_board[from_pos[0], from_pos[1]] = EMPTY
+    new_board[to_pos[0], to_pos[1]] = player
+    
+    # Apply the arrow shot
+    new_board[arrow_pos[0], arrow_pos[1]] = ARROW
+    
+    return new_board
+
+def parse_move(move_str):
+    """Parse a move string into its component positions."""
+    from_str, to_str, arrow_str = move_str.split(':')
+    from_pos = (int(from_str[0]), int(from_str[2]))
+    to_pos = (int(to_str[0]), int(to_str[2]))
+    arrow_pos = (int(arrow_str[0]), int(arrow_str[2]))
+    return from_pos, to_pos, arrow_pos
+
+def evaluate_board(board, player):
+    """Evaluate the board from the perspective of the given player (_MY_AMAZON or OPPONENT)."""
+    me = player
+    opponent = 2 if player == 1 else 1
+    
+    # Count number of blocking pieces and calculate scores based on mobility
+    my_pieces = np.sum(board == me)
+    opp_pieces = np.sum(board == opponent)
+    
+    # Count number of available moves for each player as a proxy for mobility
+    my_moves = len(get_valid_moves(board, me))
+    opp_moves = len(get_valid_moves(board, opponent))
+    
+    # Mobility is a strong indicator in Amazons game; we want to maximize our options and reduce the opponent's
+    mobility_score = my_moves - opp_moves
+    
+    # Weight the number of moves by remaining pieces
+    remaining_pieces = (my_pieces - opp_pieces) * 10 if me < opponent else (my_pieces - opp_pieces) * 10
+    
+    # Score based on available squares (heuristically more squares = better)
+    total_tokens = np.sum(np.abs(board))  # Sum of absolute values counts all tokens
+    space_score = (36 - total_tokens) * 0.5  # We have 36 squares on a 6x6 board
+    
+    # Overall score
+    return (mobility_score + space_score + remaining_pieces)
+
+def minimax(board, depth, alpha, beta, maximizing_player, player):
+    """Minimax search with alpha-beta pruning."""
+    # Base case: terminal state or depth limit
+    if depth == 0:
+        return (evaluate_board(board, player), None)
+    
+    if maximizing_player:
+        max_eval = -float('inf')
+        best_move = None
+        
+        # Generate my valid moves
+        player_moves = get_valid_moves(board, player)
+        
+        for move in player_moves:
+            from_pos, to_pos, arrow_pos = parse_move(move)
+            # Apply the move to create a new board state
+            new_board = apply_move(copy.deepcopy(board), move, player)
+            
+            # Recursive search for opponent's turn
+            eval_val, _ = minimax(new_board, depth - 1, alpha, beta, False, player)
+            
+            # Update the best move and score if this one is better
+            if eval_val > max_eval:
+                max_eval = eval_val
+                best_move = move
+            
+            alpha = max(alpha, eval_val)
+            if alpha >= beta:
+                break  # Prune the branch
+        return (max_eval, best_move)
+    else:
+        min_eval = float('inf')
+        best_move = None
+        
+        # Generate opponent's valid moves
+        opp_player = 2 if player == 1 else 1
+        player_moves = get_valid_moves(board, opp_player)
+        
+        for move in player_moves:
+            # Apply the move for the opponent
+            from_pos, to_pos, arrow_pos = parse_move(move)
+            new_board = apply_move(copy.deepcopy(board), move, opp_player)
+            
+            # Recursive search for our turn
+            eval_val, _ = minimax(new_board, depth - 1, alpha, beta, True, player)
+            
+            # Update the best move and score if this one is better (but from our minimizing perspective)
+            if eval_val < min_eval:
+                min_eval = eval_val
+                best_move = move
+            
+            beta = min(beta, eval_val)
+            if alpha >= beta:
+                break  # Prune the branch
+        return (min_eval, best_move)
+
+def policy(board) -> str:
+    """Select the best move using minimax with alpha-beta pruning."""
+    player = 1  # My color is 1 as per rules
+    # We'll set the depth to 2 - this balances move quality with time constraints on a 6x6 board
+    _, best_move = minimax(board, 2, -float('inf'), float('inf'), True, player)
+    
+    # Fallback to random move if no best move was found (shouldn't happen, but just in case)
+    if best_move is None:
+        my_amazons = np.argwhere(board == MY_AMAZON)
+        valid_moves = []
+        
+        for from_row, from_col in my_amazons:
+            for to_row in range(BOARD_SIZE):
+                for to_col in range(BOARD_SIZE):
+                    if (to_row == from_row and to_col == from_col) or board[to_row, to_col] != 0:
+                        continue
+                    # Check if there's a path
+                    dr = to_row - from_row
+                    dc = to_col - from_col
+                    
+                    if dr == 0 and dc == 0:
+                        continue
+                    if dr != 0:
+                        dr = dr // abs(dr)
+                    if dc != 0:
+                        dc = dc // abs(dc)
+                    
+                    r, c = from_row + dr, from_col + dc
+                    path_valid = True
+                    while r != to_row or c != to_col:
+                        if board[r, c] != 0:
+                            path_valid = False
+                            break
+                        r += dr
+                        c += dc
+                    
+                    if not path_valid:
+                        continue
+                    
+                    # Check for arrows in the shooter's path
+                    shoot_dir = (to_row - from_row, to_col - from_col)
+                    
+                    r, c = to_row + shoot_dir[0], to_col + shoot_dir[1]
+                    while 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE:
+                        if board[r, c] != 0:
+                            break
+                        valid_moves.append(f"{from_row},{from_col}:{to_row},{to_col}:{r},{c}")
+                        r += shoot_dir[0]
+                        c += shoot_dir[1]
+                    
+        # Return a random valid move if found, otherwise be creative
+        if valid_moves:
+            from_pos, to_pos, arrow_pos = parse_move(valid_moves[0])
+            return f"{from_pos[0]},{from_pos[1]}:{to_pos[0]},{to_pos[1]}:{arrow_pos[0]},{arrow_pos[1]}"
+         raise Exception("No legal moves found")  # Should never happen, as per environment rules
+
+    return best_move
+</code>

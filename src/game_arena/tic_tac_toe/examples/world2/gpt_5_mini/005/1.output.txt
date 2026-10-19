@@ -1,0 +1,244 @@
+<thinking>
+I will implement a complete Python file that chooses the next move for 4x4 Tic-Tac-Toe (need 4-in-a-row on rows, cols, or two diagonals). The policy will:
+
+- Check for an immediate winning move and play it.
+- Check for immediate opponent winning moves and block one.
+- Otherwise run an alpha-beta minimax with a transposition cache and a heuristic evaluation to a limited depth.
+- Use move ordering based on heuristics to speed search.
+
+Evaluation scores line potentials (favor lines with more of our marks, penalize opponent lines). The code returns a (row, col) tuple in 0..3.
+
+The search depth and caching should keep runtime within the 1s limit while producing reasonable moves.
+</thinking>
+<code>
+import math
+from functools import lru_cache
+from typing import List, Tuple
+
+# policy(board: list[list[int]]) -> tuple[int, int]
+# board is 4x4 list of lists with values: 0 empty, 1 (us), -1 (opponent)
+
+SIZE = 4
+WIN_LEN = 4
+MAX_PLAYER = 1
+MIN_PLAYER = -1
+
+# Precompute the line coordinates (4 rows, 4 cols, 2 diags)
+LINES = []
+for r in range(SIZE):
+    LINES.append(tuple((r, c) for c in range(SIZE)))
+for c in range(SIZE):
+    LINES.append(tuple((r, c) for r in range(SIZE)))
+LINES.append(tuple((i, i) for i in range(SIZE)))
+LINES.append(tuple((i, SIZE - 1 - i) for i in range(SIZE)))
+
+# Heuristic weights: 10^count
+WEIGHT = [1, 10, 100, 1000, 1000000]  # index by count of markers (0..4)
+
+def board_to_tuple(board: List[List[int]]) -> Tuple[Tuple[int, ...], ...]:
+    return tuple(tuple(row) for row in board)
+
+def is_win_board(board: List[List[int]], player: int) -> bool:
+    target = player * WIN_LEN
+    # check rows, cols, diags
+    for line in LINES:
+        s = 0
+        for (r, c) in line:
+            s += board[r][c]
+        if s == target:
+            return True
+    return False
+
+def evaluate_board(board: List[List[int]]) -> int:
+    """Heuristic: sum potentials of lines.
+    Positive favors MAX_PLAYER, negative favors MIN_PLAYER.
+    """
+    score = 0
+    for line in LINES:
+        cnt_max = 0
+        cnt_min = 0
+        for (r, c) in line:
+            v = board[r][c]
+            if v == MAX_PLAYER:
+                cnt_max += 1
+            elif v == MIN_PLAYER:
+                cnt_min += 1
+        if cnt_min > 0 and cnt_max > 0:
+            continue  # contested line is worthless
+        if cnt_min == 0 and cnt_max >= 0:
+            score += WEIGHT[cnt_max]
+        if cnt_max == 0 and cnt_min >= 0:
+            score -= WEIGHT[cnt_min]
+    return score
+
+def find_immediate_moves(board: List[List[int]], player: int) -> List[Tuple[int,int]]:
+    """Return moves that immediately win for player."""
+    wins = []
+    for r in range(SIZE):
+        for c in range(SIZE):
+            if board[r][c] != 0:
+                continue
+            board[r][c] = player
+            if is_win_board(board, player):
+                wins.append((r, c))
+            board[r][c] = 0
+    return wins
+
+# Transposition cache
+from functools import lru_cache
+
+# We'll use a manual cache because we want to key by board tuple, player, depth
+_cache = {}
+
+def minimax(board: List[List[int]], player: int, depth: int, alpha: int, beta: int) -> int:
+    """Alpha-beta minimax. Returns heuristic score from MAX_PLAYER perspective."""
+    bkey = (board_to_tuple(board), player, depth)
+    if bkey in _cache:
+        return _cache[bkey]
+
+    if is_win_board(board, MAX_PLAYER):
+        val = 10**7  # large positive
+        _cache[bkey] = val
+        return val
+    if is_win_board(board, MIN_PLAYER):
+        val = -10**7
+        _cache[bkey] = val
+        return val
+
+    # collect legal moves
+    moves = [(r, c) for r in range(SIZE) for c in range(SIZE) if board[r][c] == 0]
+    if not moves:
+        val = 0
+        _cache[bkey] = val
+        return val
+
+    if depth == 0:
+        val = evaluate_board(board)
+        _cache[bkey] = val
+        return val
+
+    # Move ordering: prefer moves that improve heuristic after playing
+    next_states = []
+    for (r, c) in moves:
+        board[r][c] = player
+        h = evaluate_board(board)
+        next_states.append(((r, c), h))
+        board[r][c] = 0
+    # For maximizing player, sort descending; for minimizing, ascending
+    next_states.sort(key=lambda x: x[1], reverse=(player == MAX_PLAYER))
+    moves_sorted = [m for (m, _) in next_states]
+
+    if player == MAX_PLAYER:
+        value = -10**9
+        for (r, c) in moves_sorted:
+            board[r][c] = player
+            # immediate win check to cut quickly
+            if is_win_board(board, player):
+                board[r][c] = 0
+                _cache[bkey] = 10**7
+                return 10**7
+            score = minimax(board, -player, depth - 1, alpha, beta)
+            board[r][c] = 0
+            if score > value:
+                value = score
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        _cache[bkey] = value
+        return value
+    else:
+        value = 10**9
+        for (r, c) in moves_sorted:
+            board[r][c] = player
+            if is_win_board(board, player):
+                board[r][c] = 0
+                _cache[bkey] = -10**7
+                return -10**7
+            score = minimax(board, -player, depth - 1, alpha, beta)
+            board[r][c] = 0
+            if score < value:
+                value = score
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        _cache[bkey] = value
+        return value
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Defensive copy not strictly necessary but keep original intact
+    b = board
+
+    # 1) Immediate win
+    my_wins = find_immediate_moves(b, MAX_PLAYER)
+    if my_wins:
+        return my_wins[0]
+
+    # 2) Block opponent immediate wins (if multiple, try to create own win instead)
+    opp_wins = find_immediate_moves(b, MIN_PLAYER)
+    if opp_wins:
+        # If we can create an immediate win ourselves by playing somewhere else to stop one fork, prefer it
+        for (r, c) in [(r, c) for r in range(SIZE) for c in range(SIZE) if b[r][c] == 0]:
+            b[r][c] = MAX_PLAYER
+            if is_win_board(b, MAX_PLAYER):
+                b[r][c] = 0
+                return (r, c)
+            b[r][c] = 0
+        # Otherwise block the first opponent winning square
+        return opp_wins[0]
+
+    # 3) Minimax with depth limit and caching
+    # Clear cache for each root call to keep memory bounded
+    _cache.clear()
+
+    legal = [(r, c) for r in range(SIZE) for c in range(SIZE) if b[r][c] == 0]
+    if not legal:
+        # No moves, but must return something valid; return (0,0)
+        return (0, 0)
+
+    # Try to find strongest move using search depth. Choose depth based on empties.
+    empties = len(legal)
+    # adapt depth: more empties => smaller depth to keep speed; fewer empties allow deeper search
+    if empties >= 12:
+        depth = 4
+    elif empties >= 8:
+        depth = 6
+    else:
+        depth = 8
+
+    best_move = legal[0]
+    best_score = -10**9
+
+    # Order moves by quick heuristic
+    moves_with_score = []
+    for (r, c) in legal:
+        b[r][c] = MAX_PLAYER
+        sc = evaluate_board(b)
+        b[r][c] = 0
+        moves_with_score.append(((r, c), sc))
+    moves_with_score.sort(key=lambda x: x[1], reverse=True)
+    ordered_moves = [m for (m, _) in moves_with_score]
+
+    alpha = -10**9
+    beta = 10**9
+    for (r, c) in ordered_moves:
+        b[r][c] = MAX_PLAYER
+        if is_win_board(b, MAX_PLAYER):
+            b[r][c] = 0
+            return (r, c)
+        score = minimax(b, MIN_PLAYER, depth - 1, alpha, beta)
+        b[r][c] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+        alpha = max(alpha, best_score)
+        if alpha >= beta:
+            break
+
+    return best_move
+
+# If run as a script, no output; function policy is exported for the judge to call.
+if __name__ == "__main__":
+    # Example quick self-test (not used by judge)
+    sample_board = [[0]*4 for _ in range(4)]
+    print(policy(sample_board))  # should return a valid (r,c)
+</code>

@@ -1,0 +1,103 @@
+
+import copy
+
+# Precompute all possible winning lines in 3D Tic Tac Toe
+all_lines = []
+
+# Add axis-aligned lines
+for y in range(3):
+    for z in range(3):
+        line = [(x, y, z) for x in range(3)]
+        all_lines.append(line)
+for x in range(3):
+    for z in range(3):
+        line = [(x, y, z) for y in range(3)]
+        all_lines.append(line)
+for x in range(3):
+    for y in range(3):
+        line = [(x, y, z) for z in range(3)]
+        all_lines.append(line)
+
+# Add face diagonals
+# xy-plane (fixed z)
+for z in range(3):
+    line1 = [(x, x, z) for x in range(3)]
+    all_lines.append(line1)
+    line2 = [(x, 2 - x, z) for x in range(3)]
+    all_lines.append(line2)
+# xz-plane (fixed y)
+for y in range(3):
+    line1 = [(x, y, x) for x in range(3)]
+    all_lines.append(line1)
+    line2 = [(x, y, 2 - x) for x in range(3)]
+    all_lines.append(line2)
+# yz-plane (fixed x)
+for x in range(3):
+    line1 = [(x, y, y) for y in range(3)]
+    all_lines.append(line1)
+    line2 = [(x, y, 2 - y) for y in range(3)]
+    all_lines.append(line2)
+
+# Add space diagonals
+line1 = [(x, x, x) for x in range(3)]
+all_lines.append(line1)
+line2 = [(x, 2 - x, 2 - x) for x in range(3)]
+all_lines.append(line2)
+line3 = [(x, x, 2 - x) for x in range(3)]
+all_lines.append(line3)
+line4 = [(x, 2 - x, x) for x in range(3)]
+all_lines.append(line4)
+
+def evaluate_line(board, line):
+    cells = [board[x][y][z] for (x, y, z) in line]
+    count_1 = cells.count(1)
+    count_neg1 = cells.count(-1)
+    empty = 3 - count_1 - count_neg1
+    if empty == 0:
+        return 1000 if count_1 == 3 else -1000
+    return 10 if count_1 == 2 else (-10 if count_neg1 == 2 else 0)
+
+def evaluate_board(board):
+    return sum(evaluate_line(board, line) for line in all_lines)
+
+def policy(board):
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    empty_cells.append((x, y, z))
+    
+    # Check for winning moves
+    for move in empty_cells:
+        x, y, z = move
+        new_board = copy.deepcopy(board)
+        new_board[x][y][z] = 1
+        if evaluate_board(new_board) >= 1000:
+            return move
+    
+    # Check for opponent's winning moves (block)
+    for move in empty_cells:
+        x, y, z = move
+        new_board = copy.deepcopy(board)
+        new_board[x][y][z] = -1
+        if evaluate_board(new_board) <= -1000:
+            return move
+    
+    # Choose move with highest heuristic score, prioritizing center
+    best_score = -float('inf')
+    best_moves = []
+    for move in empty_cells:
+        x, y, z = move
+        new_board = copy.deepcopy(board)
+        new_board[x][y][z] = 1
+        score = evaluate_board(new_board)
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    # Sort by proximity to center (1,1,1) to break ties
+    best_moves.sort(key=lambda pos: (pos[0]-1)**2 + (pos[1]-1)**2 + (pos[2]-1)**2)
+    return best_moves[0] if best_moves else empty_cells[0]

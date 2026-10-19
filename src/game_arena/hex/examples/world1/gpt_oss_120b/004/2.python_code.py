@@ -1,0 +1,105 @@
+
+import random
+from collections import deque
+from typing import List, Tuple
+
+N = 11  # board size
+
+# Hex neighbours for a cell (r, c)
+_NEIGHBOURS = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+
+def _in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < N and 0 <= c < N
+
+def _neighbours(cell: Tuple[int, int]) -> List[Tuple[int, int]]:
+    r, c = cell
+    res = []
+    for dr, dc in _NEIGHBOURS:
+        nr, nc = r + dr, c + dc
+        if _in_bounds(nr, nc):
+            res.append((nr, nc))
+    return res
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[int, int]:
+
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # ----- define the two borders for the player -----
+    if color == 'b':          # black connects top ↔ bottom
+        source_border = [(0, c) for c in range(N)]
+        target_border = [(N - 1, c) for c in range(N)]
+    else:                     # white connects left ↔ right
+        source_border = [(r, 0) for r in range(N)]
+        target_border = [(r, N - 1) for r in range(N)]
+
+    # ----- 0‑1 BFS from all source border cells -----
+    INF = 10 ** 9
+    dist = { (r, c): INF for r in range(N) for c in range(N) }
+    pred = {}                     # for path reconstruction
+    dq = deque()
+
+    for cell in source_border:
+        if cell in opp_set:
+            continue               # cannot start from an opponent stone
+        dist[cell] = 0
+        dq.appendleft(cell)
+
+    while dq:
+        cur = dq.popleft()
+        cur_d = dist[cur]
+
+        for nb in _neighbours(cur):
+            if nb in opp_set:
+                continue          # opponent stones block the path
+
+            # cost to step onto neighbour
+            w = 0 if nb in me_set else 1
+
+            nd = cur_d + w
+            if nd < dist[nb]:
+                dist[nb] = nd
+                pred[nb] = cur
+                if w == 0:
+                    dq.appendleft(nb)
+                else:
+                    dq.append(nb)
+
+    # ----- find the cheapest target border cell -----
+    best_target = None
+    best_dist = INF
+    for cell in target_border:
+        if dist[cell] < best_dist:
+            best_dist = dist[cell]
+            best_target = cell
+
+    # ----- if we have a reachable path, extract the first empty cell -----
+    if best_target is not None and best_dist < INF:
+        # reconstruct path backwards
+        path = []
+        cur = best_target
+        while True:
+            path.append(cur)
+            if cur in source_border:
+                break
+            cur = pred.get(cur)
+            if cur is None:
+                break
+        path.reverse()   # now from source border to target border
+
+        for cell in path:
+            if cell not in me_set and cell not in opp_set:
+                return cell   # first empty cell on the optimal virtual path
+
+    # ----- fallback: play a random empty cell (prefer centre) -----
+    empty_cells = [(r, c) for r in range(N) for c in range(N)
+                   if (r, c) not in me_set and (r, c) not in opp_set]
+
+    # try centre first
+    centre = (N // 2, N // 2)
+    if centre in empty_cells:
+        return centre
+
+    return random.choice(empty_cells)

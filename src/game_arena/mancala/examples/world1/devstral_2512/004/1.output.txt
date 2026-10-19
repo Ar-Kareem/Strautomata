@@ -1,0 +1,123 @@
+# Strategy for Kalah Policy
+
+The strategy for this Kalah policy is a combination of immediate rewards and lookahead evaluation:
+
+1. **Immediate Rewards**: Prioritize moves that:
+   - Give an extra turn (last seed lands in your store)
+   - Capture opponent's seeds
+   - Maximize immediate seed gain
+
+2. **Lookahead Evaluation**: For promising moves, simulate the next 2-3 moves to evaluate:
+   - Potential for future captures
+   - Board control (distributing seeds to set up future moves)
+   - Opponent's potential responses
+
+3. **Defensive Play**: Avoid moves that would set up the opponent for:
+   - Large captures
+   - Multiple consecutive turns
+
+4. **Balanced Approach**: Combine immediate gains with strategic positioning for future moves.
+
+The policy uses a scoring system that evaluates each legal move based on these factors, then selects the highest-scoring move. For computationally expensive evaluations, it limits the depth of lookahead to stay within time constraints.
+
+<code>
+import numpy as np
+from typing import Tuple, List
+
+def simulate_move(you: List[int], opponent: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+    """Simulate a move and return new state and whether an extra turn was earned."""
+    new_you = you.copy()
+    new_opponent = opponent.copy()
+    seeds = new_you[move]
+    new_you[move] = 0
+    current_player = 'you'
+    extra_turn = False
+
+    while seeds > 0:
+        if current_player == 'you':
+            for i in range(move + 1, 6):
+                if seeds == 0:
+                    break
+                new_you[i] += 1
+                seeds -= 1
+                if seeds == 0 and i == 5:
+                    extra_turn = True
+            if seeds > 0:
+                new_you[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    extra_turn = True
+                current_player = 'opponent'
+        else:
+            for i in range(6):
+                if seeds == 0:
+                    break
+                new_opponent[i] += 1
+                seeds -= 1
+            if seeds > 0:
+                current_player = 'you'
+
+    # Check for capture
+    if not extra_turn and seeds == 0 and current_player == 'you':
+        last_pos = (move + seeds) % 12
+        if last_pos < 6:  # Landed in your house
+            if new_you[last_pos] == 1 and new_opponent[5 - last_pos] > 0:
+                new_you[6] += new_you[last_pos] + new_opponent[5 - last_pos]
+                new_you[last_pos] = 0
+                new_opponent[5 - last_pos] = 0
+
+    return new_you, new_opponent, extra_turn
+
+def evaluate_move(you: List[int], opponent: List[int], move: int, depth: int = 0) -> float:
+    """Evaluate a move with lookahead."""
+    if depth > 2:  # Limit recursion depth
+        return 0
+
+    new_you, new_opponent, extra_turn = simulate_move(you, opponent, move)
+    score = 0
+
+    # Immediate rewards
+    if extra_turn:
+        score += 10  # Extra turn is very valuable
+
+    # Capture evaluation
+    last_pos = (move + you[move]) % 12
+    if last_pos < 6 and new_you[last_pos] == 1 and new_opponent[5 - last_pos] > 0:
+        score += 5 + new_opponent[5 - last_pos]  # Value of capture
+
+    # Board control - prefer moves that distribute seeds well
+    score += np.std(new_you[:6]) * -0.5  # Prefer more even distribution
+
+    # Lookahead for opponent's best response
+    if depth < 2 and not extra_turn:
+        opponent_moves = [i for i in range(6) if new_opponent[i] > 0]
+        if opponent_moves:
+            opponent_scores = [evaluate_move(new_opponent, new_you, om, depth + 1) for om in opponent_moves]
+            score -= max(opponent_scores) * 0.7  # Penalize moves that set up opponent well
+
+    return score
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """Select the best move using a combination of immediate rewards and lookahead."""
+    legal_moves = [i for i in range(6) if you[i] > 0]
+
+    if not legal_moves:
+        raise ValueError("No legal moves available")
+
+    # First check for immediate winning moves
+    for move in legal_moves:
+        new_you, new_opponent, extra_turn = simulate_move(you, opponent, move)
+        if sum(new_opponent[:6]) == 0:  # Opponent has no seeds left
+            return move
+
+    # Evaluate all legal moves
+    move_scores = []
+    for move in legal_moves:
+        score = evaluate_move(you, opponent, move)
+        move_scores.append(score)
+
+    # Select move with highest score
+    best_move = legal_moves[np.argmax(move_scores)]
+
+    return best_move
+</code>

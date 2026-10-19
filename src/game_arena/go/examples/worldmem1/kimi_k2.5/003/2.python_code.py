@@ -1,0 +1,202 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    size = 19
+    # Convert to 0-indexed numpy coordinates
+    my_stones = [(r-1, c-1) for r, c in me]
+    opp_stones = [(r-1, c-1) for r, c in opponent]
+    
+    # Board: 0=empty, 1=me, 2=opponent
+    board = np.zeros((size, size), dtype=np.int8)
+    for r, c in my_stones:
+        board[r, c] = 1
+    for r, c in opp_stones:
+        board[r, c] = 2
+    
+    dirs = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    def get_group(start_r: int, start_c: int, player: int) -> set:
+        """Get all stones in the connected group"""
+        group = set()
+        if board[start_r, start_c] != player:
+            return group
+        stack = [(start_r, start_c)]
+        group.add((start_r, start_c))
+        while stack:
+            r, c = stack.pop()
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < size and 0 <= nc < size and board[nr, nc] == player and (nr, nc) not in group:
+                    group.add((nr, nc))
+                    stack.append((nr, nc))
+        return group
+    
+    def get_liberties(group: set) -> set:
+        """Get empty adjacent points (liberties) for a group"""
+        libs = set()
+        for r, c in group:
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < size and 0 <= nc < size and board[nr, nc] == 0:
+                    libs.add((nr, nc))
+        return libs
+    
+    # Precompute all groups and their liberties for both players
+    opp_groups = []  # list of (group_set, liberty_set)
+    visited = set()
+    for r, c in opp_stones:
+        if (r, c) not in visited:
+            g = get_group(r, c, 2)
+            visited.update(g)
+            opp_groups.append((g, get_liberties(g)))
+    
+    my_groups = []
+    visited = set()
+    for r, c in my_stones:
+        if (r, c) not in visited:
+            g = get_group(r, c, 1)
+            visited.update(g)
+            my_groups.append((g, get_liberties(g)))
+    
+    # Priority 1: Capture opponent stones in atari
+    for group, libs in opp_groups:
+        if len(libs) == 1:
+            move = next(iter(libs))
+            if board[move[0], move[1]] == 0:
+                return ((move[0] + 1, move[1] + 1), memory)
+    
+    # Priority 2: Save own stones in atari (if legal)
+    for group, libs in my_groups:
+        if len(libs) == 1:
+            move = next(iter(libs))
+            if board[move[0], move[1]] != 0:
+                continue
+            
+            r, c = move
+            # Check if this move captures opponent (making it legal)
+            captures = False
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < size and 0 <= nc < size and board[nr, nc] == 2:
+                    for og, olibs in opp_groups:
+                        if (nr, nc) in og and move in olibs and len(olibs) == 1:
+                            captures = True
+                            break
+                    if captures:
+                        break
+            
+            if not captures:
+                # Check if connecting to friendly groups gives liberties
+                new_libs = set()
+                # Add adjacent empty points (excluding the move itself)
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < size and 0 <= nc < size and board[nr, nc] == 0:
+                        new_libs.add((nr, nc))
+                # Add liberties from connected friendly groups
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < size and 0 <= nc < size and board[nr, nc] == 1:
+                        for mg, mlibs in my_groups:
+                            if (nr, nc) in mg:
+                                new_libs.update(mlibs)
+                # Remove the point we're playing on
+                new_libs.discard(move)
+                if len(new_libs) == 0:
+                    continue  # Suicide, skip
+            
+            return ((move[0] + 1, move[1] + 1), memory)
+    
+    # Generate candidate moves: empty points adjacent to any stone
+    candidates = set()
+    for r in range(size):
+        for c in range(size):
+            if board[r, c] != 0:
+                for dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < size and 0 <= nc < size and board[nr, nc] == 0:
+                        candidates.add((nr, nc))
+    
+    # Opening: if board empty or few stones, consider center and corners
+    if len(candidates) < 10:
+        for r in [3, 9, 15]:
+            for c in [3, 9, 15]:
+                if board[r, c] == 0:
+                    candidates.add((r, c))
+    
+    if not candidates:
+        return ((0, 0), memory)  # Pass
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for r, c in candidates:
+        if board[r, c] != 0:
+            continue
+            
+        score = 0
+        
+        # Check for captures
+        capture_count = 0
+        for dr, dc in dirs:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < size and 0 <= nc < size and board[nr, nc] == 2:
+                for og, olibs in opp_groups:
+                    if (nr, nc) in og and (r, c) in olibs and len(olibs) == 1:
+                        capture_count += len(og)
+        score += capture_count * 100
+        
+        # Check for self-atari (bad unless capturing)
+        if capture_count == 0:
+            new_libs = set()
+            # Empty neighbors
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < size and 0 <= nc < size and board[nr, nc] == 0:
+                    new_libs.add((nr, nc))
+            # Liberties from connected groups
+            connected_groups = []
+            for dr, dc in dirs:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < size and 0 <= nc < size and board[nr, nc] == 1:
+                    for mg, mlibs in my_groups:
+                        if (nr, nc) in mg and mg not in connected_groups:
+                            connected_groups.append(mg)
+                            new_libs.update(mlibs)
+            new_libs.discard((r, c))
+            if len(new_libs) <= 1:
+                score -= 50  # Self-atari penalty
+        
+        # Positional heuristics
+        # Prefer center slightly
+        dist_center = abs(r - 9) + abs(c - 9)
+        score -= dist_center * 0.3
+        
+        # Bonus for adjacent to opponent (attack)
+        opp_adj = sum(1 for dr, dc in dirs 
+                     if 0 <= r+dr < size and 0 <= c+dc < size and board[r+dr, c+dc] == 2)
+        score += opp_adj * 3
+        
+        # Bonus for adjacent to own stones (connection)
+        own_adj = sum(1 for dr, dc in dirs 
+                     if 0 <= r+dr < size and 0 <= c+dc < size and board[r+dr, c+dc] == 1)
+        score += own_adj * 2
+        
+        # Avoid filling eyes (if all 4 neighbors are own stones)
+        if own_adj == 4:
+            score -= 100
+        
+        # Edge penalty
+        if r == 0 or r == 18 or c == 0 or c == 18:
+            score -= 2
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    if best_move:
+        return ((best_move[0] + 1, best_move[1] + 1), memory)
+    else:
+        return ((0, 0), memory)

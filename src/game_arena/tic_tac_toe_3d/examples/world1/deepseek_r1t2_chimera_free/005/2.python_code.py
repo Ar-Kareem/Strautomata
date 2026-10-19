@@ -1,0 +1,80 @@
+
+import itertools
+
+def generate_all_lines():
+    """Generates all 49 possible winning lines in a 3x3x3 grid."""
+    lines = []
+    # Layer rows (fixed z, fixed x, varying y)
+    for z in range(3):
+        for x in range(3):
+            lines.append([(x, y, z) for y in range(3)])
+    # Layer columns (fixed z, fixed y, varying x)
+    for z in range(3):
+        for y in range(3):
+            lines.append([(x, y, z) for x in range(3)])
+    # Layer diagonals (fixed z)
+    for z in range(3):
+        lines.append([(0, 0, z), (1, 1, z), (2, 2, z)])
+        lines.append([(0, 2, z), (1, 1, z), (2, 0, z)])
+    # Vertical columns (fixed x, fixed y)
+    for x in range(3):
+        for y in range(3):
+            lines.append([(x, y, z) for z in range(3)])
+    # Space diagonals
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+    # Diagonals in vertical planes (fixed x, varying y, z)
+    for x in range(3):
+        lines.append([(x, 0, 0), (x, 1, 1), (x, 2, 2)])
+        lines.append([(x, 0, 2), (x, 1, 1), (x, 2, 0)])
+    # Diagonals in vertical planes (fixed y, varying x, z)
+    for y in range(3):
+        lines.append([(0, y, 0), (1, y, 1), (2, y, 2)])
+        lines.append([(0, y, 2), (1, y, 1), (2, y, 0)])
+    return lines
+
+ALL_LINES = generate_all_lines()
+
+def policy(board):
+    # Precompute lines for each cell
+    lines_through = [[[[] for _ in range(3)] for _ in range(3)] for _ in range(3)]
+    for line in ALL_LINES:
+        for (i, j, k) in line:
+            lines_through[i][j][k].append(line)
+    
+    # Check for immediate win
+    for line in ALL_LINES:
+        vals = [board[i][j][k] for (i, j, k) in line]
+        if sum(vals) == 2:
+            for (i, j, k) in line:
+                if board[i][j][k] == 0:
+                    return (i, j, k)
+    
+    # Check for opponent's immediate win
+    for line in ALL_LINES:
+        vals = [board[i][j][k] for (i, j, k) in line]
+        if sum(vals) == -2:
+            for (i, j, k) in line:
+                if board[i][j][k] == 0:
+                    return (i, j, k)
+    
+    # Take center if available
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+    
+    # Heuristic: select cell with the most open lines (no opponent markers)
+    best_score = -1
+    best_move = None
+    for i, j, k in itertools.product(range(3), repeat=3):
+        if board[i][j][k] == 0:
+            score = 0
+            for line in lines_through[i][j][k]:
+                if not any(board[x][y][z] == -1 for (x, y, z) in line):
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_move = (i, j, k)
+    
+    return best_move

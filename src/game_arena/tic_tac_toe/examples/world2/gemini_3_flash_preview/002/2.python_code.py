@@ -1,0 +1,67 @@
+
+import collections
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    size = 4
+    
+    def check_line(line):
+        s = sum(line)
+        if s == 3 and 0 in line:
+            return 1  # Near win for us
+        if s == -3 and 0 in line:
+            return -1 # Near win for opponent
+        return 0
+
+    # 1. Immediate Win or Block
+    win_move = None
+    block_move = None
+
+    # Check rows
+    for r in range(size):
+        row = board[r]
+        status = check_line(row)
+        if status != 0:
+            c = row.index(0)
+            if status == 1: return (r, c)
+            else: block_move = (r, c)
+
+    # Check columns
+    for c in range(size):
+        col = [board[r][c] for r in range(size)]
+        status = check_line(col)
+        if status != 0:
+            r = col.index(0)
+            if status == 1: return (r, c)
+            else: block_move = (r, c)
+
+    # Check diagonals
+    diag1 = [board[i][i] for i in range(size)]
+    status1 = check_line(diag1)
+    if status1 != 0:
+        idx = diag1.index(0)
+        if status1 == 1: return (idx, idx)
+        else: block_move = (idx, idx)
+
+    diag2 = [board[i][size - 1 - i] for i in range(size)]
+    status2 = check_line(diag2)
+    if status2 != 0:
+        idx = diag2.index(0)
+        if status2 == 1: return (idx, size - 1 - idx)
+        else: block_move = (idx, size - 1 - idx)
+
+    if block_move:
+        return block_move
+
+    # 2. Heuristic: Center Preference
+    center_moves = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    for r, c in center_moves:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 3. Fallback: First available
+    for r in range(size):
+        for c in range(size):
+            if board[r][c] == 0:
+                return (r, c)
+
+    return (0, 0)

@@ -1,0 +1,41 @@
+
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Function to find winning move
+    def find_winning_move(board, player):
+        for row in range(3):
+            if board[row].count(player) == 2 and board[row].count(0) == 1:
+                return (row, board[row].index(0))
+        for col in range(3):
+            if [board[row][col] for row in range(3)].count(player) == 2 and [board[row][col] for row in range(3)].count(0) == 1:
+                return (next(row for row in range(3) if board[row][col] == 0), col)
+        if board[0][0] == board[1][1] == player and board[2][2] == 0:
+            return (2, 2)
+        if board[0][2] == board[1][1] == player and board[2][0] == 0:
+            return (2, 0)
+        if board[0][0] == board[2][2] == player and board[1][1] == 0:
+            return (1, 1)
+        if board[2][0] == board[2][2] == player and board[1][1] == 0:
+            return (1, 1)
+        return None
+
+    # Check for winning move
+    win_move = find_winning_move(board, 1)
+    if win_move:
+        return win_move
+
+    # Check for opponent winning move
+    block_move = find_winning_move(board, 0)
+    if block_move:
+        return block_move
+
+    # List of empty cells to choose from
+    empty_cells = [(row, col) for row in range(3) for col in range(3) if board[row][col] == 0]
+
+    # Choose randomly from available empty cells
+    if empty_cells:
+        return random.choice(empty_cells)
+
+    # Fallback - should not reach here in a normal game
+    return (0, 0)  # Return a default move if no options (ideally, should never happen)

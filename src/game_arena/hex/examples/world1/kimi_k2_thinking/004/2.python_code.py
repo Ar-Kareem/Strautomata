@@ -1,0 +1,168 @@
+
+def policy(me, opp, color):
+    """Return the best move for Hex on an 11x11 board."""
+    my_stones = set(me)
+    opp_stones = set(opp)
+    
+    # 1. Check for immediate winning move
+    win_move = find_immediate_win(my_stones, opp_stones, color)
+    if win_move:
+        return win_move
+    
+    # 2. Check for opponent's winning move (block it)
+    block_move = find_opponent_win(my_stones, opp_stones, color)
+    if block_move:
+        return block_move
+    
+    # 3. Evaluate all legal moves and pick the best
+    best_move = None
+    best_score = -float('inf')
+    
+    for r in range(11):
+        for c in range(11):
+            move = (r, c)
+            if move in my_stones or move in opp_stones:
+                continue
+            
+            score = evaluate_move(move, my_stones, opp_stones, color)
+            if score > best_score:
+                best_score = score
+                best_move = move
+    
+    # Fallback to center if no move found (should never happen)
+    return best_move if best_move else (5, 5)
+
+def find_immediate_win(my_stones, opp_stones, color):
+    """Check if any empty cell gives us an immediate win."""
+    for r in range(11):
+        for c in range(11):
+            move = (r, c)
+            if move in my_stones or move in opp_stones:
+                continue
+            if would_connect_sides(move, my_stones, color):
+                return move
+    return None
+
+def find_opponent_win(my_stones, opp_stones, color):
+    """Check if opponent has a winning move we need to block."""
+    opp_color = 'w' if color == 'b' else 'b'
+    for r in range(11):
+        for c in range(11):
+            move = (r, c)
+            if move in my_stones or move in opp_stones:
+                continue
+            if would_connect_sides(move, opp_stones, opp_color):
+                return move
+    return None
+
+def would_connect_sides(move, stones, color):
+    """Check if adding move connects the required sides."""
+    test_stones = stones.copy()
+    test_stones.add(move)
+    
+    if color == 'b':  # Black: top (row 0) to bottom (row 10)
+        visited = set()
+        queue = []
+        
+        # Start BFS from all stones on top row
+        for (r, c) in test_stones:
+            if r == 0:
+                queue.append((r, c))
+                visited.add((r, c))
+        
+        while queue:
+            r, c = queue.pop(0)
+            if r == 10:  # Reached bottom row
+                return True
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in test_stones and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        return False
+    
+    else:  # White: left (col 0) to right (col 10)
+        visited = set()
+        queue = []
+        
+        # Start BFS from all stones on left column
+        for (r, c) in test_stones:
+            if c == 0:
+                queue.append((r, c))
+                visited.add((r, c))
+        
+        while queue:
+            r, c = queue.pop(0)
+            if c == 10:  # Reached right column
+                return True
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in test_stones and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        return False
+
+def get_neighbors(r, c):
+    """Return all 6 hex neighbors of (r, c)."""
+    neighbors = []
+    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, 1), (1, -1)]:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 11 and 0 <= nc < 11:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def evaluate_move(move, my_stones, opp_stones, color):
+    """Score a potential move based on connectivity, position, and blocking."""
+    r, c = move
+    score = 0
+    
+    # Count neighbors
+    neighbors = get_neighbors(r, c)
+    my_neighbor_count = sum(1 for n in neighbors if n in my_stones)
+    opp_neighbor_count = sum(1 for n in neighbors if n in opp_stones)
+    
+    # Connectivity is most important (friendly neighbors)
+    score += my_neighbor_count * 25
+    
+    # Blocking opponent is second most important
+    score += opp_neighbor_count * 12
+    
+    # Position bonuses: center is powerful for both players
+    if color == 'b':  # Black: prioritize middle rows for top-bottom connection
+        row_bonus = 10 - abs(r - 5)  # Row 5 is best (middle)
+        score += row_bonus * 3
+        col_bonus = 10 - abs(c - 5)  # Center columns still valuable
+        score += col_bonus * 2
+    else:  # White: prioritize middle columns for left-right connection
+        col_bonus = 10 - abs(c - 5)  # Column 5 is best (middle)
+        score += col_bonus * 3
+        row_bonus = 10 - abs(r - 5)  # Center rows still valuable
+        score += row_bonus * 2
+    
+    # Bridge pattern bonus (strong virtual connections)
+    if creates_bridge(move, my_stones):
+        score += 40
+    
+    # Avoid edges when we have no connections (early game)
+    if my_neighbor_count == 0:
+        if color == 'b' and (r == 0 or r == 10):
+            score -= 15
+        if color == 'w' and (c == 0 or c == 10):
+            score -= 15
+    
+    return score
+
+def creates_bridge(move, my_stones):
+    """Detect if move creates a bridge between two of our stones."""
+    r, c = move
+    # Check four common bridge patterns in hex
+    bridge_patterns = [
+        [(r-1, c), (r, c+1)],   # Upper-right bridge
+        [(r, c-1), (r+1, c)],   # Lower-left bridge
+        [(r-1, c), (r, c-1)],   # Upper-left bridge
+        [(r, c+1), (r+1, c)],   # Lower-right bridge
+    ]
+    
+    for p1, p2 in bridge_patterns:
+        if p1 in my_stones and p2 in my_stones:
+            return True
+    
+    return False

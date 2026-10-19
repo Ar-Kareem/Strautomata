@@ -1,0 +1,32 @@
+
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Possible moves will be stored here
+    possible_moves = []
+    
+    # Collecting cells we can shoot at based on the board state
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0: # Only consider cells that haven't been targeted
+                possible_moves.append((r, c))
+    
+    # If we have any hits, we can prioritize surrounding cells
+    hit_cells = [(r, c) for r in range(10) for c in range(10) if board[r][c] == 1]
+    
+    if hit_cells:
+        # We prioritize cells adjacent to the hit cells
+        adjacent_moves = set()
+        for (r, c) in hit_cells:
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if abs(dr) + abs(dc) == 1: # Get only adjacent cells
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                            adjacent_moves.add((nr, nc))
+        
+        if adjacent_moves:
+            return random.choice(list(adjacent_moves))
+    
+    # If no hits or no surrounding cells, we choose randomly from available moves
+    return random.choice(possible_moves)

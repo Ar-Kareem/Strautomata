@@ -1,0 +1,194 @@
+The strategy for this policy focuses on several key backgammon principles:
+
+1. **Bearing Off**: Highest priority - bearing off checkers ends the game
+2. **Hitting**: Knocking opponent blots (single checkers) to the bar sends them back, creating a significant advantage
+3. **Safety**: Avoid leaving blots, especially in positions where opponent can hit them
+4. **Point Building**: Creating anchors (2+ checkers on a point) blocks opponent and provides safety
+5. **Prime Construction**: Consecutive points form a prime, trapping opponent checkers
+6. **Home Board Control**: Strong home board enables hitting and prevents opponent from re-entering
+7. **Race Advancement**: Move checkers toward home efficiently
+8. **Bar Re-entry**: Priority to get checkers off the bar back into play
+
+The policy generates all legal moves considering the order of dice usage (higher/lower first), then scores each based on these strategic factors. The engine handles move validation, so we only return the highest-scoring legal move.
+
+```python
+import copy
+
+def from_point(s):
+    """Convert string to point index."""
+    if s == 'B': return -1
+    if s == 'P': return -2
+    return int(s[1:])
+
+def to_point(p):
+    """Convert point index to string."""
+    if p == -1: return 'B'
+    if p == -2: return 'P'
+    return f'A{p}'
+
+def apply(state, from_str, die):
+    """Apply a move and return new state."""
+    s = copy.deepcopy(state)
+    p = from_point(from_str)
+    
+    if p == -1:  # From bar
+        dest = 24 - die
+        s['my_bar'] -= 1
+        if dest >= 0 and dest < 24:
+            if s['opp_pts'][dest] == 1:
+                s['opp_pts'][dest] = 0
+                s['opp_bar'] += 1
+            s['my_pts'][dest] += 1
+    elif p == -2:  # Pass
+        pass
+    else:  # From point
+        s['my_pts'][p] -= 1
+        dest = p - die
+        if dest < 0:  # Bear off
+            s['my_off'] += 1
+        else:
+            if s['opp_pts'][dest] == 1:
+                s['opp_pts'][dest] = 0
+                s['opp_bar'] += 1
+            s['my_pts'][dest] += 1
+    
+    return s
+
+def can_bear_off(state):
+    """Check if all checkers are in home board (A0-A5) and none on bar."""
+    return sum(state['my_pts'][6:]) == 0 and state['my_bar'] == 0
+
+def legal_from(state, die):
+    """Get legal starting points for a die value."""
+    if state['my_bar'] > 0:
+        entry = 24 - die
+        if entry >= 0 and entry < 24 and state['opp_pts'][entry] < 2:
+            return ['B']
+        return []
+    
+    moves = []
+    can = can_bear_off(state)
+    
+    for i in range(24):
+        if state['my_pts'][i] > 0:
+            dest = i - die
+            if dest < 0:
+                if can and (dest == -1 or sum(state['my_pts'][i+1:]) == 0):
+                    moves.append(to_point(i))
+            elif state['opp_pts'][dest] < 2:
+                moves.append(to_point(i))
+    
+    return moves
+
+def evaluate(state, move):
+    """Score a move based on strategic factors."""
+    order, f1, f2 = move
+    dice = sorted(state['dice'])
+    
+    if len(dice) == 1:
+        die = dice[0]
+        s = apply(state, f1, die)
+        if f2 != 'P':
+            s = apply(s, f2, die)
+    else:
+        s = apply(state, f1, dice[1] if order == 'H' else dice[0])
+        if f2 != 'P':
+            s = apply(s, f2, dice[0] if order == 'H' else dice[1])
+    
+    score = 0
+    
+    # Bearing off (highest priority)
+    score += (s['my_off'] - state['my_off']) * 20000
+    
+    # Hitting opponent
+    score += (s['opp_bar'] - state['opp_bar']) * 10000
+    
+    # Avoid blots - penalize based on danger level
+    for i in range(24):
+        if s['my_pts'][i] == 1:
+            danger = sum(1 for d in range(1, 7) if i+d < 24 and s['opp_pts'][i+d] > 0)
+            score -= danger * 2000
+    
+    # Build points (anchors)
+    for i in range(24):
+        if s['my_pts'][i] >= 2:
+            score += 100
+    
+    # Build primes (4+ consecutive points)
+    for i in range(20):
+        if all(s['my_pts'][j] >= 2 for j in range(i, i+4)):
+            score += 400
+    
+    # Home board control (crucial for bearing off and hitting)
+    score += sum(1 for i in range(6) if s['my_pts'][i] >= 2) * 200
+    
+    # Advance checkers toward home
+    old_dist = sum(i * state['my_pts'][i] for i in range(24))
+    new_dist = sum(i * s['my_pts'][i] for i in range(24))
+    score += (old_dist - new_dist) * 5
+    
+    # Get checkers off bar (high priority)
+    if state['my_bar'] > 0 and s['my_bar'] < state['my_bar']:
+        score += 5000
+    
+    # Prefer using both dice when possible
+    if f2 != 'P':
+        score += 500
+    
+    return score
+
+def generate_moves(state):
+    """Generate all legal moves for current state."""
+    dice = state['dice']
+    if not dice or dice[0] == 0:
+        return []
+    
+    d = sorted(dice)
+    
+    if len(d) == 1:
+        die = d[0]
+        moves = legal_from(state, die)
+        if moves:
+            return [('H', f, 'P') for f in moves]
+        return [('H', 'P', 'P')]
+    
+    lo, hi = d
+    results = []
+    
+    # Try high die first
+    for f1 in legal_from(state, hi):
+        s = apply(state, f1, hi)
+        lo_moves = legal_from(s, lo)
+        if lo_moves:
+            for f2 in lo_moves:
+                results.append(('H', f1, f2))
+        else:
+            results.append(('H', f1, 'P'))
+    
+    # Try low die first
+    for f1 in legal_from(state, lo):
+        s = apply(state, f1, lo)
+        hi_moves = legal_from(s, hi)
+        if hi_moves:
+            for f2 in hi_moves:
+                results.append(('L', f1, f2))
+        else:
+            results.append(('L', f1, 'P'))
+    
+    return results
+
+def policy(state):
+    """Return the best move string for the given state."""
+    dice = state['dice']
+    
+    if not dice or dice[0] == 0:
+        return "H:P,P"
+    
+    moves = generate_moves(state)
+    
+    if not moves:
+        return "H:P,P"
+    
+    best = max(moves, key=lambda m: evaluate(state, m))
+    return f"{best[0]}:{best[1]},{best[2]}"
+```

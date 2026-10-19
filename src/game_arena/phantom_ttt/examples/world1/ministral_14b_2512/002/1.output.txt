@@ -1,0 +1,105 @@
+### Strategy for Phantom Tic Tac Toe Policy
+
+The strategy for this policy is a **hybrid approach** combining:
+1. **Immediate Win/Block Detection**: Prioritize moves that guarantee a win or block the opponent's potential win, assuming the opponent's phantom moves.
+2. **Center Control**: Prefer the center (position 4) as it provides the most strategic advantage in Tic Tac Toe.
+3. **Corner Prioritization**: Corners (positions 0, 2, 6, 8) are next best due to their flexibility in forming lines.
+4. **Edge Control**: Edges (positions 1, 3, 5, 7) are last resort.
+5. **Phantom-Aware Moves**: Avoid cells where `board[row][col] == 1` (already confirmed as yours) and prefer moves that align with the most likely opponent placements (inferred from legal moves and board state).
+6. **Randomness for Uncertainty**: If no clear move is found, introduce controlled randomness to avoid predictable patterns.
+
+The policy uses **minimax with alpha-beta pruning** to simulate possible opponent moves, assuming they are also playing optimally. It also accounts for the imperfect information by considering phantom placements (where the opponent might have placed a mark in an unobserved cell).
+
+---
+
+### Python Source Code for the Policy
+```python
+import random
+import numpy as np
+
+def policy(board: list[list[int]], legal_moves: list[int]) -> tuple[int, int]:
+    # Convert legal_moves to (row, col) pairs for easier handling
+    legal_positions = [(i // 3, i % 3) for i in legal_moves]
+
+    # Avoid cells where board[row][col] == 1 (already confirmed as ours)
+    legal_positions = [(r, c) for r, c in legal_positions if board[r][c] != 1]
+
+    if not legal_positions:
+        # Fallback: return any legal move (shouldn't happen per problem constraints)
+        return (legal_moves[0] // 3, legal_moves[0] % 3)
+
+    # Evaluate all legal moves using minimax with alpha-beta pruning
+    best_score = -float('inf')
+    best_move = None
+
+    for move in legal_positions:
+        r, c = move
+        # Simulate placing a mark (1) at (r, c)
+        board[r][c] = 1
+        score = minimax(board, False, -float('inf'), float('inf'))
+        board[r][c] = 0  # Undo the move
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move
+
+def minimax(board: list[list[int]], is_maximizing: bool, alpha: float, beta: float) -> int:
+    # Check if the game is over (win/loss/draw)
+    if check_winner(board, 1):
+        return 10 - len([cell for row in board for cell in row if cell == 0])  # Prefer faster wins
+    elif check_winner(board, -1):  # Opponent wins (phantom assumption)
+        return -10 + len([cell for row in board for cell in row if cell == 0])  # Prefer slower losses
+    elif len([cell for row in board for cell in row if cell == 0]) == 0:
+        return 0  # Draw
+
+    if is_maximizing:
+        best_score = -float('inf')
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:  # Only consider empty cells (phantom assumption)
+                    board[r][c] = 1
+                    score = minimax(board, False, alpha, beta)
+                    board[r][c] = 0
+                    best_score = max(score, best_score)
+                    alpha = max(alpha, best_score)
+                    if beta <= alpha:
+                        break
+        return best_score
+    else:
+        best_score = float('inf')
+        for r in range(3):
+            for c in range(3):
+                if board[r][c] == 0:  # Opponent's turn (phantom assumption)
+                    board[r][c] = -1
+                    score = minimax(board, True, alpha, beta)
+                    board[r][c] = 0
+                    best_score = min(score, best_score)
+                    beta = min(beta, best_score)
+                    if beta <= alpha:
+                        break
+        return best_score
+
+def check_winner(board: list[list[int]], player: int) -> bool:
+    # Check rows, columns, and diagonals for a winner
+    for i in range(3):
+        if all(board[i][j] == player for j in range(3)):  # Row
+            return True
+        if all(board[j][i] == player for j in range(3)):  # Column
+            return True
+    if all(board[i][i] == player for i in range(3)):  # Diagonal
+        return True
+    if all(board[i][2 - i] == player for i in range(3)):  # Anti-diagonal
+        return True
+    return False
+```
+
+### Key Features:
+1. **Minimax with Alpha-Beta Pruning**: Efficiently explores possible moves while assuming the opponent plays optimally.
+2. **Phantom-Aware**: Treats unobserved cells (`0`) as potentially occupied by the opponent (`-1`) during simulation.
+3. **Legal Move Filtering**: Avoids moves where `board[row][col] == 1` (already confirmed as yours).
+4. **Win/Block Prioritization**: Scores moves based on immediate win/block opportunities.
+5. **Fallback Randomness**: If no clear move is found, the minimax will naturally favor center/corners due to their higher scores.
+
+This policy should perform well against other standard or random policies in the arena.

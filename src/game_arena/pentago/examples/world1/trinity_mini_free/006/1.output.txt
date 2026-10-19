@@ -1,0 +1,142 @@
+The strategy for this policy is to prioritize immediate threats and control of quadrants while maintaining a balanced approach to long-term threats. The algorithm uses a minimax search with alpha-beta pruning to evaluate moves up to a depth of 3, focusing on:
+
+1. **Immediate Wins/Losses**: Prioritize moves that create a 5-in-a-row.
+2. **Threat Detection**: Block opponent threats and create multiple threats.
+3. **Quadrant Control**: Rotate quadrants to limit opponent's mobility and create positional advantages.
+4. **Control Balance**: Prefer moves that maintain or increase control over quadrants.
+
+The evaluation function weights immediate threats higher than positional advantages, with quadrant control contributing to long-term stability.
+
+<code>
+import numpy as np
+
+def rotate_3x3(grid, direction):
+    """Rotate a 3x3 grid 90 degrees left (anticlockwise) or right (clockwise)."""
+    if direction == 'L':  # Anticlockwise
+        return [list(x)[::-1] for x in zip(*grid)][::-1]
+    elif direction == 'R':  # Clockwise
+        return [list(x) for x in zip(*grid)][::-1]
+
+def apply_move(you, opponent, move):
+    """Apply a move (row, col, quad, dir) to the board state."""
+    r, c, quad, direction = move
+    # Convert 1-indexed to 0-indexed
+    r0, c0 = r - 1, c - 1
+    # Create new state copies
+    new_you = np.copy(you)
+    new_opponent = np.copy(opponent)
+    # Place marble
+    new_you[r0, c0] = 1
+    # Extract and rotate quadrant
+    quad_rows = [r0 // 3 * 3 + i for i in range(3)]
+    quad_cols = [c0 // 3 * 3 + j for j in range(3)]
+    quad = new_you[quad_rows, quad_cols]
+    rotated_quad = rotate_3x3(quad, direction)
+    new_you[quad_rows, quad_cols] = rotated_quad
+    # Opponent marbles in rotated quadrant also rotate
+    quad_opponent = new_opponent[quad_rows, quad_cols]
+    new_opponent[quad_rows, quad_cols] = rotated_quad
+    return new_you, new_opponent
+
+def evaluate(state):
+    """Evaluate board state for immediate threats and control."""
+    you, opponent = state
+    # Check for 5-in-a-row wins
+    if check_win(you): return 1000
+    if check_win(opponent): return -1000
+    
+    # Threat detection (4-in-a-row with empty cell)
+    threats_you = count_threats(you, opponent)
+    threats_opponent = count_threats(opponent, you)
+    
+    # Quadrant control (number of controlled quadrants)
+    control_you = count_controlled_quadrants(you, opponent)
+    control_opponent = count_controlled_quadrants(opponent, you)
+    
+    # Weight threats higher than control
+    return (threats_you - threats_opponent) * 100 + (control_you - control_opponent) * 10
+
+def check_win(board):
+    """Check if any player has 5-in-a-row."""
+    # Check rows, columns, and diagonals
+    for i in range(6):
+        for j in range(2):  # Diagonals
+            if all(board[i, j+k] == 1 for k in range(5)):
+                return True
+    return False
+
+def count_threats(attacker, defender):
+    """Count 4-in-a-row threats for the attacker."""
+    threats = 0
+    # Check all possible 5-in-a-row lines
+    for i in range(6):
+        for j in range(2):
+            # Horizontal/vertical/diagonal lines
+            if all(attacker[i, j+k] == 1 and defender[i, j+k] == 0 for k in range(5)):
+                threats += 1
+    return threats
+
+def count_controlled_quadrants(you, opponent):
+    """Count quadrants where you have more marbles than opponent."""
+    quadrants = [0, 1, 2, 3]
+    control = 0
+    for quad in quadrants:
+        rows = [i for i in range(3)] if quad < 2 else [i for i in range(3, 6)]
+        cols = [j for j in range(3)] if quad % 2 == 0 else [j for j in range(3, 6)]
+        quad_you = np.sum(you[rows, cols])
+        quad_opponent = np.sum(opponent[rows, cols])
+        if quad_you > quad_opponent:
+            control += 1
+    return control
+
+def minimax(state, depth, alpha, beta, maximizing_player):
+    """Minimax with alpha-beta pruning."""
+    you, opponent = state
+    # Base case: depth limit or game over
+    if depth == 0 or check_win(you) or check_win(opponent):
+        return evaluate(state), None
+    
+    # Generate all legal moves
+    moves = []
+    for r in range(6):
+        for c in range(6):
+            if you[r, c] == 0 and opponent[r, c] == 0:
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        moves.append((r, c, quad, direction))
+    
+    # Evaluate each move
+    if maximizing_player:
+        value = -float('inf')
+        best_move = None
+        for move in moves:
+            new_state = apply_move(you, opponent, move)
+            new_value, _ = minimax(new_state, depth - 1, alpha, beta, False)
+            if new_value > value:
+                value = new_value
+                best_move = move
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value, best_move
+    else:
+        value = float('inf')
+        best_move = None
+        for move in moves:
+            new_state = apply_move(you, opponent, move)
+            new_value, _ = minimax(new_state, depth - 1, alpha, beta, True)
+            if new_value < value:
+                value = new_value
+                best_move = move
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value, best_move
+
+def policy(you, opponent) -> str:
+    """Return the best move string."""
+    # Convert 0-indexed to 1-indexed in output
+    value, move = minimax((you, opponent), 3, -float('inf'), float('inf'), True)
+    r, c, quad, direction = move
+    return f"{r+1},{c+1},{quad},{direction}"
+</code>

@@ -1,0 +1,180 @@
+
+import numpy as np
+import random
+
+# ----------------------------------------------------------------------
+# Constants – heuristic weights
+# ----------------------------------------------------------------------
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+
+CORNER_POS = [(0, 0), (0, 7), (7, 0), (7, 7)]
+CENTER_R = [2, 3]
+CENTER_C = [2, 3]
+
+# Heavy bonus for flipping an opponent corner disc
+BONUS_CORNER_FLIP = 10000
+# Bonus for placing your own disc in an empty corner
+BONUS_CORNER_PLACE = 5000
+# Small bonus for centre moves (helps keep the centre)
+BONUS_CENTER = 100
+# Bonus for stable moves (no opponent reply that captures yours)
+BONUS_STABLE = 500
+# Penalty for unstable moves (opponent can capture yours immediately)
+PENALTY_UNSTABLE = -1500
+# Basic score is the number of discs you flip
+BASE_WEIGHT = 1
+
+# ----------------------------------------------------------------------
+# Helper functions for move generation and board evaluation
+# ----------------------------------------------------------------------
+def get_legal_moves(board: np.ndarray, player_disc: int):
+    """Return a list of (row, col, flips) tuples for every legal move of `player_disc`."""
+    moves = []
+    opponent_disc = 2 if player_disc == 1 else 1
+    for r in range(8):
+        for c in range(8):
+            if board[r, c] != 0:
+                continue
+            for dr, dc in DIRS:
+                flips = 0
+                rr, cc = r + dr, c + dc
+                while 0 <= rr < 8 and 0 <= cc < 8:
+                    if board[rr, cc] == opponent_disc:
+                        flips += 1
+                        rr += dr
+                        cc += dc
+                        continue
+                    elif board[rr, cc] == player_disc:
+                        flips += 1
+                        break
+                    else:
+                        break
+                if flips > 0:
+                    moves.append((r, c, flips))
+                break  # a legal move is found
+    return moves
+
+
+def opponent_can_capture(board: np.ndarray, opp_disc: int, player_disc: int, new_row: int, new_col: int) -> bool:
+    """Return True if the opponent has any legal move that would flip our newly placed disc."""
+    # Simulate board after our tentative move
+    candidate = board.copy()
+    candidate[new_row, new_col] = player_disc
+    opponent_moves = get_legal_moves(candidate, opp_disc)
+    if not opponent_moves:
+        return False  # opponent has no move at all
+    for xm, ym in opponent_moves:
+        for dr, dc in DIRS:
+            rr, cc = xm + dr, ym + dc
+            while 0 <= rr < 8 and 0 <= cc < 8:
+                if candidate[rr, cc] == player_disc:
+                    # Our disc would be captured
+                    return True
+                elif candidate[rr, cc] == opp_disc:
+                    rr += dr
+                    cc += dc
+                    continue
+                else:
+                    break
+    return False
+
+
+def evaluate_move(board: np.ndarray, player_disc: int, opp_disc: int,
+                 row: int, col: int) -> int:
+    """Compute the heuristic score for a single candidate move."""
+    # simulate flips from the move perspective
+    total_flips = 0
+    corner_flips = 0
+    for dr, dc in DIRS:
+        rr, cc = row + dr, col + dc
+        while 0 <= rr < 8 and 0 <= cc < 8:
+            if board[rr, cc] == opp_disc:
+                total_flips += 1
+                if (rr, cc) in CORNER_POS:
+                    corner_flips += 1
+                rr += dr
+                cc += dc
+                continue
+            elif board[rr, cc] == player_disc:
+                total_flips += 1
+                break
+            else:
+                break
+
+    score = BASE_WEIGHT * total_flips
+
+    # Corner capture bonus
+    score += BONUS_CORNER_FLIP * corner_flips
+
+    # Bonus if we place a disc in an empty corner
+    if (row, col) in CORNER_POS and board[row, col] == 0:
+        score += BONUS_CORNER_PLACE
+
+    # Centre bonus
+    if row in CENTER_R and col in CENTER_C:
+        score += BONUS_CENTER
+
+    # Stability detection
+    stable = not opponent_can_capture(board, opp_disc, player_disc, row, col)
+    if stable:
+        score += BONUS_STABLE
+    else:
+        score += PENALTY_UNSTABLE
+
+    return score
+
+
+def move_to_algebraic(row: int, col: int) -> str:
+    """Convert board coordinates (row, col) to algebraic notation, e.g. (3,0) -> 'd1'."""
+    file_letter = chr(ord('a') + col)
+    rank = str(row + 1)
+    return f"{file_letter}{rank}"
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """Return the best legal move as a string, or 'pass' if no move exists."""
+    # Unify the two boards: 1 = your pieces, 2 = opponent pieces
+    board = you + opponent * 2
+
+    # 1 = your discs, 2 = opponent discs
+    player_disc = 1
+    opp_disc = 2
+
+    # Find all legal moves for the player whose turn it is (the one calling policy)
+    my_moves = get_legal_moves(board, player_disc)
+
+    # No move → pass
+    if not my_moves:
+        return "pass"
+
+    best_score = -float('inf')
+    best_move = None
+
+    for r, c, flips in my_moves:
+        # Only legal moves have flips > 0, but we still need to evaluate stability etc.
+        score = evaluate_move(board, player_disc, opp_disc, r, c)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+        elif abs(score - best_score) < 1e-6:  # tie‑break randomly
+            # Random tie‑breaker – helpful against deterministic opponents
+            if random.random() < 0.5:
+                best_move = (r, c)
+
+    # Convert the chosen coordinate to algebraic notation
+    r, c = best_move
+    return move_to_algebraic(r, c)
+
+
+# ----------------------------------------------------------------------
+# Simple sanity check (optional – not required by the arena)
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    # Dummy test with a small board
+    you_test = np.zeros((8, 8), dtype=int)
+    you_test[3, 3] = 1  # centre your disc
+    opp_test = np.zeros((8, 8), dtype=int)
+    opp_test[4, 4] = 2  # opponent centre disc
+
+    # simulate a move for you
+    print(policy(you_test, opp_test))

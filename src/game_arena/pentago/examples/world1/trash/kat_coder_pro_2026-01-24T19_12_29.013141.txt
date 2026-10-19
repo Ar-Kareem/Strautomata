@@ -1,0 +1,396 @@
+# Strategy for Pentago Policy
+
+My strategy is to apply a minimax search with alpha-beta pruning to look ahead several moves and evaluate the game state using a heuristic scoring function. The key components are:
+
+1. **Heuristic Evaluation Function**: 
+   - Score based on potential 5-in-a-row lines
+   - Prioritize blocking opponent's winning threats
+   - Reward creating multiple threats for myself
+   - Prefer center positions over edges
+
+2. **Search Algorithm**:
+   - Use minimax with alpha-beta pruning
+   - Implement iterative deepening to use the full 1 second of computation time
+   - Use move ordering to improve pruning efficiency
+
+3. **Optimization Techniques**:
+   - Use bitboard representation for fast game state manipulation
+   - Precompute lookup tables for line detection
+   - Implement transposition table for caching previously evaluated positions
+
+The policy will search to a reasonable depth given the 1-second time constraint, using the heuristic to evaluate leaf nodes and determine the best move.
+
+<code>
+import numpy as np
+import time
+from collections import defaultdict
+
+class PentagoState:
+    def __init__(self, you, opponent):
+        self.you = np.array(you, dtype=bool)
+        self.opponent = np.array(opponent, dtype=bool)
+        
+    def to_bitboard(self):
+        # Convert to bitboard representation for faster operations
+        you_bb = 0
+        opp_bb = 0
+        for r in range(6):
+            for c in range(6):
+                if self.you[r, c]:
+                    you_bb |= (1 << (r * 6 + c))
+                if self.opponent[r, c]:
+                    opp_bb |= (1 << (r * 6 + c))
+        return you_bb, opp_bb
+
+class PentagoEngine:
+    def __init__(self):
+        # Precompute line patterns for 5-in-a-row detection
+        self.winning_lines = []
+        
+        # Horizontal lines
+        for r in range(6):
+            for c in range(2):
+                line = 0
+                for i in range(5):
+                    line |= (1 << (r * 6 + c + i))
+                self.winning_lines.append(line)
+                
+        # Vertical lines
+        for r in range(2):
+            for c in range(6):
+                line = 0
+                for i in range(5):
+                    line |= (1 << ((r + i) * 6 + c))
+                self.winning_lines.append(line)
+                
+        # Diagonal lines (top-left to bottom-right)
+        for r in range(2):
+            for c in range(2):
+                line = 0
+                for i in range(5):
+                    line |= (1 << ((r + i) * 6 + c + i))
+                self.winning_lines.append(line)
+                
+        # Diagonal lines (top-right to bottom-left)
+        for r in range(2):
+            for c in range(4, 6):
+                line = 0
+                for i in range(5):
+                    line |= (1 << ((r + i) * 6 + c - i))
+                self.winning_lines.append(line)
+        
+        # Precompute quadrant masks and rotation patterns
+        self.quadrant_masks = []
+        self.quadrant_rotations_L = []  # 90 degrees anticlockwise
+        self.quadrant_rotations_R = []  # 90 degrees clockwise
+        
+        # Quadrant 0: top-left (rows 0-2, cols 0-2)
+        mask = 0
+        for r in range(3):
+            for c in range(3):
+                mask |= (1 << (r * 6 + c))
+        self.quadrant_masks.append(mask)
+        
+        # Rotation patterns for quadrant 0
+        rot_L = 0
+        rot_R = 0
+        for r in range(3):
+            for c in range(3):
+                src = r * 6 + c
+                # L: (r,c) -> (c, 2-r)
+                dst_L = c * 6 + (2 - r)
+                # R: (r,c) -> (2-c, r)
+                dst_R = (2 - c) * 6 + r
+                rot_L |= (1 << dst_L) << (src * 2)
+                rot_R |= (1 << dst_R) << (src * 2)
+        self.quadrant_rotations_L.append(rot_L)
+        self.quadrant_rotations_R.append(rot_R)
+        
+        # Quadrant 1: top-right (rows 0-2, cols 3-5)
+        mask = 0
+        for r in range(3):
+            for c in range(3, 6):
+                mask |= (1 << (r * 6 + c))
+        self.quadrant_masks.append(mask)
+        
+        # Rotation patterns for quadrant 1
+        rot_L = 0
+        rot_R = 0
+        for r in range(3):
+            for c in range(3, 6):
+                src = r * 6 + c
+                # L: (r,c) -> (c-3, 2-r) + offset (3 cols)
+                dst_L = (c - 3) * 6 + (2 - r) + 3
+                # R: (r,c) -> (2-(c-3), r) + offset (3 cols)
+                dst_R = (2 - (c - 3)) * 6 + r + 3
+                rot_L |= (1 << dst_L) << (src * 2)
+                rot_R |= (1 << dst_R) << (src * 2)
+        self.quadrant_rotations_L.append(rot_L)
+        self.quadrant_rotations_R.append(rot_R)
+        
+        # Quadrant 2: bottom-left (rows 3-5, cols 0-2)
+        mask = 0
+        for r in range(3, 6):
+            for c in range(3):
+                mask |= (1 << (r * 6 + c))
+        self.quadrant_masks.append(mask)
+        
+        # Rotation patterns for quadrant 2
+        rot_L = 0
+        rot_R = 0
+        for r in range(3, 6):
+            for c in range(3):
+                src = r * 6 + c
+                # L: (r-3,c) -> (c, 2-(r-3)) + offset (3 rows)
+                dst_L = (c + 3) * 6 + (2 - (r - 3))
+                # R: (r-3,c) -> (2-c, r-3) + offset (3 rows)
+                dst_R = (2 - c + 3) * 6 + (r - 3)
+                rot_L |= (1 << dst_L) << (src * 2)
+                rot_R |= (1 << dst_R) << (src * 2)
+        self.quadrant_rotations_L.append(rot_L)
+        self.quadrant_rotations_R.append(rot_R)
+        
+        # Quadrant 3: bottom-right (rows 3-5, cols 3-5)
+        mask = 0
+        for r in range(3, 6):
+            for c in range(3, 6):
+                mask |= (1 << (r * 6 + c))
+        self.quadrant_masks.append(mask)
+        
+        # Rotation patterns for quadrant 3
+        rot_L = 0
+        rot_R = 0
+        for r in range(3, 6):
+            for c in range(3, 6):
+                src = r * 6 + c
+                # L: (r-3,c-3) -> (c-3, 2-(r-3)) + offset (3 rows, 3 cols)
+                dst_L = (c - 3 + 3) * 6 + (2 - (r - 3)) + 3
+                # R: (r-3,c-3) -> (2-(c-3), r-3) + offset (3 rows, 3 cols)
+                dst_R = (2 - (c - 3) + 3) * 6 + (r - 3) + 3
+                rot_L |= (1 << dst_L) << (src * 2)
+                rot_R |= (1 << dst_R) << (src * 2)
+        self.quadrant_rotations_L.append(rot_L)
+        self.quadrant_rotations_R.append(rot_R)
+        
+        # Transposition table for caching
+        self.transposition_table = {}
+        
+    def rotate_quadrant(self, board_bb, quad, direction):
+        """Rotate quadrant 90 degrees clockwise (R) or anticlockwise (L)"""
+        mask = self.quadrant_masks[quad]
+        if direction == 'L':
+            rotation = self.quadrant_rotations_L[quad]
+        else:  # 'R'
+            rotation = self.quadrant_rotations_R[quad]
+            
+        # Extract bits in this quadrant
+        quad_bits = board_bb & mask
+        
+        # Apply rotation using lookup
+        rotated = 0
+        for i in range(36):
+            if quad_bits & (1 << i):
+                # Find where this bit should go
+                for j in range(36):
+                    if rotation & (1 << (i * 2 + j)):
+                        rotated |= (1 << j)
+                        break
+                        
+        # Combine with unchanged parts of the board
+        return (board_bb & ~mask) | rotated
+    
+    def is_winning_position(self, board_bb):
+        """Check if the board has a 5-in-a-row"""
+        for line in self.winning_lines:
+            if (board_bb & line) == line:
+                return True
+        return False
+    
+    def evaluate_position(self, you_bb, opp_bb):
+        """Evaluate the position from the perspective of 'you'"""
+        # Check for immediate win/loss
+        if self.is_winning_position(you_bb):
+            return 10000
+        if self.is_winning_position(opp_bb):
+            return -10000
+            
+        # Count potential lines
+        you_score = 0
+        opp_score = 0
+        
+        for line in self.winning_lines:
+            you_bits = you_bb & line
+            opp_bits = opp_bb & line
+            
+            # If both players have bits in this line, it's blocked
+            if you_bits and opp_bits:
+                continue
+                
+            # Count bits in this line
+            you_count = bin(you_bits).count('1')
+            opp_count = bin(opp_bits).count('1')
+            
+            # Reward partial lines
+            if you_count > 0:
+                you_score += you_count * you_count  # Quadratic scoring
+            elif opp_count > 0:
+                opp_score += opp_count * opp_count
+                
+        return you_score - opp_score
+    
+    def get_legal_moves(self, you_bb, opp_bb):
+        """Get all legal moves as (row, col, quad, dir) tuples"""
+        legal_moves = []
+        
+        # Find empty positions
+        occupied = you_bb | opp_bb
+        for r in range(6):
+            for c in range(6):
+                pos = 1 << (r * 6 + c)
+                if not (occupied & pos):
+                    # Try all rotations for this position
+                    for quad in range(4):
+                        for dir in ['L', 'R']:
+                            legal_moves.append((r, c, quad, dir))
+                            
+        return legal_moves
+    
+    def make_move(self, you_bb, opp_bb, move):
+        """Apply move and return new board state"""
+        r, c, quad, dir = move
+        
+        # Place marble
+        pos = 1 << (r * 6 + c)
+        new_you_bb = you_bb | pos
+        
+        # Rotate quadrant
+        new_you_bb = self.rotate_quadrant(new_you_bb, quad, dir)
+        new_opp_bb = self.rotate_quadrant(opp_bb, quad, dir)
+        
+        return new_you_bb, new_opp_bb
+    
+    def search(self, you_bb, opp_bb, depth, alpha, beta, maximizing):
+        """Minimax search with alpha-beta pruning"""
+        # Check transposition table
+        key = (you_bb, opp_bb, depth)
+        if key in self.transposition_table:
+            return self.transposition_table[key]
+            
+        # Check terminal conditions
+        if depth == 0:
+            score = self.evaluate_position(you_bb, opp_bb)
+            self.transposition_table[key] = score
+            return score
+            
+        if maximizing:
+            max_eval = float('-inf')
+            moves = self.get_legal_moves(you_bb, opp_bb)
+            
+            # Sort moves by a simple heuristic (center positions first)
+            moves.sort(key=lambda m: abs(m[0] - 2.5) + abs(m[1] - 2.5))
+            
+            for move in moves:
+                new_you_bb, new_opp_bb = self.make_move(you_bb, opp_bb, move)
+                
+                # Check if this move wins
+                if self.is_winning_position(new_you_bb):
+                    eval_score = 10000 + depth  # Prefer faster wins
+                    self.transposition_table[key] = eval_score
+                    return eval_score
+                
+                eval_score = self.search(new_opp_bb, new_you_bb, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                
+                if beta <= alpha:
+                    break
+                    
+            self.transposition_table[key] = max_eval
+            return max_eval
+        else:
+            min_eval = float('inf')
+            moves = self.get_legal_moves(opp_bb, you_bb)
+            
+            for move in moves:
+                new_opp_bb, new_you_bb = self.make_move(opp_bb, you_bb, move)
+                
+                # Check if opponent wins
+                if self.is_winning_position(new_opp_bb):
+                    eval_score = -10000 - depth  # Prefer delaying losses
+                    self.transposition_table[key] = eval_score
+                    return eval_score
+                
+                eval_score = self.search(new_you_bb, new_opp_bb, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                
+                if beta <= alpha:
+                    break
+                    
+            self.transposition_table[key] = min_eval
+            return min_eval
+    
+    def find_best_move(self, you_bb, opp_bb, time_limit=0.9):
+        """Find the best move using iterative deepening"""
+        start_time = time.time()
+        
+        # Clear transposition table periodically
+        if len(self.transposition_table) > 100000:
+            self.transposition_table.clear()
+            
+        best_move = None
+        best_score = float('-inf')
+        
+        # Iterative deepening
+        depth = 1
+        while time.time() - start_time < time_limit:
+            current_best_move = None
+            current_best_score = float('-inf')
+            
+            moves = self.get_legal_moves(you_bb, opp_bb)
+            # Sort moves by a simple heuristic
+            moves.sort(key=lambda m: abs(m[0] - 2.5) + abs(m[1] - 2.5))
+            
+            for move in moves:
+                new_you_bb, new_opp_bb = self.make_move(you_bb, opp_bb, move)
+                
+                # Check for immediate win
+                if self.is_winning_position(new_you_bb):
+                    return move
+                    
+                score = self.search(new_opp_bb, new_you_bb, depth - 1, float('-inf'), float('inf'), False)
+                
+                if score > current_best_score:
+                    current_best_score = score
+                    current_best_move = move
+                    
+            if current_best_score > best_score:
+                best_score = current_best_score
+                best_move = current_best_move
+                
+            depth += 1
+            
+        return best_move if best_move else moves[0]  # Fallback to first legal move
+
+
+# Initialize engine
+engine = PentagoEngine()
+
+def policy(you, opponent) -> str:
+    """Main policy function"""
+    # Convert to bitboard representation
+    you_bb = 0
+    opp_bb = 0
+    for r in range(6):
+        for c in range(6):
+            if you[r][c]:
+                you_bb |= (1 << (r * 6 + c))
+            if opponent[r][c]:
+                opp_bb |= (1 << (r * 6 + c))
+    
+    # Find best move
+    r, c, quad, dir = engine.find_best_move(you_bb, opp_bb)
+    
+    # Convert to 1-indexed
+    return f"{r+1},{c+1},{quad},{dir}"
+</code>

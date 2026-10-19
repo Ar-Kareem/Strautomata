@@ -1,0 +1,138 @@
+ The strategy for this policy is to prioritize capturing opponent pieces through jumps, as each capture provides a significant score advantage (12 points per capture). The policy generates all legal jump and move actions, then selects the best one using heuristics:
+
+1. **Captures First**: If any jump captures are available, the policy takes the safest one (avoiding immediate recapture) that advances toward the opponent's side.
+
+2. **Positional Moves**: If no captures are available, the policy moves pieces forward (toward the enemy) to advance position. It prefers moves that set up future capture opportunities (aligning two friendly pieces with an enemy) and avoids moving into immediate danger where the opponent could capture on their next turn.
+
+3. **Pass**: If no legal moves exist, the policy returns "kerchunk" to pass the turn.
+
+The policy uses orthogonal moves only (up, down, left, right) based on the game examples provided.
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse board state
+    board = {}  # (row, col) -> content ('red', 'black', 'blank')
+    for fact in state:
+        if fact[0] == 'cell':
+            r, c, content = int(fact[1]), int(fact[2]), fact[3]
+            board[(r, c)] = content
+    
+    opponent = 'black' if role == 'red' else 'red'
+    # Orthogonal directions only based on game examples
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    my_positions = [(r, c) for (r, c), piece in board.items() if piece == role]
+    
+    jumps = []  # (r1, c1, r2, c2, r3, c3)
+    moves = []  # (r1, c1, r2, c2)
+    
+    for (r, c) in my_positions:
+        for dr, dc in directions:
+            # Check jump: own piece at (r,c), own piece at (r+dr,c+dc), opponent at (r+2dr,c+2dc)
+            r_mid, c_mid = r + dr, c + dc
+            r_land, c_land = r + 2 * dr, c + 2 * dc
+            
+            if 1 <= r_land <= 4 and 1 <= c_land <= 4:
+                if board.get((r_mid, c_mid)) == role and board.get((r_land, c_land)) == opponent:
+                    jumps.append((r, c, r_mid, c_mid, r_land, c_land))
+            
+            # Check move: adjacent empty cell
+            if 1 <= r_mid <= 4 and 1 <= c_mid <= 4:
+                if board.get((r_mid, c_mid)) == 'blank':
+                    moves.append((r, c, r_mid, c_mid))
+    
+    # Evaluate jumps - prioritize safe captures
+    if jumps:
+        best_jump = None
+        best_score = -9999
+        
+        for (r, c, r2, c2, r3, c3) in jumps:
+            score = 100  # Base value for capture
+            
+            # Check if landing spot is immediately capturable by opponent
+            safe = True
+            for dr, dc in directions:
+                # Check if opponent has pieces at distance 1 and 2 from landing spot
+                near_r, near_c = r3 + dr, c3 + dc
+                far_r, far_c = r3 + 2 * dr, c3 + 2 * dc
+                if 1 <= far_r <= 4 and 1 <= far_c <= 4:
+                    if board.get((near_r, near_c)) == opponent and board.get((far_r, far_c)) == opponent:
+                        safe = False
+                        break
+            
+            if safe:
+                score += 50
+            
+            # Prefer forward progress
+            if role == 'red' and r3 < r:  # Moving up (lower row number)
+                score += 10
+            elif role == 'black' and r3 > r:  # Moving down
+                score += 10
+            
+            if score > best_score:
+                best_score = score
+                best_jump = (r, c, r2, c2, r3, c3)
+        
+        r, c, r2, c2, r3, c3 = best_jump
+        return f"jump({r},{c},{r2},{c2},{r3},{c3})"
+    
+    # Evaluate moves - advance and setup future captures
+    if moves:
+        best_move = None
+        best_score = -9999
+        
+        for (r, c, r2, c2) in moves:
+            score = 0
+            
+            # Prefer forward movement
+            if role == 'red' and r2 < r:
+                score += 5
+            elif role == 'black' and r2 > r:
+                score += 5
+            
+            # Check if this move creates a capture opportunity for next turn
+            # From new position (r2,c2), can we jump over a friendly to capture?
+            creates_threat = False
+            for dr, dc in directions:
+                mid_r, mid_c = r2 + dr, c2 + dc
+                tgt_r, tgt_c = r2 + 2 * dr, c2 + 2 * dc
+                if 1 <= tgt_r <= 4 and 1 <= tgt_c <= 4:
+                    mid_piece = board.get((mid_r, mid_c))
+                    tgt_piece = board.get((tgt_r, tgt_c))
+                    # If middle piece is our original position, it's now blank
+                    if mid_r == r and mid_c == c:
+                        mid_piece = 'blank'
+                    if mid_piece == role and tgt_piece == opponent:
+                        creates_threat = True
+                        break
+            if creates_threat:
+                score += 20
+            
+            # Avoid moving into immediate danger
+            dangerous = False
+            for dr, dc in directions:
+                near_r, near_c = r2 + dr, c2 + dc
+                far_r, far_c = r2 + 2 * dr, c2 + 2 * dc
+                if 1 <= far_r <= 4 and 1 <= far_c <= 4:
+                    near_piece = board.get((near_r, near_c))
+                    far_piece = board.get((far_r, far_c))
+                    # If adjacent is our original position, it's now blank
+                    if near_r == r and near_c == c:
+                        near_piece = 'blank'
+                    if near_piece == opponent and far_piece == opponent:
+                        dangerous = True
+                        break
+            if dangerous:
+                score -= 100
+            
+            if score > best_score:
+                best_score = score
+                best_move = (r, c, r2, c2)
+        
+        if best_move:
+            r, c, r2, c2 = best_move
+            return f"move({r},{c},{r2},{c2})"
+    
+    # No legal moves available
+    return "kerchunk"
+</code>

@@ -1,0 +1,296 @@
+<thinking>
+Let me think about this Blackjack-like game strategically.
+
+Key observations:
+1. Both players draw from their own 13-card deck (one of each rank)
+2. The target T is between 10 and 30
+3. Aces are worth 11 if hand value <= T, otherwise 1
+4. We need to get as close to T as possible without going over
+5. If we bust, we lose (unless opponent also busts)
+
+Strategy considerations:
+- I need to track which cards I've already drawn (they're in my hand)
+- I need to know which cards remain in my deck
+- I should calculate the probability of busting if I hit
+- I should consider what the opponent might do
+
+The opponent faces the same problem, so this is a symmetric game. The key is to find the optimal threshold for staying.
+
+Let me think about the calculation:
+1. Calculate current hand value
+2. Determine which cards remain in the deck
+3. For each remaining card, calculate if drawing it would bust
+4. Calculate expected value of hitting vs staying
+
+Since I don't know the opponent's hand, I can model the opponent as using a similar optimal strategy. This becomes a game theory problem.
+
+A reasonable heuristic approach:
+- Calculate the current hand value
+- Look at remaining cards and see what values they could add
+- If the risk of busting is too high, stay
+- If we're far from the target and unlikely to bust, hit
+
+Let me implement a strategy based on:
+1. If current value is very close to target (say, within a small margin), STAY
+2. If hitting has low risk of busting, HIT
+3. Consider the expected value after hitting
+
+Actually, a simpler but effective strategy:
+- Calculate current hand value
+- Find all possible next card values
+- If more than half would cause a bust, STAY
+- Otherwise, if current value is below a threshold (like T - some margin), HIT
+
+Let me refine this:
+- If current_value >= target - 3, STAY (we're close enough)
+- If current_value < target - 7 and most cards won't bust us, HIT
+- Otherwise, calculate expected value more carefully
+
+Actually, let me think about this more carefully. The optimal strategy likely depends on:
+1. How close we are to the target
+2. The probability of busting on the next card
+3. What score we expect the opponent to achieve
+
+For a more principled approach:
+- Calculate the current hand value
+- For each possible next card, calculate the new value
+- Estimate the probability we win with current hand vs expected probability after hitting
+- Choose the action with higher expected win probability
+
+Since I don't have information about the opponent's strategy, I'll assume they play optimally with a similar threshold-based strategy.
+
+A practical implementation:
+1. Calculate hand value (accounting for Ace flexibility)
+2. Determine remaining cards
+3. Calculate statistics: mean next value, bust probability
+4. Use a threshold-based decision
+
+Let me code this up:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    # Calculate hand value
+    def hand_value(cards, target):
+        value = 0
+        aces = 0
+        for card in cards:
+            if card == "A":
+                aces += 1
+                value += 11
+            elif card in ["J", "Q", "K"]:
+                value += 10
+            else:
+                value += int(card)
+        
+        # Adjust aces if needed
+        while value > target and aces > 0:
+            value -= 10
+            aces -= 1
+        
+        return value
+    
+    # Get current value
+    current = hand_value(hand, target)
+    
+    # If we're at or over target, we must stay (or we've already busted)
+    if current >= target:
+        return "STAY"
+    
+    # Determine which cards remain
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = [c for c in all_cards if c not in hand]
+    
+    if not remaining:
+        return "STAY"
+    
+    # Calculate outcomes for each possible next card
+    busts = 0
+    total_value = 0
+    
+    for card in remaining:
+        next_hand = hand + [card]
+        next_value = hand_value(next_hand, target)
+        if next_value > target:
+            busts += 1
+        total_value += min(next_value, target)  # Cap at target for expected value
+    
+    bust_prob = busts / len(remaining)
+    avg_value = total_value / len(remaining)
+    
+    # Decision logic
+    # If high probability of bust, stay
+    if bust_prob > 0.5:
+        return "STAY"
+    
+    # If we're close to target and any risk of bust, stay
+    if current >= target - 4 and bust_prob > 0:
+        return "STAY"
+    
+    # If far from target and low bust risk, hit
+    if current < target - 6:
+        return "HIT"
+    
+    # Middle ground: compare expected values
+    # Expected value of hitting (accounting for bust)
+    ev_hit = (1 - bust_prob) * avg_value
+    
+    # If expected value of hitting is better than current, hit
+    if ev_hit > current:
+        return "HIT"
+    else:
+        return "STAY"
+```
+
+Wait, I need to reconsider the hand_value function. The Ace rule states:
+- A is 11 when hand value <= T
+- A is 1 when hand value > T
+
+This is a bit circular. Let me re-read... "when the hand value is <= T" suggests we calculate the value and then adjust. So I think the standard blackjack soft/hard hand logic applies: use 11 for aces when it doesn't bust you, otherwise use 1.
+
+Let me revise:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    def hand_value(cards, target):
+        value = 0
+        num_aces = 0
+        
+        for card in cards:
+            if card == "A":
+                num_aces += 1
+                value += 11
+            elif card in ["J", "Q", "K"]:
+                value += 10
+            else:
+                value += int(card)
+        
+        # Convert aces from 11 to 1 if we're over target
+        while value > target and num_aces > 0:
+            value -= 10
+            num_aces -= 1
+        
+        return value
+    
+    current = hand_value(hand, target)
+    
+    if current >= target:
+        return "STAY"
+    
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = [c for c in all_cards if c not in hand]
+    
+    if not remaining:
+        return "STAY"
+    
+    # Analyze possible outcomes
+    safe_cards = 0
+    total_safe_value = 0
+    
+    for card in remaining:
+        next_hand = hand + [card]
+        next_value = hand_value(next_hand, target)
+        if next_value <= target:
+            safe_cards += 1
+            total_safe_value += next_value
+    
+    if safe_cards == 0:
+        return "STAY"
+    
+    bust_prob = 1 - (safe_cards / len(remaining))
+    avg_safe_value = total_safe_value / safe_cards if safe_cards > 0 else current
+    
+    # Strategic thresholds based on target
+    if current >= target - 3:
+        return "STAY"
+    
+    if bust_prob > 0.6:
+        return "STAY"
+    
+    if current < target - 5 and bust_prob < 0.4:
+        return "HIT"
+    
+    # For middle cases, hit if expected value is good
+    if safe_cards >= len(remaining) / 2:
+        return "HIT"
+    else:
+        return "STAY"
+```
+
+This looks reasonable. Let me refine it one more time for clarity and correctness.
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    def hand_value(cards, target):
+        """Calculate the value of a hand given the target."""
+        value = 0
+        num_aces = 0
+        
+        for card in cards:
+            if card == "A":
+                num_aces += 1
+                value += 11
+            elif card in ["J", "Q", "K"]:
+                value += 10
+            else:
+                value += int(card)
+        
+        # Convert aces from 11 to 1 if we're over target
+        while value > target and num_aces > 0:
+            value -= 10
+            num_aces -= 1
+        
+        return value
+    
+    # Calculate current hand value
+    current = hand_value(hand, target)
+    
+    # If we're at or over target, we must stay
+    if current >= target:
+        return "STAY"
+    
+    # Determine which cards remain in our deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = [c for c in all_cards if c not in hand]
+    
+    # If no cards remain, must stay
+    if not remaining:
+        return "STAY"
+    
+    # Analyze outcomes of drawing each possible next card
+    safe_cards = 0
+    safe_values_sum = 0
+    
+    for card in remaining:
+        next_hand = hand + [card]
+        next_value = hand_value(next_hand, target)
+        if next_value <= target:
+            safe_cards += 1
+            safe_values_sum += next_value
+    
+    # If all remaining cards would bust us, stay
+    if safe_cards == 0:
+        return "STAY"
+    
+    bust_probability = 1 - (safe_cards / len(remaining))
+    avg_safe_value = safe_values_sum / safe_cards
+    
+    # Strategic decision making
+    # 1. If very close to target, stay (conservative near target)
+    if current >= target - 3:
+        return "STAY"
+    
+    # 2. If high bust probability, stay
+    if bust_probability > 0.5:
+        return "STAY"
+    
+    # 3. If far from target and low bust risk, hit
+    if current <= target - 7 and bust_probability < 0.3:
+        return "HIT"
+    
+    # 4. Medium range: hit if more safe cards than bust cards
+    if safe_cards >= len(remaining) / 2:
+        return "HIT"
+    else:
+        return "STAY"
+</code>

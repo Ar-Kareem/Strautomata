@@ -1,0 +1,158 @@
+
+
+The strategy for this policy is to prioritize immediate captures and defense of threatened groups, then use influence-based scoring to expand territory and engage the opponent. The approach is as follows:
+
+1. **Immediate Captures**: Identify opponent groups with only one liberty and capture them.
+2. **Defend Threatened Groups**: Protect our groups with one liberty from capture.
+3. **Influence-Based Expansion**: When no urgent moves exist, play near our stones using an influence scoring system that considers proximity to friendly stones while penalizing opponent strength.
+4. **Opening Logic**: Start with a standard opening position if the board is empty.
+
+The implementation ensures legality of moves by checking group liberties and suicide conditions efficiently.
+
+<code>
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    BOARD_SIZE = 19
+
+    def create_board():
+        board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
+        for r, c in me:
+            board[r-1][c-1] = 1
+        for r, c in opponent:
+            board[r-1][c-1] = 2
+        return board
+
+    def find_groups(b, player):
+        visited = set()
+        groups = []
+        for i in range(BOARD_SIZE):
+            for j in range(BOARD_SIZE):
+                if b[i][j] == player and (i, j) not in visited:
+                    stack = [(i, j)]
+                    visited.add((i, j))
+                    group = set()
+                    liberties = set()
+                    while stack:
+                        x, y = stack.pop()
+                        group.add((x, y))
+                        for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                            nx, ny = x + dx, y + dy
+                            if 0 <= nx < BOARD_SIZE and 0 <= ny < BOARD_SIZE:
+                                if b[nx][ny] == 0:
+                                    liberties.add((nx, ny))
+                                elif b[nx][ny] == player and (nx, ny) not in visited:
+                                    stack.append((nx, ny))
+                                    visited.add((nx, ny))
+                    groups.append((group, liberties))
+        return groups
+
+    def find_single_group(b, r, c, player):
+        visited = set()
+        queue = [(r, c)]
+        visited.add((r, c))
+        group = set()
+        while queue:
+            x, y = queue.pop()
+            group.add((x, y))
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < BOARD_SIZE and 0 <= ny < BOARD_SIZE:
+                    if b[nx][ny] == player and (nx, ny) not in visited:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+        return group
+
+    def is_legal_move(b, row, col, player):
+        if b[row][col] != 0:
+            return False
+        opponent = 2 if player == 1 else 1
+        temp_board = b.copy()
+        temp_board[row][col] = player
+        has_liberties = False
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            r_adj, c_adj = row + dr, col + dc
+            if 0 <= r_adj < BOARD_SIZE and 0 <= c_adj < BOARD_SIZE and temp_board[r_adj][c_adj] == 0:
+                has_liberties = True
+                break
+        if has_liberties:
+            return True
+        group = find_single_group(temp_board, row, col, player)
+        liberties = 0
+        for (x, y) in group:
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < BOARD_SIZE and 0 <= ny < BOARD_SIZE and temp_board[nx][ny] == 0:
+                    liberties += 1
+        if liberties > 0:
+            return True
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            r_adj, c_adj = row + dr, col + dc
+            if 0 <= r_adj < BOARD_SIZE and 0 <= c_adj < BOARD_SIZE and temp_board[r_adj][c_adj] == opponent:
+                opp_group = find_single_group(temp_board, r_adj, c_adj, opponent)
+                opp_liberties = 0
+                for (x,y) in opp_group:
+                    for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < BOARD_SIZE and 0 <= ny < BOARD_SIZE and temp_board[nx][ny] == 0:
+                            opp_liberties += 1
+                if opp_liberties == 0:
+                    return True
+        return False
+
+    board = create_board()
+    empty_points = [(i+1, j+1) for i in range(BOARD_SIZE) for j in range(BOARD_SIZE) if board[i][j] == 0]
+    
+    if not empty_points:
+        return (0, 0)
+    if len(me) == 0 and len(opponent) == 0:
+        return (10, 10)
+    
+    opponent_groups = find_groups(board, 2)
+    capture_moves = []
+    for group, libs in opponent_groups:
+        if len(libs) == 1:
+            lib = libs.pop()
+            move = (lib[0]+1, lib[1]+1)
+            if move in empty_points:
+                capture_moves.append((move, group))
+    if capture_moves:
+        capture_moves.sort(key=lambda x: -len(x[1]))
+        return capture_moves[0][0]
+    
+    my_groups = find_groups(board, 1)
+    defense_moves = []
+    for group, libs in my_groups:
+        if len(libs) == 1:
+            lib = libs.pop()
+            move = (lib[0]+1, lib[1]+1)
+            if move in empty_points:
+                defense_moves.append((move, group))
+    if defense_moves:
+        defense_moves.sort(key=lambda x: -len(x[1]))
+        return defense_moves[0][0]
+    
+    candidates = []
+    for i in range(BOARD_SIZE):
+        for j in range(BOARD_SIZE):
+            if board[i][j] == 0:
+                score = 0
+                for r, c in me:
+                    ri, ci = r-1, c-1
+                    dist = abs(i - ri) + abs(j - ci)
+                    if dist > 0:
+                        score += 1 / dist
+                for r, c in opponent:
+                    ri, ci = r-1, c-1
+                    dist = abs(i - ri) + abs(j - ci)
+                    if dist > 0:
+                        score -= 0.5 / dist
+                candidates.append((score, (i+1, j+1)))
+    
+    candidates.sort(key=lambda x: -x[0])
+    for score, move in candidates:
+        if is_legal_move(board, move[0]-1, move[1]-1, 1):
+            return move
+    
+    return empty_points[0] if empty_points else (0, 0)
+</code>

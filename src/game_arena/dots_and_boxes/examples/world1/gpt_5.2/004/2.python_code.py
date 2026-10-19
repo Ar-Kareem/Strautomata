@@ -1,0 +1,421 @@
+
+import numpy as np
+from functools import lru_cache
+from typing import List, Tuple, Dict
+
+# Board: 4x4 boxes => 5x5 dots
+# Valid edges:
+#   Horizontal: rows 0..4, cols 0..3 => 20 edges
+#   Vertical:   rows 0..3, cols 0..4 => 20 edges
+TOTAL_H = 20
+TOTAL_V = 20
+TOTAL_EDGES = 40
+TOTAL_BOXES = 16
+
+# --- Precompute box edge requirements (bitmasks) ---
+BOX_HMASK = [0] * TOTAL_BOXES  # 20-bit mask over horizontal edges
+BOX_VMASK = [0] * TOTAL_BOXES  # 20-bit mask over vertical edges
+
+for br in range(4):
+    for bc in range(4):
+        b = br * 4 + bc
+        top = br * 4 + bc
+        bot = (br + 1) * 4 + bc
+        left = br * 5 + bc
+        right = br * 5 + (bc + 1)
+        BOX_HMASK[b] = (1 << top) | (1 << bot)
+        BOX_VMASK[b] = (1 << left) | (1 << right)
+
+# --- Precompute moves and which boxes each move touches ---
+# Move indexing:
+#   0..19 : Horizontal edges (r*4 + c), r=0..4, c=0..3
+#   20..39: Vertical edges (20 + r*5 + c), r=0..3, c=0..4
+MOVE_ADJ_BOXES: List[Tuple[int, ...]] = []
+MOVE_IS_H: List[bool] = []
+MOVE_R: List[int] = []
+MOVE_C: List[int] = []
+
+# Horizontal moves
+for r in range(5):
+    for c in range(4):
+        adj = []
+        if r > 0:   # box above
+            adj.append((r - 1) * 4 + c)
+        if r < 4:   # box below
+            adj.append(r * 4 + c)
+        MOVE_ADJ_BOXES.append(tuple(adj))
+        MOVE_IS_H.append(True)
+        MOVE_R.append(r)
+        MOVE_C.append(c)
+
+# Vertical moves
+for r in range(4):
+    for c in range(5):
+        adj = []
+        if c > 0:   # box left
+            adj.append(r * 4 + (c - 1))
+        if c < 4:   # box right
+            adj.append(r * 4 + c)
+        MOVE_ADJ_BOXES.append(tuple(adj))
+        MOVE_IS_H.append(False)
+        MOVE_R.append(r)
+        MOVE_C.append(c)
+
+ALL_MOVES = list(range(TOTAL_EDGES))
+
+
+def _bit_for_move(m: int) -> Tuple[bool, int]:
+    """Return (is_horizontal, bitmask_in_its_space)."""
+    if m < TOTAL_H:
+        return True, (1 << m)
+    else:
+        return False, (1 << (m - TOTAL_H))
+
+
+def _score(my_mask: int, opp_mask: int) -> int:
+    """Current player's box advantage in relative (to-move) encoding."""
+    return my_mask.bit_count() - opp_mask.bit_count()
+
+
+def _filled_sides(h_bits: int, v_bits: int, b: int) -> int:
+    """How many sides of box b are filled? (0..4)"""
+    # two horizontal + two vertical bits
+    return ((h_bits & BOX_HMASK[b]).bit_count() + (v_bits & BOX_VMASK[b]).bit_count())
+
+
+def _apply_move(state: Tuple[int, int, int, int], m: int) -> Tuple[Tuple[int, int, int, int], int]:
+    """
+    Apply move m to state=(h_bits, v_bits, my_mask, opp_mask) in relative encoding.
+    Returns (new_state, captured_count).
+    If captured_count==0, turn passes: (my, opp) swap in returned state.
+    """
+    h_bits, v_bits, my_mask, opp_mask = state
+    is_h, bit = _bit_for_move(m)
+
+    if is_h:
+        h2 = h_bits | bit
+        v2 = v_bits
+    else:
+        h2 = h_bits
+        v2 = v_bits | bit
+
+    captured = 0
+    owned = my_mask | opp_mask
+    for b in MOVE_ADJ_BOXES[m]:
+        if ((owned >> b) & 1) != 0:
+            continue
+        if (h2 & BOX_HMASK[b]) == BOX_HMASK[b] and (v2 & BOX_VMASK[b]) == BOX_VMASK[b]:
+            my_mask |= (1 << b)
+            captured += 1
+
+    if captured == 0:
+        # turn passes: swap perspective
+        return (h2, v2, opp_mask, my_mask), 0
+    else:
+        return (h2, v2, my_mask, opp_mask), captured
+
+
+def _is_legal(state: Tuple[int, int, int, int], m: int) -> bool:
+    h_bits, v_bits, _, _ = state
+    is_h, bit = _bit_for_move(m)
+    if is_h:
+        return (h_bits & bit) == 0
+    else:
+        return (v_bits & bit) == 0
+
+
+def _remaining_edges(state: Tuple[int, int, int, int]) -> int:
+    h_bits, v_bits, _, _ = state
+    return TOTAL_EDGES - (h_bits.bit_count() + v_bits.bit_count())
+
+
+def _greedy_forced_capture_count(state: Tuple[int, int, int, int]) -> int:
+    """
+    Approximation: if the player to move has any capture, they should take captures
+    (continuing as long as captures exist). Returns how many boxes are captured in this run.
+    """
+    captured_total = 0
+    cur = state
+    while True:
+        best_m = None
+        best_cap = 0
+
+        # Find any capturing move
+        for m in ALL_MOVES:
+            if not _is_legal(cur, m):
+                continue
+            nxt, cap = _apply_move(cur, m)
+            # cap here is from cur-player perspective after applying; if cap>0, same player continues.
+            if cap > best_cap:
+                best_cap = cap
+                best_m = m
+                # max is 2 per move, so early exit if 2
+                if best_cap == 2:
+                    break
+
+        if best_cap == 0 or best_m is None:
+            break
+
+        cur, cap = _apply_move(cur, best_m)
+        captured_total += cap
+
+    return captured_total
+
+
+def _classify_moves(state: Tuple[int, int, int, int]) -> Tuple[List[int], List[int], List[int]]:
+    """
+    Returns (capture_moves, safe_moves, unsafe_moves) for the current player.
+    safe: non-capturing and does not create a 3-sided unclaimed box adjacent to the move.
+    """
+    h_bits, v_bits, my_mask, opp_mask = state
+    owned = my_mask | opp_mask
+
+    capture_moves: List[int] = []
+    safe_moves: List[int] = []
+    unsafe_moves: List[int] = []
+
+    for m in ALL_MOVES:
+        if not _is_legal(state, m):
+            continue
+
+        # Check immediate capture count quickly by applying move
+        nxt, cap = _apply_move(state, m)
+        if cap > 0:
+            capture_moves.append(m)
+            continue
+
+        # Non-capturing: determine if it creates any 3-sided unclaimed adjacent box
+        unsafe = False
+        for b in MOVE_ADJ_BOXES[m]:
+            if ((owned >> b) & 1) != 0:
+                continue
+            # if currently has 2 filled sides, adding one makes it 3 (a giveaway)
+            if _filled_sides(h_bits, v_bits, b) == 2:
+                unsafe = True
+                break
+
+        if unsafe:
+            unsafe_moves.append(m)
+        else:
+            safe_moves.append(m)
+
+    return capture_moves, safe_moves, unsafe_moves
+
+
+def _safe_move_heuristic(state: Tuple[int, int, int, int], m: int) -> int:
+    """
+    Lower is better. Favor moves that keep adjacent boxes low-degree (avoid building toward 3).
+    This is only used among safe moves.
+    """
+    h_bits, v_bits, my_mask, opp_mask = state
+    owned = my_mask | opp_mask
+
+    # Degree-based penalty on adjacent unclaimed boxes
+    penalty = 0
+    for b in MOVE_ADJ_BOXES[m]:
+        if ((owned >> b) & 1) != 0:
+            continue
+        s = _filled_sides(h_bits, v_bits, b)
+        # After move: s+1 (since move touches that box)
+        s2 = s + 1
+        penalty += s2 * s2
+
+    # Prefer boundary edges slightly (touching 1 box), because they constrain fewer boxes
+    if len(MOVE_ADJ_BOXES[m]) == 2:
+        penalty += 1
+
+    return penalty
+
+
+def _unsafe_move_cost(state: Tuple[int, int, int, int], m: int) -> int:
+    """
+    Lower is better. Estimate how many boxes the opponent can force-capture immediately
+    after we play this non-capturing (unsafe) move.
+    """
+    # Apply our move (should not capture). _apply_move will swap perspective automatically on non-capture.
+    nxt, cap = _apply_move(state, m)
+    if cap != 0:
+        # Shouldn't happen if called correctly, but handle robustly:
+        return -cap  # capturing is good
+
+    # Now it's opponent-to-move in nxt (relative encoding already swapped).
+    # Estimate their forced capture run:
+    opp_gain = _greedy_forced_capture_count(nxt)
+    return opp_gain
+
+
+def _choose_heuristic_move(state: Tuple[int, int, int, int]) -> int:
+    capture_moves, safe_moves, unsafe_moves = _classify_moves(state)
+
+    if capture_moves:
+        # Prefer capturing most boxes now; tie-break with safety heuristic (post-capture state)
+        best = None
+        best_key = None
+        for m in capture_moves:
+            nxt, cap = _apply_move(state, m)  # cap>0 and same player continues
+            # After capturing, we'd like to still have safe options; use heuristic on resulting position
+            # by counting how many safe moves remain (bigger is better).
+            cm2, sm2, um2 = _classify_moves(nxt)
+            key = (-cap, -len(sm2), len(um2))
+            if best_key is None or key < best_key:
+                best_key = key
+                best = m
+        return best if best is not None else capture_moves[0]
+
+    if safe_moves:
+        # Pick safest shaping move
+        best = min(safe_moves, key=lambda m: _safe_move_heuristic(state, m))
+        return best
+
+    # No safe moves: open the smallest (estimated) giveaway
+    if unsafe_moves:
+        best = min(unsafe_moves, key=lambda m: (_unsafe_move_cost(state, m), _safe_move_heuristic(state, m)))
+        return best
+
+    # Fallback: should only occur if terminal
+    for m in ALL_MOVES:
+        if _is_legal(state, m):
+            return m
+    return 0
+
+
+def _state_from_arrays(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> Tuple[int, int, int, int]:
+    """
+    Convert arena arrays into bitstate (h_bits, v_bits, my_mask, opp_mask).
+    The input is absolute: you are always the player to move and your marks are +1.
+    We ignore padded/unusable last row/col by only reading valid edges and 4x4 boxes.
+    """
+    h_bits = 0
+    # horizontal valid: (r=0..4, c=0..3)
+    for r in range(5):
+        for c in range(4):
+            if int(horizontal[r, c]) != 0:
+                h_bits |= (1 << (r * 4 + c))
+
+    v_bits = 0
+    # vertical valid: (r=0..3, c=0..4)
+    for r in range(4):
+        for c in range(5):
+            if int(vertical[r, c]) != 0:
+                v_bits |= (1 << (r * 5 + c))
+
+    my_mask = 0
+    opp_mask = 0
+    # capture valid: 4x4 boxes in top-left
+    for br in range(4):
+        for bc in range(4):
+            b = br * 4 + bc
+            val = int(capture[br, bc])
+            if val == 1:
+                my_mask |= (1 << b)
+            elif val == -1:
+                opp_mask |= (1 << b)
+
+    return (h_bits, v_bits, my_mask, opp_mask)
+
+
+def _move_to_string(m: int) -> str:
+    if m < TOTAL_H:
+        r = m // 4
+        c = m % 4
+        return f"{r},{c},H"
+    else:
+        idx = m - TOTAL_H
+        r = idx // 5
+        c = idx % 5
+        return f"{r},{c},V"
+
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    """
+    Arena API: return 'row,col,dir' for the next move. Must always be legal.
+    """
+    state = _state_from_arrays(horizontal, vertical, capture)
+    rem = _remaining_edges(state)
+
+    # Exact search threshold: small enough to solve quickly and strongly on 4x4.
+    SEARCH_THRESHOLD = 14
+
+    if rem <= SEARCH_THRESHOLD:
+        memo: Dict[Tuple[int, int, int, int], int] = {}
+
+        def negamax(s: Tuple[int, int, int, int], alpha: int, beta: int) -> int:
+            if s in memo:
+                return memo[s]
+
+            h_bits, v_bits, my_mask, opp_mask = s
+            if (h_bits.bit_count() + v_bits.bit_count()) == TOTAL_EDGES:
+                val = _score(my_mask, opp_mask)
+                memo[s] = val
+                return val
+
+            best = -999
+
+            # Move ordering: captures first improves pruning a lot
+            capture_moves, safe_moves, unsafe_moves = _classify_moves(s)
+            ordered = capture_moves + safe_moves + unsafe_moves
+
+            # If classification missed (shouldn't), include any remaining legal moves:
+            if len(ordered) == 0:
+                for m in ALL_MOVES:
+                    if _is_legal(s, m):
+                        ordered.append(m)
+
+            for m in ordered:
+                if not _is_legal(s, m):
+                    continue
+                nxt, cap = _apply_move(s, m)
+                if cap > 0:
+                    val = negamax(nxt, alpha, beta)
+                else:
+                    val = -negamax(nxt, -beta, -alpha)
+
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+
+            memo[s] = best
+            return best
+
+        # Root move choice
+        best_move = None
+        best_val = -999
+        alpha, beta = -999, 999
+
+        capture_moves, safe_moves, unsafe_moves = _classify_moves(state)
+        ordered = capture_moves + safe_moves + unsafe_moves
+        if not ordered:
+            ordered = [m for m in ALL_MOVES if _is_legal(state, m)]
+
+        for m in ordered:
+            if not _is_legal(state, m):
+                continue
+            nxt, cap = _apply_move(state, m)
+            if cap > 0:
+                val = negamax(nxt, alpha, beta)
+            else:
+                val = -negamax(nxt, -beta, -alpha)
+
+            if val > best_val or best_move is None:
+                best_val = val
+                best_move = m
+            if val > alpha:
+                alpha = val
+
+        if best_move is not None:
+            return _move_to_string(best_move)
+
+    # Heuristic midgame / early game
+    m = _choose_heuristic_move(state)
+    # Safety fallback: ensure legal
+    if not _is_legal(state, m):
+        for mm in ALL_MOVES:
+            if _is_legal(state, mm):
+                return _move_to_string(mm)
+        # Terminal fallback (should not be called by engine)
+        return "0,0,H"
+
+    return _move_to_string(m)

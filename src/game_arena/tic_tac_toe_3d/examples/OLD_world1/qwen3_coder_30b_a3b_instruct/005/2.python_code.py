@@ -1,0 +1,159 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Determine the next move for 3D Tic Tac Toe using a minimax algorithm with alpha-beta pruning.
+    
+    Args:
+        board: 3x3x3 list representing the game state
+               0 = empty, 1 = player (AI), -1 = opponent
+        
+    Returns:
+        Tuple of (x, y, z) coordinates for the next move
+    """
+    
+    def get_available_moves(board):
+        """Get all available moves (empty cells) on the board."""
+        moves = []
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if board[x][y][z] == 0:
+                        moves.append((x, y, z))
+        return moves
+    
+    def check_winner(board):
+        """Check if there's a winner or if the game is a tie."""
+        # Check all possible lines (rows, columns, diagonals)
+        lines = []
+        
+        # Rows
+        for x in range(3):
+            for y in range(3):
+                lines.append([(x, y, z) for z in range(3)])
+        
+        # Columns
+        for x in range(3):
+            for z in range(3):
+                lines.append([(x, y, z) for y in range(3)])
+        
+        # Depth lines
+        for y in range(3):
+            for z in range(3):
+                lines.append([(x, y, z) for x in range(3)])
+        
+        # Diagonals
+        # Diagonals on each face
+        for x in range(3):
+            lines.append([(x, i, i) for i in range(3)])  # front diagonal
+            lines.append([(x, i, 2-i) for i in range(3)])  # back diagonal
+        
+        for y in range(3):
+            lines.append([(i, y, i) for i in range(3)])  # front diagonal
+            lines.append([(i, y, 2-i) for i in range(3)])  # back diagonal
+        
+        for z in range(3):
+            lines.append([(i, i, z) for i in range(3)])  # front diagonal
+            lines.append([(i, 2-i, z) for i in range(3)])  # back diagonal
+        
+        # 3D diagonals
+        lines.append([(i, i, i) for i in range(3)])  # main diagonal
+        lines.append([(i, i, 2-i) for i in range(3)])  # anti-diagonal
+        lines.append([(i, 2-i, i) for i in range(3)])  # other diagonal
+        lines.append([(i, 2-i, 2-i) for i in range(3)])  # other anti-diagonal
+        
+        # Check if any line has three in a row
+        for line in lines:
+            values = [board[x][y][z] for x, y, z in line]
+            if values == [1, 1, 1]:  # AI wins
+                return 1
+            elif values == [-1, -1, -1]:  # Opponent wins
+                return -1
+        
+        # Check for tie
+        if len(get_available_moves(board)) == 0:
+            return 0  # Tie
+        
+        return None  # Game continues
+    
+    def minimax(board, depth, is_maximizing, alpha, beta):
+        """Minimax algorithm with alpha-beta pruning."""
+        winner = check_winner(board)
+        
+        # Terminal states
+        if winner == 1:  # AI wins
+            return 10 - depth
+        elif winner == -1:  # Opponent wins
+            return depth - 10
+        elif winner == 0:  # Tie
+            return 0
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            for x, y, z in get_available_moves(board):
+                board[x][y][z] = 1  # AI's move
+                eval_score = minimax(board, depth + 1, False, alpha, beta)
+                board[x][y][z] = 0  # Undo move
+                
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                
+                if beta <= alpha:
+                    break  # Alpha-beta pruning
+            
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for x, y, z in get_available_moves(board):
+                board[x][y][z] = -1  # Opponent's move
+                eval_score = minimax(board, depth + 1, True, alpha, beta)
+                board[x][y][z] = 0  # Undo move
+                
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                
+                if beta <= alpha:
+                    break  # Alpha-beta pruning
+            
+            return min_eval
+    
+    # Get all available moves
+    available_moves = get_available_moves(board)
+    
+    if not available_moves:
+        return (0, 0, 0)
+    
+    # If we have 3 or more moves, prefer center or corners (strategic)
+    if len(available_moves) >= 3:
+        # Try to take center if available
+        center = (1, 1, 1)
+        if center in available_moves:
+            return center
+        
+        # Prefer corners
+        corners = [(0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+                   (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)]
+        for corner in corners:
+            if corner in available_moves:
+                return corner
+    
+    # Use minimax for the next best move
+    best_move = None
+    best_score = float('-inf')
+    
+    for x, y, z in available_moves:
+        board[x][y][z] = 1  # Make move
+        score = minimax(board, 0, False, float('-inf'), float('inf'))
+        board[x][y][z] = 0  # Undo move
+        
+        if score > best_score:
+            best_score = score
+            best_move = (x, y, z)
+    
+    if best_move is None:
+        # Fallback to first available move
+        return available_moves[0]
+    
+    return best_move

@@ -1,0 +1,312 @@
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    import random
+    
+    # Generate legal moves
+    legal_moves = generate_legal_moves(pieces, to_play)
+    
+    if not legal_moves:
+        # Should not happen in valid game, but return dummy
+        return ("0000", memory)
+    
+    # Evaluate each move
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        # Apply move to get new position
+        new_pieces = apply_move(pieces, move)
+        
+        # Evaluate position after move
+        score = evaluate_position(new_pieces, to_play)
+        
+        # Check if this move delivers checkmate
+        opponent = 'black' if to_play == 'white' else 'white'
+        opponent_moves = generate_legal_moves(new_pieces, opponent)
+        if not opponent_moves and is_in_check(new_pieces, opponent):
+            score += 100000  # Checkmate!
+        
+        # Add small random noise to break ties
+        score += random.random() * 0.01
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)
+
+
+def apply_move(pieces: dict[str, str], move: str) -> dict[str, str]:
+    """Apply a move and return new board state"""
+    new_pieces = pieces.copy()
+    from_sq = move[:2]
+    to_sq = move[2:4]
+    
+    if from_sq in new_pieces:
+        piece = new_pieces[from_sq]
+        del new_pieces[from_sq]
+        
+        # Handle promotion
+        if len(move) == 5:
+            color = piece[0]
+            promo_piece = move[4].upper()
+            new_pieces[to_sq] = color + promo_piece
+        else:
+            new_pieces[to_sq] = piece
+            
+            # Handle castling - move rook too
+            if piece[1] == 'K':
+                if from_sq == 'e1' and to_sq == 'g1':  # White kingside
+                    if 'h1' in new_pieces:
+                        new_pieces['f1'] = new_pieces['h1']
+                        del new_pieces['h1']
+                elif from_sq == 'e1' and to_sq == 'c1':  # White queenside
+                    if 'a1' in new_pieces:
+                        new_pieces['d1'] = new_pieces['a1']
+                        del new_pieces['a1']
+                elif from_sq == 'e8' and to_sq == 'g8':  # Black kingside
+                    if 'h8' in new_pieces:
+                        new_pieces['f8'] = new_pieces['h8']
+                        del new_pieces['h8']
+                elif from_sq == 'e8' and to_sq == 'c8':  # Black queenside
+                    if 'a8' in new_pieces:
+                        new_pieces['d8'] = new_pieces['a8']
+                        del new_pieces['a8']
+    
+    return new_pieces
+
+
+def evaluate_position(pieces: dict[str, str], my_color: str) -> float:
+    """Evaluate position from perspective of my_color"""
+    piece_values = {'K': 0, 'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    color_prefix = 'w' if my_color == 'white' else 'b'
+    opp_prefix = 'b' if my_color == 'white' else 'w'
+    
+    score = 0.0
+    
+    # Material count
+    for sq, piece in pieces.items():
+        value = piece_values.get(piece[1], 0)
+        if piece[0] == color_prefix:
+            score += value
+            # Positional bonuses
+            score += get_piece_square_bonus(sq, piece, my_color)
+        else:
+            score -= value
+            score -= get_piece_square_bonus(sq, piece, 'black' if my_color == 'white' else 'white')
+    
+    return score
+
+
+def get_piece_square_bonus(sq: str, piece: str, color: str) -> float:
+    """Bonus for piece placement"""
+    file = ord(sq[0]) - ord('a')
+    rank = int(sq[1]) - 1
+    
+    # Adjust rank for color perspective
+    if color == 'black':
+        rank = 7 - rank
+    
+    bonus = 0.0
+    piece_type = piece[1]
+    
+    # Center control bonus
+    center_files = [3, 4]
+    center_ranks = [3, 4]
+    if file in center_files and rank in center_ranks:
+        bonus += 0.3
+    
+    # Pawn advancement
+    if piece_type == 'P':
+        bonus += rank * 0.1
+        if rank == 6:  # Near promotion
+            bonus += 2.0
+    
+    # King safety in early/mid game
+    if piece_type == 'K':
+        if rank == 0:  # Keep king on back rank
+            bonus += 0.2
+    
+    return bonus
+
+
+def generate_legal_moves(pieces: dict[str, str], to_play: str) -> list[str]:
+    """Generate all legal moves for the current player"""
+    color = 'w' if to_play == 'white' else 'b'
+    moves = []
+    
+    for sq, piece in pieces.items():
+        if piece[0] == color:
+            moves.extend(get_piece_moves(sq, piece, pieces))
+    
+    # Filter out moves that leave king in check
+    legal = []
+    for move in moves:
+        new_pieces = apply_move(pieces, move)
+        if not is_in_check(new_pieces, to_play):
+            legal.append(move)
+    
+    return legal
+
+
+def get_piece_moves(sq: str, piece: str, pieces: dict[str, str]) -> list[str]:
+    """Get pseudo-legal moves for a piece"""
+    piece_type = piece[1]
+    color = piece[0]
+    
+    if piece_type == 'P':
+        return get_pawn_moves(sq, color, pieces)
+    elif piece_type == 'N':
+        return get_knight_moves(sq, color, pieces)
+    elif piece_type == 'B':
+        return get_bishop_moves(sq, color, pieces)
+    elif piece_type == 'R':
+        return get_rook_moves(sq, color, pieces)
+    elif piece_type == 'Q':
+        return get_queen_moves(sq, color, pieces)
+    elif piece_type == 'K':
+        return get_king_moves(sq, color, pieces)
+    
+    return []
+
+
+def get_pawn_moves(sq: str, color: str, pieces: dict[str, str]) -> list[str]:
+    moves = []
+    file, rank = ord(sq[0]) - ord('a'), int(sq[1]) - 1
+    direction = 1 if color == 'w' else -1
+    start_rank = 1 if color == 'w' else 6
+    promo_rank = 7 if color == 'w' else 0
+    
+    # Forward move
+    new_rank = rank + direction
+    if 0 <= new_rank <= 7:
+        new_sq = chr(file + ord('a')) + str(new_rank + 1)
+        if new_sq not in pieces:
+            if new_rank == promo_rank:
+                for p in ['q', 'r', 'b', 'n']:
+                    moves.append(sq + new_sq + p)
+            else:
+                moves.append(sq + new_sq)
+            
+            # Double move from start
+            if rank == start_rank:
+                new_rank2 = rank + 2 * direction
+                new_sq2 = chr(file + ord('a')) + str(new_rank2 + 1)
+                if new_sq2 not in pieces:
+                    moves.append(sq + new_sq2)
+    
+    # Captures
+    for df in [-1, 1]:
+        new_file = file + df
+        new_rank = rank + direction
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            new_sq = chr(new_file + ord('a')) + str(new_rank + 1)
+            if new_sq in pieces and pieces[new_sq][0] != color:
+                if new_rank == promo_rank:
+                    for p in ['q', 'r', 'b', 'n']:
+                        moves.append(sq + new_sq + p)
+                else:
+                    moves.append(sq + new_sq)
+    
+    return moves
+
+
+def get_knight_moves(sq: str, color: str, pieces: dict[str, str]) -> list[str]:
+    moves = []
+    file, rank = ord(sq[0]) - ord('a'), int(sq[1]) - 1
+    deltas = [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)]
+    
+    for df, dr in deltas:
+        new_file, new_rank = file + df, rank + dr
+        if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+            new_sq = chr(new_file + ord('a')) + str(new_rank + 1)
+            if new_sq not in pieces or pieces[new_sq][0] != color:
+                moves.append(sq + new_sq)
+    
+    return moves
+
+
+def get_sliding_moves(sq: str, color: str, pieces: dict[str, str], directions: list) -> list[str]:
+    moves = []
+    file, rank = ord(sq[0]) - ord('a'), int(sq[1]) - 1
+    
+    for df, dr in directions:
+        for dist in range(1, 8):
+            new_file, new_rank = file + df * dist, rank + dr * dist
+            if not (0 <= new_file <= 7 and 0 <= new_rank <= 7):
+                break
+            new_sq = chr(new_file + ord('a')) + str(new_rank + 1)
+            if new_sq in pieces:
+                if pieces[new_sq][0] != color:
+                    moves.append(sq + new_sq)
+                break
+            moves.append(sq + new_sq)
+    
+    return moves
+
+
+def get_bishop_moves(sq: str, color: str, pieces: dict[str, str]) -> list[str]:
+    return get_sliding_moves(sq, color, pieces, [(1,1), (1,-1), (-1,1), (-1,-1)])
+
+
+def get_rook_moves(sq: str, color: str, pieces: dict[str, str]) -> list[str]:
+    return get_sliding_moves(sq, color, pieces, [(1,0), (-1,0), (0,1), (0,-1)])
+
+
+def get_queen_moves(sq: str, color: str, pieces: dict[str, str]) -> list[str]:
+    return get_sliding_moves(sq, color, pieces, [(1,1), (1,-1), (-1,1), (-1,-1), (1,0), (-1,0), (0,1), (0,-1)])
+
+
+def get_king_moves(sq: str, color: str, pieces: dict[str, str]) -> list[str]:
+    moves = []
+    file, rank = ord(sq[0]) - ord('a'), int(sq[1]) - 1
+    
+    for df in [-1, 0, 1]:
+        for dr in [-1, 0, 1]:
+            if df == 0 and dr == 0:
+                continue
+            new_file, new_rank = file + df, rank + dr
+            if 0 <= new_file <= 7 and 0 <= new_rank <= 7:
+                new_sq = chr(new_file + ord('a')) + str(new_rank + 1)
+                if new_sq not in pieces or pieces[new_sq][0] != color:
+                    moves.append(sq + new_sq)
+    
+    # Castling (simplified - just check basic conditions)
+    if color == 'w' and sq == 'e1':
+        if 'h1' in pieces and pieces['h1'] == 'wR' and 'f1' not in pieces and 'g1' not in pieces:
+            moves.append('e1g1')
+        if 'a1' in pieces and pieces['a1'] == 'wR' and 'b1' not in pieces and 'c1' not in pieces and 'd1' not in pieces:
+            moves.append('e1c1')
+    elif color == 'b' and sq == 'e8':
+        if 'h8' in pieces and pieces['h8'] == 'bR' and 'f8' not in pieces and 'g8' not in pieces:
+            moves.append('e8g8')
+        if 'a8' in pieces and pieces['a8'] == 'bR' and 'b8' not in pieces and 'c8' not in pieces and 'd8' not in pieces:
+            moves.append('e8c8')
+    
+    return moves
+
+
+def is_in_check(pieces: dict[str, str], color: str) -> bool:
+    """Check if the given color's king is in check"""
+    color_prefix = 'w' if color == 'white' else 'b'
+    opp_prefix = 'b' if color == 'white' else 'w'
+    
+    # Find king
+    king_sq = None
+    for sq, piece in pieces.items():
+        if piece == color_prefix + 'K':
+            king_sq = sq
+            break
+    
+    if not king_sq:
+        return False
+    
+    # Check if any opponent piece attacks king
+    for sq, piece in pieces.items():
+        if piece[0] == opp_prefix:
+            moves = get_piece_moves(sq, piece, pieces)
+            for move in moves:
+                if move[2:4] == king_sq:
+                    return True
+    
+    return False

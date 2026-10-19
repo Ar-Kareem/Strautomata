@@ -1,0 +1,132 @@
+
+import random
+
+def parse_state(state):
+    """Convert the list of facts into a convenient dictionary representation."""
+    cells = {}
+    scores = {}
+    step = 0
+    control = None
+    for fact in state:
+        if not isinstance(fact, list) or len(fact) == 0:
+            continue
+        if fact[0] == "cell":
+            board = fact[1]
+            r = int(fact[2])
+            c = int(fact[3])
+            color = fact[4]
+            cells[(board, r, c)] = color
+        elif fact[0] == "score":
+            role = fact[1]
+            scores[role] = int(fact[2])
+        elif fact[0] == "step":
+            step = int(fact[1])
+        elif fact[0] == "control":
+            control = fact[1]
+    return cells, scores, step, control
+
+def generate_moves(cells, role):
+    """Generate all legal moves (including jumps) for the given role."""
+    moves = []
+    for (board, r, c), color in cells.items():
+        if color != role:
+            continue
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            r1 = r + dr
+            c1 = c + dc
+            if not (1 <= r1 <= 4 and 1 <= c1 <= 4):
+                continue
+            neighbour = cells.get((board, r1, c1), "blank")
+            if neighbour == "blank":
+                # simple step
+                moves.append(("move", board, r, c, r1, c1))
+            elif neighbour == role:
+                # possible jump over own piece
+                r2 = r + 2 * dr
+                c2 = c + 2 * dc
+                if not (1 <= r2 <= 4 and 1 <= c2 <= 4):
+                    continue
+                jumped = cells.get((board, r2, c2), "blank")
+                if jumped != "blank" and jumped != role:
+                    # capture – land on opponent piece at (r2, c2)
+                    moves.append(("jump", board, r, c, r1, c1, r2, c2))
+    return moves
+
+def apply_move(cells, move, role):
+    """Return a new board configuration after applying the given move."""
+    new_cells = dict(cells)
+    if move[0] == "move":
+        _, board, r_src, c_src, r_dst, c_dst = move
+        new_cells[(board, r_src, c_src)] = "blank"
+        new_cells[(board, r_dst, c_dst)] = role
+    elif move[0] == "jump":
+        _, board, r_src, c_src, r_over, c_over, r_tgt, c_tgt = move
+        # source becomes empty
+        new_cells[(board, r_src, c_src)] = "blank"
+        # land on the opponent piece (capturing it)
+        new_cells[(board, r_tgt, c_tgt)] = role
+        # the jumped‑over piece stays, we only remove the captured piece implicitly
+    return new_cells
+
+def evaluate(cells, role):
+    """Simple material evaluation: difference in piece counts."""
+    opponent = "black" if role == "red" else "red"
+    my_count = sum(1 for col in cells.values() if col == role)
+    opp_count = sum(1 for col in cells.values() if col == opponent)
+    return my_count - opp_count
+
+def format_move(move):
+    """Convert the internal move representation into the required action string."""
+    if move == "tick":
+        return "tick"
+    if move[0] == "move":
+        return f"move({move[1]},{move[2]},{move[3]},{move[4]},{move[5]})"
+    elif move[0] == "jump":
+        return f"jump({move[1]},{move[2]},{move[3]},{move[4]},{move[5]},{move[6]},{move[7]})"
+    return "tick"
+
+def choose_move(state, role):
+    """Select the best legal action using jump‑first strategy and depth‑2 minimax."""
+    cells, _, _, _ = parse_state(state)
+    moves = generate_moves(cells, role)
+    if not moves:
+        return "tick"
+
+    # Prioritise jumps (captures) – they give points and remove opponent pieces.
+    jumps = [m for m in moves if m[0] == "jump"]
+    if jumps:
+        return format_move(random.choice(jumps))
+
+    # Depth‑2 minimax: assume opponent chooses the reply that minimises our evaluation.
+    opponent = "black" if role == "red" else "red"
+    best_move = None
+    best_eval = -float('inf')
+    random.shuffle(moves)  # random tie‑breaking
+
+    for move in moves:
+        new_cells = apply_move(cells, move, role)
+        opp_moves = generate_moves(new_cells, opponent)
+        if not opp_moves:
+            # Opponent cannot move – a strong advantage.
+            eval_score = evaluate(new_cells, role) + 1000
+        else:
+            worst_eval = float('inf')
+            for opp_move in opp_moves:
+                opp_cells = apply_move(new_cells, opp_move, opponent)
+                eval_score = evaluate(opp_cells, role)
+                if eval_score < worst_eval:
+                    worst_eval = eval_score
+            eval_score = worst_eval
+        if eval_score > best_eval:
+            best_eval = eval_score
+            best_move = move
+
+    if best_move is None:
+        best_move = random.choice(moves)
+    return format_move(best_move)
+
+def policy(state: list[list[object]], role: str) -> str:
+    """Main entry point required by the game master."""
+    # Uncomment the next line for deterministic behaviour (useful for debugging)
+    # random.seed(0)
+    return choose_move(state, role)

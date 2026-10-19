@@ -1,0 +1,301 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me, opponent, memory):
+    BOARD_SIZE = 19
+    me_set = set(me)
+    opp_set = set(opponent)
+    all_stones = me_set | opp_set
+    
+    def neighbors(r, c):
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                yield nr, nc
+    
+    def get_group(r, c, stone_set):
+        group = set()
+        queue = deque([(r, c)])
+        while queue:
+            cr, cc = queue.popleft()
+            if (cr, cc) in group:
+                continue
+            group.add((cr, cc))
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in stone_set and (nr, nc) not in group:
+                    queue.append((nr, nc))
+        return group
+    
+    def get_liberties(group, stone_set_mine, stone_set_opp):
+        libs = set()
+        for r, c in group:
+            for nr, nc in neighbors(r, c):
+                if (nr, nc) not in stone_set_mine and (nr, nc) not in stone_set_opp:
+                    libs.add((nr, nc))
+        return libs
+    
+    def would_be_suicide(r, c, my_set, opp_set_local):
+        # Place stone temporarily
+        new_my = my_set | {(r, c)}
+        new_opp = set(opp_set_local)
+        
+        # Check if any opponent neighbor group is captured
+        captured = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in new_opp:
+                grp = get_group(nr, nc, new_opp)
+                libs = get_liberties(grp, new_opp, new_my)
+                if len(libs) == 0:
+                    captured |= grp
+        
+        new_opp -= captured
+        
+        # Check if own group has liberties
+        my_group = get_group(r, c, new_my)
+        my_libs = get_liberties(my_group, new_my, new_opp)
+        return len(my_libs) == 0
+    
+    def is_eye(r, c, my_set):
+        # All neighbors must be my stones
+        adj = list(neighbors(r, c))
+        if not all((nr, nc) in my_set for nr, nc in adj):
+            return False
+        # Check diagonals - at least 3/4 (or all for edge/corner) must be mine
+        diags = []
+        for dr, dc in [(-1,-1),(-1,1),(1,-1),(1,1)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                diags.append((nr, nc))
+        if len(diags) == 0:
+            return True
+        my_diags = sum(1 for d in diags if d in my_set)
+        if len(diags) <= 2:
+            return my_diags == len(diags)
+        return my_diags >= len(diags) - 1
+    
+    def simulate_move(r, c, my_set, opp_set_local):
+        new_my = my_set | {(r, c)}
+        new_opp = set(opp_set_local)
+        captured = set()
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in new_opp:
+                grp = get_group(nr, nc, new_opp)
+                libs = get_liberties(grp, new_opp, new_my)
+                if len(libs) == 0:
+                    captured |= grp
+        new_opp -= captured
+        return new_my, new_opp, captured
+    
+    # Track previous board state for simple ko
+    prev_me = set(memory.get('prev_me', []))
+    prev_opp = set(memory.get('prev_opp', []))
+    move_count = memory.get('move_count', 0)
+    
+    # Precompute opponent groups and their liberties
+    visited_opp = set()
+    opp_groups = []
+    for s in opp_set:
+        if s not in visited_opp:
+            grp = get_group(s[0], s[1], opp_set)
+            visited_opp |= grp
+            libs = get_liberties(grp, opp_set, me_set)
+            opp_groups.append((grp, libs))
+    
+    # Precompute my groups and their liberties
+    visited_me = set()
+    my_groups = []
+    for s in me_set:
+        if s not in visited_me:
+            grp = get_group(s[0], s[1], me_set)
+            visited_me |= grp
+            libs = get_liberties(grp, me_set, opp_set)
+            my_groups.append((grp, libs))
+    
+    candidate_scores = {}
+    
+    # Priority 1: Capture opponent groups in atari
+    for grp, libs in opp_groups:
+        if len(libs) == 1:
+            lib = list(libs)[0]
+            if lib not in all_stones:
+                if not would_be_suicide(lib[0], lib[1], me_set, opp_set):
+                    candidate_scores[lib] = candidate_scores.get(lib, 0) + 500 + len(grp) * 50
+    
+    # Priority 2: Save my groups in atari
+    for grp, libs in my_groups:
+        if len(libs) == 1:
+            # Try to extend - find liberties of the liberty
+            lib = list(libs)[0]
+            # Option 1: play at the liberty to extend
+            if lib not in all_stones and not would_be_suicide(lib[0], lib[1], me_set, opp_set):
+                # Check if this actually helps (gives more liberties)
+                new_my, new_opp, cap = simulate_move(lib[0], lib[1], me_set, opp_set)
+                new_grp = get_group(lib[0], lib[1], new_my)
+                new_libs = get_liberties(new_grp, new_my, new_opp)
+                if len(new_libs) > 0:
+                    candidate_scores[lib] = candidate_scores.get(lib, 0) + 400 + len(grp) * 40
+            
+            # Option 2: capture an adjacent enemy to gain liberties
+            for sr, sc in grp:
+                for nr, nc in neighbors(sr, sc):
+                    if (nr, nc) in opp_set:
+                        e_grp = get_group(nr, nc, opp_set)
+                        e_libs = get_liberties(e_grp, opp_set, me_set)
+                        if len(e_libs) == 1:
+                            el = list(e_libs)[0]
+                            if el not in all_stones and not would_be_suicide(el[0], el[1], me_set, opp_set):
+                                candidate_scores[el] = candidate_scores.get(el, 0) + 450 + len(e_grp) * 30
+    
+    # Priority 3: Reduce opponent liberties (atari moves)
+    for grp, libs in opp_groups:
+        if len(libs) == 2:
+            for lib in libs:
+                if lib not in all_stones and not would_be_suicide(lib[0], lib[1], me_set, opp_set):
+                    new_my, new_opp, cap = simulate_move(lib[0], lib[1], me_set, opp_set)
+                    e_grp_new = get_group(list(grp)[0], list(grp)[0], new_opp) if list(grp)[0] in new_opp else set()
+                    candidate_scores[lib] = candidate_scores.get(lib, 0) + 100 + len(grp) * 10
+    
+    # Priority 4: Strengthen weak groups
+    for grp, libs in my_groups:
+        if len(libs) == 2:
+            for lib in libs:
+                if lib not in all_stones and not would_be_suicide(lib[0], lib[1], me_set, opp_set):
+                    new_my, new_opp, cap = simulate_move(lib[0], lib[1], me_set, opp_set)
+                    new_grp = get_group(lib[0], lib[1], new_my)
+                    new_libs = get_liberties(new_grp, new_my, new_opp)
+                    if len(new_libs) >= 3:
+                        candidate_scores[lib] = candidate_scores.get(lib, 0) + 80 + len(grp) * 5
+    
+    # Strategic/influence-based scoring for all empty points
+    # Use a sampling approach for efficiency
+    empty_points = []
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if (r, c) not in all_stones:
+                empty_points.append((r, c))
+    
+    # Opening book - star points and approach moves
+    star_points = [(4,4),(4,10),(4,16),(10,4),(10,10),(10,16),(16,4),(16,10),(16,16)]
+    approach_points = [(3,4),(4,3),(3,16),(4,17),(16,3),(16,17),(17,4),(17,16),
+                       (3,10),(10,3),(10,17),(17,10)]
+    
+    if move_count < 8:
+        for sp in star_points:
+            if sp not in all_stones:
+                candidate_scores[sp] = candidate_scores.get(sp, 0) + 200 - move_count * 10
+        if move_count >= 2:
+            for ap in approach_points:
+                if ap not in all_stones:
+                    candidate_scores[ap] = candidate_scores.get(ap, 0) + 150
+    
+    # Influence scoring
+    # Simple: for each empty point, count nearby friendly vs enemy stones
+    for pt in empty_points:
+        r, c = pt
+        if pt in candidate_scores and candidate_scores[pt] > 200:
+            continue  # Already high priority
+        
+        score = 0
+        
+        # Don't fill own eyes
+        if is_eye(r, c, me_set):
+            candidate_scores[pt] = candidate_scores.get(pt, 0) - 10000
+            continue
+        
+        # Proximity to existing stones (prefer moves near action)
+        min_dist_me = 100
+        min_dist_opp = 100
+        for sr, sc in me_set:
+            d = abs(r-sr) + abs(c-sc)
+            min_dist_me = min(min_dist_me, d)
+        for sr, sc in opp_set:
+            d = abs(r-sr) + abs(c-sc)
+            min_dist_opp = min(min_dist_opp, d)
+        
+        if me_set or opp_set:
+            # Prefer moves near stones but not too close
+            if min_dist_me <= 3:
+                score += 30 - min_dist_me * 5
+            if min_dist_opp <= 3:
+                score += 25 - min_dist_opp * 5
+            if min_dist_me > 6 and min_dist_opp > 6 and move_count > 10:
+                score -= 20
+        
+        # Edge avoidance (mild) - prefer lines 3-5 over 1-2
+        edge_dist = min(r-1, BOARD_SIZE-r, c-1, BOARD_SIZE-c)
+        if edge_dist == 0:
+            score -= 30
+        elif edge_dist == 1:
+            score -= 10
+        elif edge_dist >= 2 and edge_dist <= 4:
+            score += 5
+        
+        # Count influence in radius 4
+        my_inf = 0
+        opp_inf = 0
+        for dr in range(-4, 5):
+            for dc in range(-4, 5):
+                d = abs(dr) + abs(dc)
+                if d == 0 or d > 4:
+                    continue
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= BOARD_SIZE and 1 <= nc <= BOARD_SIZE:
+                    if (nr, nc) in me_set:
+                        my_inf += (5 - d)
+                    elif (nr, nc) in opp_set:
+                        opp_inf += (5 - d)
+        
+        # Prefer moves that extend our influence or contest opponent's
+        score += my_inf * 2 + opp_inf * 1.5
+        
+        # Connection bonus: adjacent to friendly stones
+        adj_me = sum(1 for nr, nc in neighbors(r, c) if (nr, nc) in me_set)
+        adj_opp = sum(1 for nr, nc in neighbors(r, c) if (nr, nc) in opp_set)
+        adj_empty = sum(1 for nr, nc in neighbors(r, c) if (nr, nc) not in all_stones)
+        
+        if adj_me >= 1 and adj_empty >= 2:
+            score += 15
+        if adj_opp >= 1 and adj_empty >= 2:
+            score += 10
+        
+        candidate_scores[pt] = candidate_scores.get(pt, 0) + score
+    
+    # Filter out illegal moves (suicide, ko)
+    best_move = (0, 0)  # pass
+    best_score = -99999
+    
+    for move, score in candidate_scores.items():
+        r, c = move
+        if (r, c) in all_stones:
+            continue
+        if would_be_suicide(r, c, me_set, opp_set):
+            continue
+        # Simple ko check
+        new_my, new_opp, captured = simulate_move(r, c, me_set, opp_set)
+        if new_my == prev_opp and new_opp == prev_me:
+            continue
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # If no good move found, try any legal empty point
+    if best_move == (0, 0) and len(empty_points) > 0:
+        for pt in empty_points:
+            if not is_eye(pt[0], pt[1], me_set) and not would_be_suicide(pt[0], pt[1], me_set, opp_set):
+                new_my, new_opp, captured = simulate_move(pt[0], pt[1], me_set, opp_set)
+                if not (new_my == prev_opp and new_opp == prev_me):
+                    best_move = pt
+                    break
+    
+    # Update memory
+    if best_move != (0, 0):
+        new_my, new_opp, _ = simulate_move(best_move[0], best_move[1], me_set, opp_set)
+        memory['prev_me'] = list(new_my)
+        memory['prev_opp'] = list(new_opp)
+    else:
+        memory['prev_me'] = list(me_set)
+        memory['prev_opp'] = list(opp_set)
+    memory['move_count'] = move_count + 1
+    
+    return (best_move, memory)

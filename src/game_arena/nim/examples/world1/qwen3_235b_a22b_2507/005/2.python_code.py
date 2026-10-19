@@ -1,0 +1,77 @@
+
+from typing import List
+
+def policy(piles: List[int]) -> str:
+    # Count how many piles have more than 1 object
+    big_piles = [i for i in range(4) if piles[i] > 1]
+    ones = sum(1 for p in piles if p == 1)
+    zeros = sum(1 for p in piles if p == 0)
+    
+    # If all non-zero piles are 1s, we are in endgame
+    if len(big_piles) == 0:
+        # Count non-zero (i.e. ones)
+        non_zero = 4 - zeros
+        # We want to leave an ODD number of 1s (so opponent is forced to take last)
+        # So if current number of 1s is even, we must remove one (make it odd)
+        # But we can only remove one from a pile with 1 -> becomes 0
+        for i in range(4):
+            if piles[i] == 1:
+                # Removing this would leave (non_zero - 1) ones
+                if (non_zero - 1) % 2 == 1:
+                    return f"{i},1"
+        # Fallback: just remove one from a pile with 1
+        for i in range(4):
+            if piles[i] == 1:
+                return f"{i},1"
+    
+    # Normal play: use XOR strategy unless in misère-specific edge
+    xor_sum = 0
+    for p in piles:
+        xor_sum ^= p
+
+    # If XOR is not zero, we can win by making it zero
+    if xor_sum != 0:
+        # Try to find a move that makes XOR = 0
+        for i in range(4):
+            if piles[i] == 0:
+                continue
+            # What would be the new pile size to make xor_sum 0?
+            target = piles[i] ^ xor_sum
+            if target < piles[i]:
+                # We can reduce pile i from piles[i] to target
+                take = piles[i] - target
+                return f"{i},{take}"
+    
+    # If no such move found (shouldn't happen), or XOR is 0 (losing position),
+    # we try to make a move that delays loss or follows misère convention
+    # In misère, when in a losing normal position and there's a big pile,
+    # prefer to reduce a big pile to 1 if possible (to avoid leaving multiple 1s)
+    # But not always safe, so we do controlled play.
+
+    # If XOR is 0, we are in a losing position (under normal play), so try to pass burden
+    # In misère, we might try to leave exactly one pile > 1 and reduce others carefully
+
+    # Special misère adjustment: if only one pile has more than 1
+    if len(big_piles) == 1:
+        i = big_piles[0]
+        # If this pile is > 1, we may want to reduce it to 1 or 0 depending on ones
+        # We want to leave an even number of 1s after us if possible? No — goal is to avoid taking last
+        # Better: follow standard misère convention: reduce the big pile to 1 if we can force win
+        # But in a losing XOR position, we have to make *a* move
+
+        # Reduce the big pile to 1 if it’s safe (i.e., not 2 already)
+        if piles[i] > 2:
+            return f"{i},{piles[i] - 1}"  # reduce to 1
+        else:
+            # pile is 2, reduce to 1 or 0?
+            # reducing to 1: leaves same number of 1s + one more = ones+1
+            # if (ones + 1) is even, opponent gets even ones -> can force us to lose?
+            # better: reduce to 0? But that may not be optimal
+            # Standard play: when forced, reduce big pile down
+            return f"{i},1"  # reduce 2->1
+
+    # Otherwise, just make any legal move (shouldn't get here often)
+    # Fall back: find first non-zero pile and take 1
+    for i in range(4):
+        if piles[i] > 0:
+            return f"{i},1"

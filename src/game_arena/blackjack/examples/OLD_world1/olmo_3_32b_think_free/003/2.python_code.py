@@ -1,0 +1,38 @@
+
+def policy(hand: list[str], target: int) -> str:
+    def calculate_value(h, t):
+        base_sum = 0
+        num_aces = 0
+        for card in h:
+            if card == 'A':
+                num_aces += 1
+            else:
+                if card in ['J', 'Q', 'K']:
+                    base_sum += 10
+                elif card == '10':
+                    base_sum += 10
+                else:
+                    base_sum += int(card)
+        total_11 = base_sum + 11 * num_aces
+        if total_11 <= t:
+            return total_11
+        else:
+            total_1 = base_sum + num_aces
+            if total_1 <= t:
+                return total_1
+            else:
+                return total_1  # value exceeds target
+    
+    current_value = calculate_value(hand, target)
+    if current_value > target:
+        return "STAY"
+    if current_value + 10 <= target:
+        return "HIT"
+    else:
+        if current_value >= target - 2:
+            return "STAY"
+        else:
+            if (target - current_value) >= 5:
+                return "HIT"
+            else:
+                return "STAY"

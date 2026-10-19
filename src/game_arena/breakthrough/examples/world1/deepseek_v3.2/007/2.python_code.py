@@ -1,0 +1,505 @@
+
+import numpy as np
+import time
+from collections import defaultdict
+from typing import Tuple, List, Optional, Dict, Set
+import random
+
+# Constants
+BOARD_SIZE = 8
+MAX_DEPTH = 5  # Will use iterative deepening
+
+class TranspositionTable:
+    """Simple transposition table for caching positions."""
+    def __init__(self):
+        self.table = {}
+    
+    def get(self, key):
+        return self.table.get(key)
+    
+    def store(self, key, value, depth, flag):
+        self.table[key] = (value, depth, flag)
+    
+    def clear(self):
+        self.table.clear()
+
+class BitBoard:
+    """Bitboard representation for fast operations."""
+    def __init__(self, white_positions=None, black_positions=None):
+        self.white = 0
+        self.black = 0
+        if white_positions:
+            for r, c in white_positions:
+                self.white |= 1 << (r * 8 + c)
+        if black_positions:
+            for r, c in black_positions:
+                self.black |= 1 << (r * 8 + c)
+    
+    def get_white_positions(self):
+        positions = []
+        bits = self.white
+        while bits:
+            bit = bits & -bits
+            pos = (bit.bit_length() - 1)
+            r = pos // 8
+            c = pos % 8
+            positions.append((r, c))
+            bits ^= bit
+        return positions
+    
+    def get_black_positions(self):
+        positions = []
+        bits = self.black
+        while bits:
+            bit = bits & -bits
+            pos = (bit.bit_length() - 1)
+            r = pos // 8
+            c = pos % 8
+            positions.append((r, c))
+            bits ^= bit
+        return positions
+    
+    def copy(self):
+        new_board = BitBoard()
+        new_board.white = self.white
+        new_board.black = self.black
+        return new_board
+
+class BreakthroughAI:
+    def __init__(self):
+        self.tt = TranspositionTable()
+        self.killer_moves = [[None, None] for _ in range(MAX_DEPTH + 2)]
+        self.history = defaultdict(int)
+        self.start_time = 0
+        self.time_limit = 0.95  # seconds
+        self.nodes_searched = 0
+        
+    def positions_to_bitboard(self, my_positions, opp_positions, color):
+        """Convert position lists to bitboard representation."""
+        if color == 'w':
+            return BitBoard(my_positions, opp_positions)
+        else:
+            return BitBoard(opp_positions, my_positions)  # Black is opposite
+        
+    def generate_moves(self, board, color):
+        """Generate all legal moves for the given color."""
+        moves = []
+        if color == 'w':
+            my_pieces = board.get_white_positions()
+            opponent_mask = board.black
+        else:
+            my_pieces = board.get_black_positions()
+            opponent_mask = board.white
+        
+        all_pieces = board.white | board.black
+        
+        for r, c in my_pieces:
+            if color == 'w':  # White moves up (increasing row)
+                forward_row = r + 1
+            else:  # Black moves down (decreasing row)
+                forward_row = r - 1
+                
+            if 0 <= forward_row < 8:
+                # Forward move
+                forward_pos = forward_row * 8 + c
+                if not (all_pieces & (1 << forward_pos)):
+                    moves.append(((r, c), (forward_row, c)))
+                
+                # Diagonal left capture
+                if c > 0:
+                    diag_left_pos = forward_row * 8 + (c - 1)
+                    if opponent_mask & (1 << diag_left_pos):
+                        moves.append(((r, c), (forward_row, c - 1)))
+                    # Also can move diagonally if empty (no capture needed)
+                    elif not (all_pieces & (1 << diag_left_pos)):
+                        moves.append(((r, c), (forward_row, c - 1)))
+                
+                # Diagonal right capture
+                if c < 7:
+                    diag_right_pos = forward_row * 8 + (c + 1)
+                    if opponent_mask & (1 << diag_right_pos):
+                        moves.append(((r, c), (forward_row, c + 1)))
+                    # Also can move diagonally if empty (no capture needed)
+                    elif not (all_pieces & (1 << diag_right_pos)):
+                        moves.append(((r, c), (forward_row, c + 1)))
+        
+        return moves
+    
+    def make_move(self, board, move, color):
+        """Apply a move to the board."""
+        new_board = board.copy()
+        (fr, fc), (tr, tc) = move
+        
+        pos_from = fr * 8 + fc
+        pos_to = tr * 8 + tc
+        
+        if color == 'w':
+            # Remove from white
+            new_board.white &= ~(1 << pos_from)
+            # Add to white
+            new_board.white |= (1 << pos_to)
+            # Remove captured black piece if any
+            if new_board.black & (1 << pos_to):
+                new_board.black &= ~(1 << pos_to)
+        else:
+            # Remove from black
+            new_board.black &= ~(1 << pos_from)
+            # Add to black
+            new_board.black |= (1 << pos_to)
+            # Remove captured white piece if any
+            if new_board.white & (1 << pos_to):
+                new_board.white &= ~(1 << pos_to)
+                
+        return new_board
+    
+    def evaluate(self, board, color):
+        """Evaluate the position from the perspective of the given color."""
+        if color == 'w':
+            my_pieces = board.get_white_positions()
+            opp_pieces = board.get_black_positions()
+            my_row_dir = 1  # White moves upward
+        else:
+            my_pieces = board.get_black_positions()
+            opp_pieces = board.get_white_positions()
+            my_row_dir = -1  # Black moves downward
+        
+        # Material
+        material = len(my_pieces) - len(opp_pieces)
+        
+        # Progress: pieces closer to promotion are better
+        my_progress = 0
+        opp_progress = 0
+        
+        for r, c in my_pieces:
+            if color == 'w':
+                my_progress += r  # Higher row is better for white
+            else:
+                my_progress += (7 - r)  # Lower row is better for black
+        
+        for r, c in opp_pieces:
+            if color == 'w':
+                opp_progress += r  # Higher row is better for white (but this is opponent)
+            else:
+                opp_progress += (7 - r)  # Lower row is better for black (but this is opponent)
+        
+        progress = my_progress - opp_progress
+        
+        # Central control
+        center_squares = [(3, 3), (3, 4), (4, 3), (4, 4)]
+        center_control = 0
+        for r, c in center_squares:
+            if (r, c) in my_pieces:
+                center_control += 1
+            elif (r, c) in opp_pieces:
+                center_control -= 1
+        
+        # Pawn structure: connected pawns
+        my_connected = 0
+        for r, c in my_pieces:
+            # Check adjacent columns at same row
+            if (r, c-1) in my_pieces or (r, c+1) in my_pieces:
+                my_connected += 1
+        
+        opp_connected = 0
+        for r, c in opp_pieces:
+            if (r, c-1) in opp_pieces or (r, c+1) in opp_pieces:
+                opp_connected += 1
+        
+        structure = my_connected - opp_connected
+        
+        # Attack potential: pieces that can capture
+        my_attacks = 0
+        for r, c in my_pieces:
+            target_row = r + my_row_dir
+            if 0 <= target_row < 8:
+                if c > 0 and (target_row, c-1) in opp_pieces:
+                    my_attacks += 1
+                if c < 7 and (target_row, c+1) in opp_pieces:
+                    my_attacks += 1
+        
+        opp_attacks = 0
+        for r, c in opp_pieces:
+            target_row = r - my_row_dir  # Opposite direction
+            if 0 <= target_row < 8:
+                if c > 0 and (target_row, c-1) in my_pieces:
+                    opp_attacks += 1
+                if c < 7 and (target_row, c+1) in my_pieces:
+                    opp_attacks += 1
+        
+        attack = my_attacks - opp_attacks
+        
+        # Passed pawns: pawns with no opponent pawns in front
+        passed_pawns = 0
+        for r, c in my_pieces:
+            is_passed = True
+            for check_row in range(r + my_row_dir, 8 if my_row_dir > 0 else -1, my_row_dir):
+                if 0 <= check_row < 8:
+                    if (check_row, c) in opp_pieces:
+                        is_passed = False
+                        break
+                    if c > 0 and (check_row, c-1) in opp_pieces:
+                        is_passed = False
+                        break
+                    if c < 7 and (check_row, c+1) in opp_pieces:
+                        is_passed = False
+                        break
+            if is_passed:
+                passed_pawns += 1
+        
+        # Combine all factors with weights
+        score = (
+            100 * material +
+            30 * progress / 10.0 +
+            20 * center_control +
+            15 * structure +
+            10 * attack +
+            40 * passed_pawns
+        )
+        
+        return score
+    
+    def is_winning(self, board, color):
+        """Check if the current player has won."""
+        if color == 'w':
+            my_pieces = board.get_white_positions()
+            opp_pieces = board.get_black_positions()
+        else:
+            my_pieces = board.get_black_positions()
+            opp_pieces = board.get_white_positions()
+        
+        # Win by reaching promotion row
+        for r, c in my_pieces:
+            if color == 'w' and r == 7:  # White reaches top row
+                return True
+            elif color == 'b' and r == 0:  # Black reaches bottom row
+                return True
+        
+        # Win by capturing all opponent pieces
+        if not opp_pieces:
+            return True
+        
+        return False
+    
+    def order_moves(self, moves, board, color, depth, killer_moves):
+        """Order moves for better alpha-beta pruning."""
+        scored_moves = []
+        
+        for move in moves:
+            score = 0
+            
+            # Killer moves
+            if killer_moves and move in killer_moves:
+                score += 1000
+            
+            # History heuristic
+            score += self.history.get(move, 0)
+            
+            # Capture moves
+            (fr, fc), (tr, tc) = move
+            from_pos = fr * 8 + fc
+            to_pos = tr * 8 + tc
+            
+            if color == 'w':
+                if board.black & (1 << to_pos):
+                    # Capture piece - more valuable if capturing advanced piece
+                    score += 100
+            else:
+                if board.white & (1 << to_pos):
+                    score += 100
+            
+            # Promotion moves
+            if color == 'w' and tr == 7:
+                score += 50
+            elif color == 'b' and tr == 0:
+                score += 50
+            
+            # Forward moves
+            if fc == tc:  # Straight forward
+                score += 10
+            
+            scored_moves.append((score, move))
+        
+        scored_moves.sort(reverse=True, key=lambda x: x[0])
+        return [move for _, move in scored_moves]
+    
+    def quiescence(self, board, color, alpha, beta, depth_q=0):
+        """Quiescence search to avoid horizon effect."""
+        self.nodes_searched += 1
+        
+        # Evaluate static position
+        stand_pat = self.evaluate(board, color)
+        
+        if stand_pat >= beta:
+            return beta
+        if alpha < stand_pat:
+            alpha = stand_pat
+        
+        # Only consider capture moves
+        moves = self.generate_moves(board, color)
+        capture_moves = []
+        for move in moves:
+            (fr, fc), (tr, tc) = move
+            to_pos = tr * 8 + tc
+            if color == 'w' and (board.black & (1 << to_pos)):
+                capture_moves.append(move)
+            elif color == 'b' and (board.white & (1 << to_pos)):
+                capture_moves.append(move)
+        
+        for move in capture_moves:
+            if time.time() - self.start_time > self.time_limit:
+                return alpha
+            
+            new_board = self.make_move(board, move, color)
+            
+            # Check for immediate win
+            if self.is_winning(new_board, color):
+                score = 10000 - depth_q
+            else:
+                score = -self.quiescence(new_board, 'b' if color == 'w' else 'w', -beta, -alpha, depth_q + 1)
+            
+            if score >= beta:
+                return beta
+            if score > alpha:
+                alpha = score
+        
+        return alpha
+    
+    def alphabeta(self, board, color, depth, alpha, beta, max_depth, killer_moves):
+        """Alpha-beta search with transposition table and move ordering."""
+        self.nodes_searched += 1
+        
+        # Time check
+        if time.time() - self.start_time > self.time_limit:
+            return 0
+        
+        # Check for win
+        if self.is_winning(board, color):
+            return 10000 - (max_depth - depth)  # Closer wins are better
+        
+        if self.is_winning(board, 'b' if color == 'w' else 'w'):
+            return -10000 + (max_depth - depth)  # Closer losses are worse
+        
+        if depth == 0:
+            return self.quiescence(board, color, alpha, beta)
+        
+        # Generate and order moves
+        moves = self.generate_moves(board, color)
+        if not moves:
+            return -5000  # No moves available
+        
+        moves = self.order_moves(moves, board, color, depth, killer_moves[depth])
+        
+        best_value = -float('inf')
+        best_move = None
+        
+        for move in moves:
+            new_board = self.make_move(board, move, color)
+            
+            value = -self.alphabeta(new_board, 'b' if color == 'w' else 'w', 
+                                   depth - 1, -beta, -alpha, max_depth, killer_moves)
+            
+            if value > best_value:
+                best_value = value
+                best_move = move
+            
+            alpha = max(alpha, best_value)
+            if alpha >= beta:
+                # Store killer move
+                if move not in killer_moves[depth]:
+                    if killer_moves[depth][0] is None:
+                        killer_moves[depth][0] = move
+                    else:
+                        killer_moves[depth][1] = move
+                # Update history
+                self.history[move] += depth * depth
+                break
+        
+        return best_value
+    
+    def get_best_move(self, board, color, max_time=0.95):
+        """Find the best move using iterative deepening."""
+        self.start_time = time.time()
+        self.time_limit = max_time
+        self.nodes_searched = 0
+        
+        moves = self.generate_moves(board, color)
+        if not moves:
+            return random.choice(moves) if moves else None
+        
+        # If only one move, return it immediately
+        if len(moves) == 1:
+            return moves[0]
+        
+        best_move = moves[0]
+        best_value = -float('inf')
+        
+        # Iterative deepening
+        for depth in range(1, MAX_DEPTH + 1):
+            if time.time() - self.start_time > self.time_limit * 0.8:
+                break
+            
+            current_best = None
+            current_value = -float('inf')
+            
+            # Reset killer moves for this depth
+            killer_moves = [[None, None] for _ in range(MAX_DEPTH + 2)]
+            
+            for move in moves:
+                if time.time() - self.start_time > self.time_limit * 0.8:
+                    break
+                
+                new_board = self.make_move(board, move, color)
+                
+                value = -self.alphabeta(new_board, 'b' if color == 'w' else 'w', 
+                                       depth - 1, -float('inf'), float('inf'), depth, killer_moves)
+                
+                if value > current_value:
+                    current_value = value
+                    current_best = move
+            
+            if current_best is not None and time.time() - self.start_time < self.time_limit * 0.9:
+                best_move = current_best
+                best_value = current_value
+        
+        return best_move
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Main policy function required by the API.
+    
+    Args:
+        me: List of (row, col) tuples for my pieces
+        opp: List of (row, col) tuples for opponent pieces
+        color: 'w' for white (moves upward), 'b' for black (moves downward)
+    
+    Returns:
+        A move as ((from_row, from_col), (to_row, to_col))
+    """
+    ai = BreakthroughAI()
+    
+    # Convert to bitboard
+    board = ai.positions_to_bitboard(me, opp, color)
+    
+    # Get best move with time management
+    best_move = ai.get_best_move(board, color, max_time=0.95)
+    
+    # Fallback: if no move found (shouldn't happen), return first legal move
+    if best_move is None:
+        moves = ai.generate_moves(board, color)
+        if moves:
+            best_move = moves[0]
+        else:
+            # Emergency fallback - shouldn't reach here
+            return ((0, 0), (1, 0)) if color == 'w' else ((7, 0), (6, 0))
+    
+    return best_move
+
+# Quick test function (not called in production)
+if __name__ == "__main__":
+    # Test with a simple position
+    me = [(1, 0), (1, 1), (1, 2)]
+    opp = [(6, 0), (6, 1), (6, 2)]
+    color = 'w'
+    
+    move = policy(me, opp, color)
+    print(f"Best move for white: {move}")

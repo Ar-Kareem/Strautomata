@@ -1,0 +1,82 @@
+
+import random
+
+def policy(board: list[list[int]]) -> int:
+    """
+    A Connect 4 policy that prioritizes winning moves and blocks opponent winning moves.
+    If neither is available, it chooses a random available column.
+    """
+
+    def is_winning_move(board: list[list[int]], col: int, player: int) -> bool:
+        """
+        Checks if a move in the given column would result in a win for the given player.
+        """
+        # Make a temporary copy of the board.
+        temp_board = [row[:] for row in board]
+
+        # Find the lowest available row in the column.
+        row = -1
+        for r in range(5, -1, -1):
+            if temp_board[r][col] == 0:
+                row = r
+                break
+
+        if row == -1:
+            return False  # Column is full
+
+        # Place the disc in the temporary board.
+        temp_board[row][col] = player
+
+        # Check for horizontal wins.
+        for c in range(7 - 3):
+            if (temp_board[row][c] == player and
+                temp_board[row][c+1] == player and
+                temp_board[row][c+2] == player and
+                temp_board[row][c+3] == player):
+                return True
+
+        # Check for vertical wins.
+        for r in range(6 - 3):
+            if (temp_board[r][col] == player and
+                temp_board[r+1][col] == player and
+                temp_board[r+2][col] == player and
+                temp_board[r+3][col] == player):
+                return True
+
+        # Check for diagonal wins (positive slope).
+        for r in range(6 - 3):
+            for c in range(7 - 3):
+                if (temp_board[r][c] == player and
+                    temp_board[r+1][c+1] == player and
+                    temp_board[r+2][c+2] == player and
+                    temp_board[r+3][c+3] == player):
+                    return True
+
+        # Check for diagonal wins (negative slope).
+        for r in range(3, 6):
+            for c in range(7 - 3):
+                if (temp_board[r][c] == player and
+                    temp_board[r-1][c+1] == player and
+                    temp_board[r-2][c+2] == player and
+                    temp_board[r-3][c+3] == player):
+                    return True
+
+        return False
+
+    # Check for winning moves for the current player.
+    for col in range(7):
+        if is_winning_move(board, col, 1):
+            return col
+
+    # Check for winning moves for the opponent and block them.
+    for col in range(7):
+        if is_winning_move(board, col, -1):
+            return col
+
+    # Choose a random available column.
+    available_columns = [col for col in range(7) if 0 in [board[row][col] for row in range(6)]]
+    if available_columns:
+        return random.choice(available_columns)
+    else:
+        # Should not happen in a valid game state, but handle it gracefully.
+        return 0

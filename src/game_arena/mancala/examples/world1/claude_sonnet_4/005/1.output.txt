@@ -1,0 +1,380 @@
+<thinking>
+I need to implement a Kalah move selection policy. Let me think through the key components:
+
+1. **Game mechanics understanding**:
+   - I have houses 0-5 and store at index 6
+   - I pick a non-empty house, distribute seeds counter-clockwise
+   - Skip opponent's store when distributing
+   - Extra turn if last seed lands in my store
+   - Capture if last seed lands in my empty house and opponent's opposite house has seeds
+
+2. **Strategy considerations**:
+   - Getting extra turns is valuable (landing in my store)
+   - Captures can swing the game significantly
+   - Controlling the endgame is important
+   - I should consider both immediate gains and future position
+
+3. **Implementation approach**:
+   - I could implement minimax with alpha-beta pruning for optimal play
+   - Given the 1-second time constraint, I need to balance search depth with time
+   - I should implement the game simulation logic first
+   - Then implement a search algorithm
+
+4. **Key functions needed**:
+   - `simulate_move(you, opponent, house)` - returns new state and whether I get another turn
+   - `is_terminal(you, opponent)` - check if game is over
+   - `evaluate(you, opponent)` - heuristic evaluation
+   - `minimax` or similar search algorithm
+
+5. **Heuristic considerations**:
+   - Store difference is most important
+   - Number of seeds on my side vs opponent's side
+   - Potential for captures
+   - Potential for extra moves
+
+Let me implement this step by step:
+
+```python
+def simulate_move(you, opponent, house):
+    # Simulate a move and return (new_you, new_opponent, extra_turn)
+    you = you.copy()
+    opponent = opponent.copy()
+    
+    seeds = you[house]
+    you[house] = 0
+    
+    # Distribute seeds
+    pos = house
+    player_side = 0  # 0 = my side, 1 = opponent side
+    
+    while seeds > 0:
+        pos += 1
+        
+        if player_side == 0:  # On my side
+            if pos == 6:  # My store
+                you[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    return you, opponent, True  # Extra turn
+                pos = -1  # Will become 0 after increment
+                player_side = 1
+            elif pos <= 5:
+                you[pos] += 1
+                seeds -= 1
+            else:
+                pos = -1
+                player_side = 1
+        else:  # On opponent side
+            if pos <= 5:
+                opponent[pos] += 1
+                seeds -= 1
+                if seeds == 0 and pos <= 5:
+                    # Check for capture - but this is opponent's side, so no capture
+                    pass
+            else:  # pos > 5, skip opponent store
+                pos = -1  # Will become 0 after increment
+                player_side = 0
+    
+    # Check for capture
+    final_pos = pos
+    final_side = player_side
+    
+    if final_side == 0 and final_pos <= 5:  # Last seed on my side
+        if you[final_pos] == 1:  # Was empty before the seed
+            opposite = 5 - final_pos
+            if opponent[opposite] > 0:
+                # Capture!
+                captured = you[final_pos] + opponent[opposite]
+                you[6] += captured
+                you[final_pos] = 0
+                opponent[opposite] = 0
+    
+    return you, opponent, False
+```
+
+Wait, I think I'm overcomplicating the distribution logic. Let me rethink this more carefully:
+
+The houses are arranged in a circle. Starting from house i on my side, I go:
+- you[i+1], you[i+2], ..., you[5], you[6] (my store)
+- then opponent[0], opponent[1], ..., opponent[5] (skip opponent[6])
+- then you[0], you[1], ..., you[5], you[6]
+- and so on...
+
+Let me rewrite this more clearly:
+
+```python
+def simulate_move(you, opponent, house):
+    you = you.copy()
+    opponent = opponent.copy()
+    
+    seeds = you[house]
+    you[house] = 0
+    
+    # Create the sequence of positions, skipping opponent's store
+    positions = []
+    current_pos = house
+    
+    while len(positions) < seeds:
+        current_pos += 1
+        if current_pos <= 5:  # My houses
+            positions.append(('you', current_pos))
+        elif current_pos == 6:  # My store
+            positions.append(('you', 6))
+            current_pos = -1  # Next will be opponent[0]
+        else:  # Move to opponent side
+            current_pos = 0
+            while current_pos <= 5 and len(positions) < seeds:
+                positions.append(('opponent', current_pos))
+                current_pos += 1
+            if len(positions) < seeds:
+                current_pos = -1  # Will restart at you[0]
+    
+    # Actually, let me implement this differently - with a circular approach
+    
+    # ... this is getting complex. Let me use a simpler approach
+```
+
+Actually, let me implement this more systematically:
+
+```python
+def distribute_seeds(you, opponent, house):
+    you = you.copy()
+    opponent = opponent.copy()
+    seeds = you[house]
+    you[house] = 0
+    
+    # Position tracking: (side, index) where side is 'you' or 'opp'
+    current_side = 'you'
+    current_idx = house
+    last_side = None
+    last_idx = None
+    
+    for _ in range(seeds):
+        # Move to next position
+        if current_side == 'you':
+            current_idx += 1
+            if current_idx == 6:  # My store
+                you[6] += 1
+                last_side, last_idx = 'you', 6
+                # Next position is opponent[0]
+                current_side = 'opp'
+                current_idx = 0
+            elif current_idx < 6:  # My houses
+                you[current_idx] += 1
+                last_side, last_idx = 'you', current_idx
+            else:  # This shouldn't happen with the logic above
+                pass
+        else:  # current_side == 'opp'
+            if current_idx <= 5:  # Opponent houses (skip their store)
+                opponent[current_idx] += 1
+                last_side, last_idx = 'opp', current_idx
+                current_idx += 1
+                if current_idx > 5:  # Move back to my side
+                    current_side = 'you'
+                    current_idx = 0
+    
+    # Check for extra turn
+    extra_turn = (last_side == 'you' and last_idx == 6)
+    
+    # Check for capture
+    if last_side == 'you' and last_idx < 6:  # Landed in my house
+        if you[last_idx] == 1:  # Was empty before
+            opposite_idx = 5 - last_idx
+            if opponent[opposite_idx] > 0:
+                # Capture!
+                you[6] += 1 + opponent[opposite_idx]  # My seed + opponent's seeds
+                you[last_idx] = 0
+                opponent[opposite_idx] = 0
+    
+    return you, opponent, extra_turn
+```
+
+Now I need evaluation and search. Given the time constraint, I'll implement a relatively simple minimax with some optimizations.
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    import time
+    
+    def simulate_move(you_state, opp_state, house):
+        """Simulate a move and return new state and whether player gets extra turn"""
+        you = you_state.copy()
+        opponent = opp_state.copy()
+        seeds = you[house]
+        you[house] = 0
+        
+        if seeds == 0:
+            return you, opponent, False
+        
+        # Track position for seed distribution
+        current_side = 'you'
+        current_idx = house
+        last_side = None
+        last_idx = None
+        
+        for _ in range(seeds):
+            # Move to next position
+            if current_side == 'you':
+                current_idx += 1
+                if current_idx == 6:  # My store
+                    you[6] += 1
+                    last_side, last_idx = 'you', 6
+                    # Next goes to opponent[0]
+                    current_side = 'opp'
+                    current_idx = 0
+                elif current_idx < 6:  # My houses
+                    you[current_idx] += 1
+                    last_side, last_idx = 'you', current_idx
+                else:  # Wrap to opponent side
+                    current_side = 'opp'
+                    current_idx = 0
+                    opponent[current_idx] += 1
+                    last_side, last_idx = 'opp', current_idx
+                    current_idx += 1
+            else:  # current_side == 'opp'
+                if current_idx <= 5:  # Opponent houses
+                    opponent[current_idx] += 1
+                    last_side, last_idx = 'opp', current_idx
+                    current_idx += 1
+                    if current_idx > 5:  # Wrap to my side
+                        current_side = 'you'
+                        current_idx = 0
+        
+        # Check for extra turn
+        extra_turn = (last_side == 'you' and last_idx == 6)
+        
+        # Check for capture
+        if last_side == 'you' and last_idx < 6:  # Landed in my house
+            if you[last_idx] == 1:  # Was empty before this seed
+                opposite_idx = 5 - last_idx
+                if opponent[opposite_idx] > 0:
+                    # Capture!
+                    you[6] += 1 + opponent[opposite_idx]
+                    you[last_idx] = 0
+                    opponent[opposite_idx] = 0
+        
+        return you, opponent, extra_turn
+    
+    def is_terminal(you_state, opp_state):
+        """Check if game is over"""
+        you_empty = all(you_state[i] == 0 for i in range(6))
+        opp_empty = all(opp_state[i] == 0 for i in range(6))
+        return you_empty or opp_empty
+    
+    def get_final_score(you_state, opp_state):
+        """Get final scores assuming game ends now"""
+        you_final = you_state.copy()
+        opp_final = opp_state.copy()
+        
+        # Move remaining seeds to stores
+        you_final[6] += sum(you_final[:6])
+        opp_final[6] += sum(opp_final[:6])
+        
+        return you_final[6] - opp_final[6]
+    
+    def evaluate(you_state, opp_state):
+        """Evaluate position from my perspective"""
+        if is_terminal(you_state, opp_state):
+            return get_final_score(you_state, opp_state)
+        
+        # Heuristic: store difference + small bonus for seeds on my side
+        store_diff = you_state[6] - opp_state[6]
+        my_seeds = sum(you_state[:6])
+        opp_seeds = sum(opp_state[:6])
+        seed_advantage = (my_seeds - opp_seeds) * 0.1
+        
+        return store_diff + seed_advantage
+    
+    def get_legal_moves(player_state):
+        """Get all legal moves for a player"""
+        return [i for i in range(6) if player_state[i] > 0]
+    
+    def minimax(you_state, opp_state, depth, alpha, beta, maximizing, start_time):
+        """Minimax with alpha-beta pruning"""
+        if time.time() - start_time > 0.8:  # Time limit
+            return evaluate(you_state, opp_state), -1
+            
+        if depth == 0 or is_terminal(you_state, opp_state):
+            return evaluate(you_state, opp_state), -1
+        
+        if maximizing:
+            max_eval = float('-inf')
+            best_move = -1
+            moves = get_legal_moves(you_state)
+            
+            # Prioritize moves that might give extra turns
+            def move_priority(move):
+                seeds = you_state[move]
+                lands_in_store = (move + seeds) % 13 == 6
+                return -int(lands_in_store)  # Negative for better priority
+            
+            moves.sort(key=move_priority)
+            
+            for move in moves:
+                new_you, new_opp, extra_turn = simulate_move(you_state, opp_state, move)
+                
+                if extra_turn:
+                    # I get another turn
+                    eval_score, _ = minimax(new_you, new_opp, depth-1, alpha, beta, True, start_time)
+                else:
+                    # Opponent's turn
+                    eval_score, _ = minimax(new_opp, new_you, depth-1, alpha, beta, False, start_time)
+                
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return max_eval, best_move
+        else:
+            # Minimizing (opponent's turn) - note swapped you/opp perspective
+            min_eval = float('inf')
+            best_move = -1
+            moves = get_legal_moves(you_state)  # you_state is actually opponent from original perspective
+            
+            for move in moves:
+                new_you, new_opp, extra_turn = simulate_move(you_state, opp_state, move)
+                
+                if extra_turn:
+                    # Opponent gets another turn
+                    eval_score, _ = minimax(new_you, new_opp, depth-1, alpha, beta, False, start_time)
+                else:
+                    # Back to my turn (swap back)
+                    eval_score, _ = minimax(new_opp, new_you, depth-1, alpha, beta, True, start_time)
+                
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            
+            return min_eval, best_move
+    
+    # Main decision logic
+    start_time = time.time()
+    legal_moves = get_legal_moves(you)
+    
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    # Try increasing depths until time runs out
+    for depth in range(1, 15):
+        if time.time() - start_time > 0.7:
+            break
+            
+        score, move = minimax(you, opponent, depth, float('-inf'), float('inf'), True, start_time)
+        
+        if move != -1:
+            best_move = move
+            best_score = score
+    
+    return best_move
+</code>

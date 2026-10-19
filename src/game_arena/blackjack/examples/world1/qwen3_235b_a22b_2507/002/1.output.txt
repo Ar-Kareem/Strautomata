@@ -1,0 +1,78 @@
+<thinking>
+I need to design a policy for a simplified Blackjack-like game. The key aspects are:
+
+1. The target score T is known and fixed
+2. I need to decide when to HIT or STAY based on my current hand
+3. Aces can be 11 or 1 (flexible counting)
+4. Going over T means busting (automatic loss if opponent doesn't bust)
+
+My strategy should:
+- Calculate the current hand value optimally (using Aces as 11 when safe, 1 otherwise)
+- Be more aggressive (HIT) when far from target
+- Be more conservative (STAY) when close to target or at risk of busting
+- Consider the remaining cards in my deck
+
+Since I have a known 13-card deck with one of each card, I can track which cards remain. However, the policy function only receives the current hand, not the remaining deck. So I'll need to infer the remaining cards from the hand.
+
+Key considerations:
+- If current sum is already close to target, STAY
+- If current sum is low, HIT
+- If risk of busting is high, STAY
+- Use dynamic programming or heuristic thresholds
+
+A good heuristic is to use a threshold that depends on the target. Classic Blackjack strategies use thresholds around 17, but here the target varies (10-30). I'll use a threshold proportional to the target.
+
+For the Ace counting: I'll calculate the maximum possible sum without busting. If I can count Ace as 11 without exceeding target, I should.
+
+My approach:
+1. Calculate current hand value with optimal Ace counting
+2. If current value >= target: STAY (or already bust, but should not happen)
+3. Use a threshold: if current value >= target - risk_tolerance, STAY
+4. Otherwise HIT
+
+The risk tolerance should decrease as target increases. I'll use target//3 as risk tolerance.
+</thinking>
+<code>
+import numpy as np
+
+def policy(hand: list[str], target: int) -> str:
+    # Define card values (face cards are 10, Ace will be handled separately)
+    card_values = {
+        "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9, "10": 10,
+        "J": 10, "Q": 10, "K": 10
+    }
+    
+    # Count Aces separately and calculate sum without Aces
+    ace_count = hand.count("A")
+    non_ace_sum = sum(card_values[card] for card in hand if card != "A")
+    
+    # Calculate optimal hand value (use Aces as 11 if possible, otherwise 1)
+    current_sum = non_ace_sum
+    for _ in range(ace_count):
+        if current_sum + 11 <= target:
+            current_sum += 11
+        else:
+            current_sum += 1
+    
+    # If we're already at or above target, stay (or would bust on next hit)
+    if current_sum >= target:
+        return "STAY"
+    
+    # Calculate threshold for staying
+    # Base threshold: target - 3 gives some buffer
+    # Make it adaptive based on target size
+    threshold = target - max(2, (target - 10) // 4 + 1)
+    
+    # If we're close enough to target, stay
+    if current_sum >= threshold:
+        return "STAY"
+    
+    # If the risk of busting on next hit is very high, stay
+    # Estimate minimum value of next card (1 for Ace, but Ace might be used as 11)
+    min_next_card = 1  # An Ace can always be counted as 1
+    if current_sum + min_next_card > target:
+        return "STAY"
+    
+    # Otherwise, hit
+    return "HIT"
+</code>

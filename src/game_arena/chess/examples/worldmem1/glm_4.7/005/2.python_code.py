@@ -1,0 +1,408 @@
+
+import re
+import copy
+from typing import List, Dict, Tuple, Optional
+
+# Piece values
+PIECE_VALUES = {
+    'P': 100,
+    'N': 320,
+    'B': 330,
+    'R': 500,
+    'Q': 900,
+    'K': 20000
+}
+
+# Simplified Piece-Square Tables (PST)
+# Encourages controlling center, developing knights/bishops, advancing pawns
+PST = {
+    'P': [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [50, 50, 50, 50, 50, 50, 50, 50],
+        [10, 10, 20, 30, 30, 20, 10, 10],
+        [5,  5, 10, 25, 25, 10,  5,  5],
+        [0,  0,  0, 20, 20,  0,  0,  0],
+        [5, -5,-10,  0,  0,-10, -5,  5],
+        [5, 10, 10,-20,-20, 10, 10,  5],
+        [0,  0,  0,  0,  0,  0,  0,  0]
+    ],
+    'N': [
+        [-50,-40,-30,-30,-30,-30,-40,-50],
+        [-40,-20,  0,  0,  0,  0,-20,-40],
+        [-30,  0, 10, 15, 15, 10,  0,-30],
+        [-30,  5, 15, 20, 20, 15,  5,-30],
+        [-30,  0, 15, 20, 20, 15,  0,-30],
+        [-30,  5, 10, 15, 15, 10,  5,-30],
+        [-40,-20,  0,  5,  5,  0,-20,-40],
+        [-50,-40,-30,-30,-30,-30,-40,-50]
+    ],
+    'B': [
+        [-20,-10,-10,-10,-10,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5, 10, 10,  5,  0,-10],
+        [-10,  5,  5, 10, 10,  5,  5,-10],
+        [-10,  0, 10, 10, 10, 10,  0,-10],
+        [-10, 10, 10, 10, 10, 10, 10,-10],
+        [-10,  5,  0,  0,  0,  0,  5,-10],
+        [-20,-10,-10,-10,-10,-10,-10,-20]
+    ],
+    'R': [
+        [0,  0,  0,  0,  0,  0,  0,  0],
+        [5, 10, 10, 10, 10, 10, 10,  5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [-5,  0,  0,  0,  0,  0,  0, -5],
+        [0,  0,  0,  5,  5,  0,  0,  0]
+    ],
+    'Q': [
+        [-20,-10,-10, -5, -5,-10,-10,-20],
+        [-10,  0,  0,  0,  0,  0,  0,-10],
+        [-10,  0,  5,  5,  5,  5,  0,-10],
+        [-5,  0,  5,  5,  5,  5,  0, -5],
+        [0,  0,  5,  5,  5,  5,  0, -5],
+        [-10,  5,  5,  5,  5,  5,  0,-10],
+        [-10,  0,  5,  0,  0,  0,  0,-10],
+        [-20,-10,-10, -5, -5,-10,-10,-20]
+    ],
+    'K': [
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-30,-40,-40,-50,-50,-40,-40,-30],
+        [-20,-30,-30,-40,-40,-30,-30,-20],
+        [-10,-20,-20,-20,-20,-20,-20,-10],
+        [20, 20,  0,  0,  0,  0, 20, 20],
+        [20, 30, 10,  0,  0, 10, 30, 20]
+    ]
+}
+
+def coords_to_idx(sq: str) -> Tuple[int, int]:
+    """Convert algebraic notation (e.g., 'e4') to matrix indices (row, col)."""
+    file = ord(sq[0]) - ord('a')
+    rank = 8 - int(sq[1])
+    return rank, file
+
+def idx_to_coords(r: int, c: int) -> str:
+    return chr(c + ord('a')) + str(8 - r)
+
+def pieces_to_board(pieces: Dict[str, str]) -> List[List[str]]:
+    """Convert dictionary representation to 8x8 matrix."""
+    board = [['' for _ in range(8)] for _ in range(8)]
+    for sq, p in pieces.items():
+        r, c = coords_to_idx(sq)
+        board[r][c] = p
+    return board
+
+def get_piece_val(piece_code: str) -> int:
+    if not piece_code: return 0
+    return PIECE_VALUES.get(piece_code[1], 0)
+
+def get_position_bonus(piece_code: str, r: int, c: int) -> int:
+    if not piece_code: return 0
+    ptype = piece_code[1]
+    color = piece_code[0]
+    
+    table = PST.get(ptype)
+    if not table: return 0
+    
+    # Flip table for black
+    if color == 'w':
+        return table[r][c]
+    else:
+        return table[7-r][c]
+
+def is_square_attacked(board: List[List[str]], r: int, c: int, attacker_color: str) -> bool:
+    """Check if square (r, c) is attacked by attacker_color."""
+    # Check Pawn attacks
+    pawn_dir = -1 if attacker_color == 'w' else 1
+    if 0 <= r + pawn_dir < 8:
+        if c > 0 and board[r+pawn_dir][c-1] == attacker_color + 'P': return True
+        if c < 7 and board[r+pawn_dir][c+1] == attacker_color + 'P': return True
+            
+    # Check Knight attacks
+    knight_moves = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+    for dr, dc in knight_moves:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            if board[nr][nc] == attacker_color + 'N': return True
+            
+    # Check King attacks (for adjacency)
+    king_moves = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+    for dr, dc in king_moves:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 8 and 0 <= nc < 8:
+            if board[nr][nc] == attacker_color + 'K': return True
+
+    # Check sliding pieces (Rook/Queen)
+    directions = [(-1,0), (1,0), (0,-1), (0,1)]
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            piece = board[nr][nc]
+            if piece:
+                if piece[0] == attacker_color:
+                    if piece[1] in ['R', 'Q']: return True
+                break
+            nr += dr
+            nc += dc
+
+    # Check sliding pieces (Bishop/Queen)
+    diagonals = [(-1,-1), (-1,1), (1,-1), (1,1)]
+    for dr, dc in diagonals:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 8 and 0 <= nc < 8:
+            piece = board[nr][nc]
+            if piece:
+                if piece[0] == attacker_color:
+                    if piece[1] in ['B', 'Q']: return True
+                break
+            nr += dr
+            nc += dc
+            
+    return False
+
+def find_source_for_move(board: List[List[str]], move_str: str, color: str) -> Tuple[int, int, str, str]:
+    """
+    Parses a move string to find the source square, destination square, and resulting piece.
+    Returns: (src_r, src_c, dest_r, dest_c, promotion_piece)
+    """
+    # Handle Castling
+    if move_str == "O-O":
+        rank = 0 if color == 'w' else 7
+        # King moves from e1/e8 to g1/g8
+        return (rank, 4, rank, 6, '')
+    if move_str == "O-O-O":
+        rank = 0 if color == 'w' else 7
+        # King moves from e1/e8 to c1/c8
+        return (rank, 4, rank, 2, '')
+    
+    # Regex for standard moves
+    # Groups: 1:PieceType, 2:DisambFile, 3:DisambRank, 4:Capture, 5:DestSq, 6:Promo, 7:Check/Mate
+    match = re.match(r"^([KQRBN])?([a-h])?([1-8])?(x)?([a-h][1-8])(?:=([QRBN]))?([+#]?)$", move_str)
+    if not match:
+        raise ValueError(f"Could not parse move: {move_str}")
+    
+    p_type = match.group(1) or 'P'
+    dis_file = match.group(2)
+    dis_rank = match.group(3)
+    dest_sq = match.group(5)
+    promo = match.group(6) or ''
+    
+    dest_r, dest_c = coords_to_idx(dest_sq)
+    
+    # Find source
+    candidates = []
+    for r in range(8):
+        for c in range(8):
+            p = board[r][c]
+            if not p: continue
+            if p != color + p_type: continue
+            
+            # Check disambiguation
+            if dis_file and chr(c + ord('a')) != dis_file: continue
+            if dis_rank and (8 - r) != int(dis_rank): continue
+            
+            # Check geometry (can piece move from r,c to dest_r,dest_c)
+            dr = dest_r - r
+            dc = dest_c - c
+            abs_dr = abs(dr)
+            abs_dc = abs(dc)
+            
+            valid_geo = False
+            
+            if p_type == 'P':
+                direction = -1 if color == 'w' else 1
+                # Move forward 1
+                if dc == 0 and dr == direction and not board[dest_r][dest_c]:
+                    valid_geo = True
+                # Move forward 2
+                elif dc == 0 and dr == 2 * direction:
+                    start_rank = 6 if color == 'w' else 1
+                    if r == start_rank and not board[r+direction][c] and not board[dest_r][dest_c]:
+                        valid_geo = True
+                # Capture
+                elif abs_dc == 1 and dr == direction:
+                    if board[dest_r][dest_c] or (dest_r == r+direction and abs_dc == 1): # En passant handled broadly
+                        valid_geo = True
+                        
+            elif p_type == 'N':
+                if (abs_dr == 2 and abs_dc == 1) or (abs_dr == 1 and abs_dc == 2):
+                    valid_geo = True
+            
+            elif p_type == 'K':
+                if abs_dr <= 1 and abs_dc <= 1:
+                    valid_geo = True
+            
+            elif p_type in ['R', 'B', 'Q']:
+                # Sliding
+                if p_type == 'R' and (dr != 0 and dc != 0): continue
+                if p_type == 'B' and (abs_dr != abs_dc): continue
+                # Q is handled by logic below (both conditions pass)
+                
+                step_r = 0 if dr == 0 else (1 if dr > 0 else -1)
+                step_c = 0 if dc == 0 else (1 if dc > 0 else -1)
+                
+                curr_r, curr_c = r + step_r, c + step_c
+                blocked = False
+                while (curr_r != dest_r or curr_c != dest_c):
+                    if board[curr_r][curr_c]:
+                        blocked = True
+                        break
+                    curr_r += step_r
+                    curr_c += step_c
+                
+                if not blocked:
+                    valid_geo = True
+            
+            if valid_geo:
+                candidates.append((r, c))
+                
+    if not candidates:
+        # Fallback or error (should not happen with legal moves)
+        return None
+    
+    # If multiple candidates (rare in correct SAN), pick the first one found
+    # In strict SAN, disambiguation ensures uniqueness. 
+    # Note: We didn't verify "path clear" for Sliders other than visual obstruction above. 
+    # Our sliding check did verify path clear.
+    
+    return candidates[0] + (dest_r, dest_c, promo)
+
+def apply_move(board: List[List[str]], move_str: str, color: str) -> List[List[str]]:
+    """Returns a new board with the move applied."""
+    new_board = [row[:] for row in board]
+    
+    src_r, src_c, dest_r, dest_c, promo = find_source_for_move(board, move_str, color)
+    
+    piece = new_board[src_r][src_c]
+    new_board[src_r][src_c] = ''
+    
+    # Handle En Passant
+    if piece[1] == 'P' and dest_c != src_c and not board[dest_r][dest_c]:
+        # Capturing pawn is behind dest
+        capture_r = src_r
+        new_board[capture_r][dest_c] = ''
+        
+    # Handle Castling (move Rook)
+    if piece[1] == 'K' and abs(dest_c - src_c) == 2:
+        if dest_c == 6: # Kingside
+            rook_c = 7
+            new_rook_c = 5
+        else: # Queenside
+            rook_c = 0
+            new_rook_c = 3
+        
+        # Move rook
+        new_board[dest_r][new_rook_c] = new_board[dest_r][rook_c]
+        new_board[dest_r][rook_c] = ''
+
+    # Place piece
+    if promo:
+        new_board[dest_r][dest_c] = color + promo
+    else:
+        new_board[dest_r][dest_c] = piece
+        
+    return new_board
+
+def evaluate_board(board: List[List[str]], to_play_color: str) -> int:
+    """
+    Evaluate board state.
+    Positive is good for White, Negative for Black.
+    """
+    score = 0
+    white_mat = 0
+    black_mat = 0
+    
+    for r in range(8):
+        for c in range(8):
+            p = board[r][c]
+            if not p: continue
+            
+            p_val = get_piece_val(p)
+            pos_val = get_position_bonus(p, r, c)
+            
+            if p[0] == 'w':
+                white_mat += p_val
+                score += (p_val + pos_val)
+            else:
+                black_mat += p_val
+                score -= (p_val + pos_val)
+                
+    return score
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    
+    current_board = pieces_to_board(pieces)
+    my_color = to_play[0] # 'w' or 'b'
+    enemy_color = 'b' if my_color == 'w' else 'w'
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Iterate all legal moves and evaluate the resulting position
+    for move in legal_moves:
+        try:
+            next_board = apply_move(current_board, move, my_color)
+            
+            # 1. Material and Positional Score
+            score = evaluate_board(next_board, my_color)
+            
+            # 2. Safety Check (Heuristic)
+            # If the piece we just moved is now under attack by a lower value enemy, it's a bad trade
+            # Or if it's under attack at all (penalty)
+            # Find where we moved
+            src_r, src_c, dest_r, dest_c, _ = find_source_for_move(current_board, move, my_color)
+            moved_piece = next_board[dest_r][dest_c]
+            
+            if is_square_attacked(next_board, dest_r, dest_c, enemy_color):
+                # Determine threat level (simplified)
+                # Just penalize moving to an attacked square to encourage safety
+                # Penalty based on value of piece we risked
+                penalty = get_piece_val(moved_piece) * 0.5
+                if my_color == 'w':
+                    score -= penalty
+                else:
+                    score += penalty # score is neg for black, so adding penalty makes it more negative
+            
+            # 3. Bias for Checks
+            # Parse move for '+' or '#'
+            if '+' in move or '#' in move:
+                if my_color == 'w': score += 50
+                else: score -= 50
+                
+            # 4. Bias for Promotions
+            if '=' in move:
+                promo_piece = move.split('=')[1]
+                val = PIECE_VALUES[promo_piece] - PIECE_VALUES['P']
+                if my_color == 'w': score += val
+                else: score -= val
+
+            # Selection Logic
+            # Normalize score based on perspective
+            # If Black, "better" means more negative (or lower). 
+            # But evaluate_board returns + for White adv, - for Black adv.
+            # So Black wants to minimize score. White wants to maximize.
+            
+            is_better = False
+            if my_color == 'w':
+                if score > best_score:
+                    is_better = True
+            else:
+                if score < best_score:
+                    is_better = True
+            
+            if is_better:
+                best_score = score
+                best_move = move
+                
+        except Exception as e:
+            # Should not happen, but fallback to ensure a move is returned
+            continue
+
+    # If no move found (all invalid or empty list), pick random
+    if best_move is None and legal_moves:
+        best_move = legal_moves[0]
+        
+    return (best_move, memory)

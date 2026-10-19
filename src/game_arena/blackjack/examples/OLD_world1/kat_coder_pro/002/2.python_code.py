@@ -1,0 +1,37 @@
+
+import numpy as np
+from typing import List
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Simplified Blackjack policy: hit if current hand value is <= target - 4.
+    This balances the risk of busting with the desire to get closer to the target.
+    """
+    # Define card values
+    def card_value(card: str) -> int:
+        if card in ["J", "Q", "K"]:
+            return 10
+        elif card == "A":
+            return 11  # We'll handle the ace logic separately
+        else:
+            return int(card)
+    
+    # Calculate current hand value (Aces count as 11 initially)
+    hand_value = sum(card_value(card) for card in hand)
+    
+    # Adjust for aces if needed (A counts as 1 if hand_value > target)
+    num_aces = hand.count("A")
+    while hand_value > target and num_aces > 0:
+        hand_value -= 10  # Change an Ace from 11 to 1
+        num_aces -= 1
+        
+    # If already over target, stay (though this shouldn't happen in valid play)
+    if hand_value > target:
+        return "STAY"
+    
+    # Simple threshold policy: hit if we're more than 3 points away from target
+    # This threshold balances the risk of busting with the need to get closer
+    if hand_value <= target - 4:
+        return "HIT"
+    else:
+        return "STAY"

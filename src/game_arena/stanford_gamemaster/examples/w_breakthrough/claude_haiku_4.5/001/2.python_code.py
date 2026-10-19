@@ -1,0 +1,87 @@
+
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse the board state
+    board = {}
+    for prop in state:
+        if prop[0] == "cell":
+            x, y, color = int(prop[1]), int(prop[2]), prop[3]
+            board[(x, y)] = color
+    
+    # Determine direction and goal row
+    if role == "white":
+        direction = 1  # Move up (increase y)
+        goal_row = 8
+        opponent = "black"
+    else:
+        direction = -1  # Move down (decrease y)
+        goal_row = 1
+        opponent = "white"
+    
+    # Find all our pieces
+    our_pieces = [(x, y) for (x, y), color in board.items() if color == role]
+    
+    # Generate all legal moves
+    legal_moves = []
+    
+    for x, y in our_pieces:
+        # Forward move
+        new_y = y + direction
+        if 1 <= new_y <= 8 and (x, new_y) not in board:
+            legal_moves.append(((x, y), (x, new_y), "forward"))
+        
+        # Diagonal left capture
+        new_x, new_y = x - 1, y + direction
+        if 1 <= new_x <= 8 and 1 <= new_y <= 8:
+            if (new_x, new_y) in board and board[(new_x, new_y)] == opponent:
+                legal_moves.append(((x, y), (new_x, new_y), "capture"))
+        
+        # Diagonal right capture
+        new_x, new_y = x + 1, y + direction
+        if 1 <= new_x <= 8 and 1 <= new_y <= 8:
+            if (new_x, new_y) in board and board[(new_x, new_y)] == opponent:
+                legal_moves.append(((x, y), (new_x, new_y), "capture"))
+    
+    # Score each move
+    best_move = None
+    best_score = -float('inf')
+    
+    for (from_x, from_y), (to_x, to_y), move_type in legal_moves:
+        score = 0
+        
+        # Winning move (highest priority)
+        if to_y == goal_row:
+            score += 100000
+        
+        # Capture moves
+        if move_type == "capture":
+            score += 1000
+            # Extra points for capturing advanced opponent pieces
+            opponent_progress = abs(to_y - goal_row)
+            score += (8 - opponent_progress) * 10
+        
+        # Forward progress (distance to goal)
+        distance_to_goal = abs(to_y - goal_row)
+        score += (8 - distance_to_goal) * 5
+        
+        # Prefer moving pieces that are already advanced
+        piece_progress = abs(from_y - goal_row)
+        score += (8 - piece_progress) * 2
+        
+        # Small tiebreaker: prefer center board positions
+        score += (4.5 - abs(to_x - 4.5)) * 0.1
+        
+        if score > best_score:
+            best_score = score
+            best_move = (from_x, from_y, to_x, to_y)
+    
+    # Fallback: if no move found (shouldn't happen), return first legal move
+    if best_move is None:
+        if legal_moves:
+            from_x, from_y = legal_moves[0][0]
+            to_x, to_y = legal_moves[0][1]
+            best_move = (from_x, from_y, to_x, to_y)
+        else:
+            # Emergency fallback - should never reach here in valid game state
+            best_move = (1, 1, 1, 2)
+    
+    return f"move({best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]})"

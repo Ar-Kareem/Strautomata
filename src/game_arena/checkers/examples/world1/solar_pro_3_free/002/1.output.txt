@@ -1,0 +1,192 @@
+The strategy for this policy is:
+
+* **Capture is mandatory** – every turn we first search all possible capture‑chains for our own pieces.  
+* For each piece we run a depth‑first search that explores every diagonal direction a piece may take after each capture.  
+* While exploring a chain we keep a list of squares visited and update the set of remaining opponent pieces.  
+* A capture‑chain is evaluated by a simple heuristic:  
+  1. **Maximise the number of opponent pieces captured** (more captures → stronger move).  
+  2. Prefer a move that ends on the promotion row (king promotion).  
+  3. Prefer capturing an opponent king (extra weight).  
+* The best chain (according to the heuristic) is returned as a single move from the original square to the final landing square.  
+* If no capture chain exists we pick a non‑capturing forward move:  
+  * Regular pieces move only diagonally **forward** (one direction based on their colour).  
+  * Kings may move in any diagonal direction.  
+  * The forward move heuristic scores a promotion square (+10) and a position near the centre (penalty based on column distance).  
+* The algorithm runs well within the 1 s limit; it only uses Python’s built‑in data structures and no heavy external libraries.
+
+<code>
+from typing import List, Tuple, Set
+import copy
+
+def is_dark(row: int, col: int) -> bool:
+    """Only dark squares are playable in an 8×8 board."""
+    return (row + col) % 2 == 0
+
+def piece_type(row: int, col: int, my_kings: Set[Tuple[int, int]],
+               my_men: Set[Tuple[int, int]], opp_kings: Set[Tuple[int, int]],
+               opp_men: Set[Tuple[int, int]]) -> str:
+    """Determine whether a square holds a man or a king."""
+    # In our state representation the king list contains only our kings.
+    # After a capture a piece becomes a king if it lands on the promotion row.
+    if (row, col) in my_kings:
+        return "king"
+    if (row, col) in opp_kings:
+        return "opp_king"
+    # Normal squares are either empty or a regular piece
+    return "empty"
+
+def heuristic_score(final: Tuple[int, int], path: List[Tuple[int, int]],
+                    promotion_row: int, my_kings: Set[Tuple[int, int]],
+                    opp_kings: Set[Tuple[int, int]]) -> float:
+    """Return a numeric value for a capture chain – the higher the better."""
+    captures = len(path) - 1                      # number of opponent pieces removed
+    # Extra weight if any captured piece was a king
+    king_captures = sum(1 for p in path[1:] if (p in opp_kings))
+    score = captures * 1.0
+    if king_captures:
+        score += king_captures * 0.5
+    # Promotion bonus
+    if final[0] == promotion_row:
+        score += 10.0
+    # Slightly prefer shorter chains (less overhead)
+    score -= (len(path) - 1) * 0.1
+    return score
+
+def all_captures(start: Tuple[int, int], my_set: Set[Tuple[int, int]],
+                 opp_set: Set[Tuple[int, int]], occupied: Set[Tuple[int, int]],
+                 promotion_row: int) -> List[Tuple[Tuple[int, int], List[Tuple[int, int]]]]:
+    """Return all capture‑chains that start from `start` and their full paths."""
+    # Piece type of the start square (king if it belongs to my_kings)
+    start_type = "king" if start in my_set else "man"
+    # The forward direction for a man – white goes +1, black goes –1
+    forward_dr = 1 if promotion_row == 7 else -1
+
+    results: List[Tuple[Tuple[int, int], List[Tuple[int, int]]]] = []
+
+    # Helper recursion
+    def dfs(pos: Tuple[int, int],
+            piece_type: str,
+            path: List[Tuple[int, int]],
+            opp_rem: Set[Tuple[int, int]]) -> None:
+        # Base case – no further capture is possible
+        results.append((pos, path))
+
+        # Determine which row‑steps are allowed for the current piece
+        dr_opts = [+1, -1] if piece_type == "king" else [forward_dr]
+        for dr in dr_opts:
+            for dc in (-1, 1):
+                opp = (pos[0] + dr, pos[1] + dc)
+                if opp not in opp_rem:
+                    continue
+                target = (pos[0] + 2 * dr, pos[1] + 2 * dc)
+                # Destination must be empty (not occupied)
+                if target in occupied:
+                    continue
+                # After landing we may become a king
+                landing_king = (target[0] == promotion_row)
+
+                # Create a new opponent‑remaining set without the captured piece
+                opp_rem2 = opp_rem - {opp}
+                dfs(target,
+                    "king" if landing_king else "man",
+                    path + [target],
+                    opp_rem2)
+
+    dfs(start, start_type, [start], opp_set.copy())
+    return results
+
+def policy(my_men: List[Tuple[int, int]], my_kings: List[Tuple[int, int]],
+           opp_men: List[Tuple[int, int]], opp_kings: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """Return a legal single‑move tuple ((from_row, from_col), (to_row, to_col))."""
+
+    # Convenience sets
+    my_set: Set[Tuple[int, int]] = set(my_men) | set(my_kings)
+    opp_set: Set[Tuple[int, int]] = set(opp_men) | set(opp_kings)
+    occupied: Set[Tuple[int, int]] = my_set | opp_set
+
+    # Promotion row – bottom row for black, top row for white
+    promotion_row = 7 if color == "w" else 0
+
+    # -------------------------------------------------
+    # 1️⃣  Look for capture chains (mandatory when any exist)
+    # -------------------------------------------------
+    captures_by_piece: List[Tuple[Tuple[int, int], Tuple[int, int], float]] = []
+
+    # Regular pieces (men)
+    for r, c in my_men:
+        # Starting piece must be dark and own colour – guaranteed by the arena
+        # Find all capture chains that start here
+        chain_results = all_captures((r, c), my_set, opp_set, occupied, promotion_row)
+        for final, path in chain_results:
+            # Compute the heuristic score for the whole chain
+            score = heuristic_score(final, path, promotion_row,
+                                   my_kings, opp_kings)
+            captures_by_piece.append(((r, c), final, score))
+
+    # Kings
+    for r, c in my_kings:
+        chain_results = all_captures((r, c), my_set, opp_set, occupied, promotion_row)
+        for final, path in chain_results:
+            score = heuristic_score(final, path, promotion_row,
+                                   my_kings, opp_kings)
+            captures_by_piece.append(((r, c), final, score))
+
+    if captures_by_piece:
+        # Choose the best capture chain
+        best = max(captures_by_piece, key=lambda x: x[2])
+        return (best[0], best[1])
+
+    # -------------------------------------------------
+    # 2️⃣  No capture available – pick a forward (non‑capturing) move
+    # -------------------------------------------------
+    # Regular pieces: only forward directions (+1 for white, -1 for black)
+    forward_dirs = [(forward_dr, +1), (forward_dr, -1)]
+
+    # King pieces: any diagonal direction
+    king_dirs = [(+1, +1), (+1, -1), (-1, +1), (-1, -1)]
+
+    # Helper to evaluate a forward move
+    def forward_move_score(dest: Tuple[int, int]) -> float:
+        """Score a non‑capture forward move – promotion bonus + centre proximity."""
+        s = 0.0
+        if dest[0] == promotion_row:
+            s += 10.0
+        # Prefer squares close to the centre column (3 or 4)
+        col_centre = 3
+        s -= abs(dest[1] - col_centre)
+        return s
+
+    # Collect all legal forward moves
+    candidates: List[Tuple[Tuple[int, int], float]] = []
+
+    # Men
+    for r, c in my_men:
+        dr = forward_dr
+        for dc in (-1, 1):
+            dest = (r + dr, c + dc)
+            if dest not in occupied:          # empty square
+                # Ensure the move stays on a dark square
+                if is_dark(*dest):
+                    candidates.append(((r, c), forward_move_score(dest)))
+
+    # Kings
+    for r, c in my_kings:
+        for dr, dc in king_dirs:
+            dest = (r + dr, c + dc)
+            if dest not in occupied:
+                if is_dark(*dest):
+                    candidates.append(((r, c), forward_move_score(dest)))
+
+    if not candidates:
+        # As a fallback (should never happen in a legal board) pick any piece‑square that is
+        # a legal move in a capture search – we already explored them, so this branch is unreachable.
+        # Returning the first piece we can find to keep the interpreter happy.
+        # (This is only for safety; in real play captures will always be available.)
+        raise RuntimeError("No legal move found – this should not occur in a valid checkers state.")
+
+    # Choose the best forward move according to the same heuristic used for captures
+    best_move = max(candidates, key=lambda x: x[1])
+    return best_move[0]
+
+</code>

@@ -1,0 +1,239 @@
+
+import numpy as np
+import random
+import time
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    """
+    A heuristic Go policy that prioritizes tactical safety (Atari), 
+    opening principles, and shape, while rigorously checking for legality (Suicide/Ko).
+    """
+    start_time = time.time()
+    BOARD_SIZE = 19
+    
+    # --- 1. Board Reconstruction ---
+    # Internal representation: 0-indexed (0..18)
+    # 0: Empty, 1: Me, 2: Opponent
+    board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = 2
+
+    # Ko History Management
+    # We maintain a list of hashes of previous board states to avoid infinite loops (Ko).
+    if 'history' not in memory:
+        memory['history'] = []
+    
+    # Efficient lookup for Ko checks
+    history_set = set(memory['history'])
+    
+    # Calculate current board hash (state presented to play on)
+    current_board_hash = hash(board.tobytes())
+    
+    move_number = len(me) + len(opponent)
+
+    # --- 2. Group Analysis (Liberties) ---
+    # BFS to find groups and count liberties for every stone on the board
+    visited = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=bool)
+    group_liberties = {} # group_id -> set of liberty coords (0-indexed)
+    group_stones = {}    # group_id -> list of stone coords
+    stone_to_group = {}  # (r,c) -> group_id
+    
+    group_id_counter = 0
+    
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r, c] != 0 and not visited[r, c]:
+                color = board[r, c]
+                q = [(r, c)]
+                visited[r, c] = True
+                stones = []
+                liberties = set()
+                
+                head = 0
+                while head < len(q):
+                    curr_r, curr_c = q[head]
+                    head += 1
+                    stones.append((curr_r, curr_c))
+                    stone_to_group[(curr_r, curr_c)] = group_id_counter
+                    
+                    neighbors = [
+                        (curr_r-1, curr_c), (curr_r+1, curr_c),
+                        (curr_r, curr_c-1), (curr_r, curr_c+1)
+                    ]
+                    
+                    for nr, nc in neighbors:
+                        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                            if board[nr, nc] == 0:
+                                liberties.add((nr, nc))
+                            elif board[nr, nc] == color and not visited[nr, nc]:
+                                visited[nr, nc] = True
+                                q.append((nr, nc))
+                
+                group_liberties[group_id_counter] = liberties
+                group_stones[group_id_counter] = stones
+                group_id_counter += 1
+
+    # --- 3. Candidate Generation ---
+    candidates = set()
+    atari_defense = set()
+    atari_attack = set()
+    
+    # Identify Urgent Moves (Atari: 1 liberty left)
+    for gid, libs in group_liberties.items():
+        if len(libs) == 1:
+            libPoint = list(libs)[0] # (r, c)
+            sr, sc = group_stones[gid][0]
+            if board[sr, sc] == 1:
+                # My group is in danger: try to save it
+                atari_defense.add(libPoint)
+            else:
+                # Opponent group is vulnerable: try to capture
+                atari_attack.add(libPoint)
+    
+    candidates.update(atari_defense)
+    candidates.update(atari_attack)
+    
+    # Add Opening Star Points (if board is relatively empty)
+    # Coordinates 0-indexed: (3,3) is 4-4 point
+    stars = [(3,3), (3,15), (15,3), (15,15), (2,16), (16,2), (2,2), (16,16), (9,9)]
+    if move_number < 40:
+        for p in stars:
+            if board[p] == 0:
+                candidates.add(p)
+    
+    # If we don't have enough candidates, add neighbors of existing stones
+    if len(candidates) < 15:
+        all_stone_locs = np.argwhere(board != 0)
+        np.random.shuffle(all_stone_locs)
+        # Check vicinity of up to 30 random stones
+        for sr, sc in all_stone_locs[:30]: 
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nr, nc = sr+dr, sc+dc
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE and board[nr, nc] == 0:
+                    candidates.add((nr, nc))
+    
+    # Fallback for empty board (first move)
+    if not candidates:
+        if board[3, 15] == 0: candidates.add((3, 15))
+        elif board[15, 3] == 0: candidates.add((15, 3))
+        else: candidates.add((9, 9))
+
+    # --- 4. Evaluation & Selection ---
+    best_move = None
+    best_score = -float('inf')
+    
+    # Shuffle candidates to ensure variety if scores are equal
+    cand_list = list(candidates)
+    random.shuffle(cand_list)
+    
+    for r, c in cand_list:
+        # Time Management: Stop searching if close to 1 second
+        if time.time() - start_time > 0.85:
+            break
+            
+        # -- Legality Check (Suicide) --
+        # 1. Placement connects to friendly group with >=2 liberties? (Safe)
+        # 2. Placement has empty neighbor? (Safe)
+        # 3. Placement captures enemy? (Safe)
+        
+        is_suicide = True
+        captures = False
+        
+        neighbors = []
+        if r > 0: neighbors.append((r-1, c))
+        if r < BOARD_SIZE-1: neighbors.append((r+1, c))
+        if c > 0: neighbors.append((r, c-1))
+        if c < BOARD_SIZE-1: neighbors.append((r, c+1))
+        
+        # Check empty neighbors
+        if is_suicide:
+            for nr, nc in neighbors:
+                if board[nr, nc] == 0:
+                    is_suicide = False
+                    break
+        
+        # Check friendly connections
+        if is_suicide:
+            for nr, nc in neighbors:
+                if board[nr, nc] == 1:
+                    gid = stone_to_group.get((nr, nc))
+                    if gid is not None and len(group_liberties[gid]) > 1:
+                        is_suicide = False
+                        break
+        
+        # Check captures
+        captured_groups = []
+        possible_captures = False
+        for nr, nc in neighbors:
+            if board[nr, nc] == 2:
+                gid = stone_to_group.get((nr, nc))
+                if gid is not None and len(group_liberties[gid]) == 1:
+                    possible_captures = True
+                    is_suicide = False # Valid because it captures
+                    captures = True
+                    if gid not in captured_groups:
+                        captured_groups.append(gid)
+
+        if is_suicide:
+            continue
+            
+        # -- Ko Check --
+        # Simulate the move to check history
+        sim_board = board.copy()
+        sim_board[r, c] = 1
+        
+        if captures:
+            for gid in captured_groups:
+                for sr, sc in group_stones[gid]:
+                    sim_board[sr, sc] = 0
+        
+        sim_hash = hash(sim_board.tobytes())
+        if sim_hash in history_set:
+            continue # Ko violation or repeats past state
+            
+        # -- Scoring --
+        score = 0
+        
+        # Tactical Bonuses
+        if (r, c) in atari_attack: score += 5000
+        if (r, c) in atari_defense: score += 4000
+        
+        # Positional Heuristics
+        dist_edge = min(r, c, BOARD_SIZE-1-r, BOARD_SIZE-1-c)
+        
+        # Opening logic (Lines 3 and 4 are good, lines 1 and 2 are bad early)
+        if move_number < 50:
+            if dist_edge < 2: score -= 50
+            if dist_edge == 2: score += 20 # 3rd line
+            if dist_edge == 3: score += 25 # 4th line
+        
+        # Center proximity adjustment (break ties towards generally useful areas)
+        # Manhattan distance to center (9,9)
+        score -= (abs(r-9) + abs(c-9)) * 0.5
+        
+        # Liberty heuristic: moves that result in more liberties are generally better shapes
+        lib_count = 0
+        for nr, nc in neighbors:
+            if sim_board[nr, nc] == 0: lib_count += 1
+        score += lib_count * 5
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # --- 5. Finalize & Return ---
+    # Update history with the state presented at start of this turn
+    memory['history'].append(current_board_hash)
+    
+    # Keep history from growing indefinitely (last 20 moves is sufficient for Ko logic in simple bots)
+    if len(memory['history']) > 20: 
+        memory['history'] = memory['history'][-20:]
+    
+    if best_move:
+        # Return 1-based coordinates
+        return (best_move[0]+1, best_move[1]+1), memory
+    
+    # Pass if no legal moves found
+    return (0, 0), memory

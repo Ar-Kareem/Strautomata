@@ -1,0 +1,209 @@
+
+import time
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    start_time = time.time()
+    time_limit = 0.85
+    
+    def simulate_move(you, opponent, move):
+        y = list(you)
+        o = list(opponent)
+        seeds = y[move]
+        y[move] = 0
+        pos = move + 1
+        side = 0  # 0=you, 1=opponent
+        while seeds > 0:
+            if side == 0:
+                if pos <= 5:
+                    y[pos] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        # last seed in your house
+                        if y[pos] == 1 and o[5 - pos] > 0:
+                            y[6] += 1 + o[5 - pos]
+                            y[pos] = 0
+                            o[5 - pos] = 0
+                        return y, o, False
+                    pos += 1
+                elif pos == 6:
+                    y[6] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        return y, o, True  # extra turn
+                    pos = 0
+                    side = 1
+                else:
+                    pos = 0
+                    side = 1
+            else:
+                if pos <= 5:
+                    o[pos] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        return y, o, False
+                    pos += 1
+                else:
+                    # skip opponent store
+                    pos = 0
+                    side = 0
+        return y, o, False
+    
+    def game_over(y, o):
+        if all(s == 0 for s in y[:6]):
+            return True
+        if all(s == 0 for s in o[:6]):
+            return True
+        return False
+    
+    def finalize(y, o):
+        y = list(y)
+        o = list(o)
+        y[6] += sum(y[:6])
+        o[6] += sum(o[:6])
+        for i in range(6):
+            y[i] = 0
+            o[i] = 0
+        return y, o
+    
+    def evaluate(y, o):
+        if game_over(y, o):
+            y, o = finalize(y, o)
+            diff = y[6] - o[6]
+            if diff > 0:
+                return 1000 + diff
+            elif diff < 0:
+                return -1000 + diff
+            return 0
+        return y[6] - o[6] + 0.5 * (sum(y[:6]) - sum(o[:6]))
+    
+    def minimax(y, o, depth, alpha, beta, is_my_turn):
+        if time.time() - start_time > time_limit:
+            raise TimeoutError
+        if game_over(y, o) or depth == 0:
+            return evaluate(y, o), -1
+        
+        if is_my_turn:
+            moves = [i for i in range(6) if y[i] > 0]
+            if not moves:
+                yf, of = finalize(y, o)
+                return evaluate(yf, of), -1
+            best_val = -10000
+            best_move = moves[0]
+            for m in moves:
+                ny, no, extra = simulate_move(y, o, m)
+                if extra:
+                    val, _ = minimax(ny, no, depth - 1, alpha, beta, True)
+                else:
+                    val, _ = minimax(no, ny, depth - 1, alpha, beta, False)
+                    val = -val
+                if val > best_val:
+                    best_val = val
+                    best_move = m
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+        else:
+            # opponent's turn (but from their perspective, they are "you")
+            moves = [i for i in range(6) if y[i] > 0]
+            if not moves:
+                yf, of = finalize(y, o)
+                return evaluate(yf, of), -1
+            best_val = 10000
+            best_move = moves[0]
+            for m in moves:
+                ny, no, extra = simulate_move(y, o, m)
+                if extra:
+                    val, _ = minimax(ny, no, depth - 1, alpha, beta, False)
+                    val = -val
+                else:
+                    val, _ = minimax(no, ny, depth - 1, alpha, beta, True)
+                if val < best_val:
+                    best_val = val
+                    best_move = m
+                beta = min(beta, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+    
+    # Wait, the minimax for opponent's turn is confusing. Let me redo with a cleaner approach.
+    # Always call from "my" perspective. When it's opponent's turn, we swap.
+    
+    def search(y, o, depth, alpha, beta, maximizing):
+        """y is current player's state, o is other player's state.
+        maximizing=True means current player is 'us' (the original caller)."""
+        if time.time() - start_time > time_limit:
+            raise TimeoutError
+        if game_over(y, o):
+            yf, of = finalize(y, o) if maximizing else finalize(o, y)
+            if maximizing:
+                return yf[6] - of[6], -1
+            else:
+                # y is opponent, o is us
+                return o[6] + sum(o[:6]) - y[6] - sum(y[:6]), -1
+        if depth == 0:
+            if maximizing:
+                return y[6] - o[6] + 0.3*(sum(y[:6]) - sum(o[:6])), -1
+            else:
+                return o[6] - y[6] + 0.3*(sum(o[:6]) - sum(y[:6])), -1
+        
+        moves = [i for i in range(6) if y[i] > 0]
+        if not moves:
+            yc, oc = list(y), list(o)
+            oc[6] += sum(oc[:6])
+            for i in range(6): oc[i] = 0
+            yc[6] += sum(yc[:6])
+            for i in range(6): yc[i] = 0
+            if maximizing:
+                return yc[6] - oc[6], -1
+            else:
+                return oc[6] - yc[6], -1
+        
+        if maximizing:
+            best_val = -10000
+            best_move = moves[0]
+            for m in moves:
+                ny, no, extra = simulate_move(y, o, m)
+                if extra:
+                    val, _ = search(ny, no, depth - 1, alpha, beta, True)
+                else:
+                    val, _ = search(no, ny, depth - 1, alpha, beta, False)
+                if val > best_val:
+                    best_val = val
+                    best_move = m
+                alpha = max(alpha, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+        else:
+            best_val = 10000
+            best_move = moves[0]
+            for m in moves:
+                ny, no, extra = simulate_move(y, o, m)
+                if extra:
+                    val, _ = search(ny, no, depth - 1, alpha, beta, False)
+                else:
+                    val, _ = search(no, ny, depth - 1, alpha, beta, True)
+                if val < best_val:
+                    best_val = val
+                    best_move = m
+                beta = min(beta, val)
+                if alpha >= beta:
+                    break
+            return best_val, best_move
+    
+    best_move = None
+    moves = [i for i in range(6) if you[i] > 0]
+    best_move = moves[0]
+    
+    try:
+        for depth in range(1, 30):
+            if time.time() - start_time > time_limit:
+                break
+            val, move = search(list(you), list(opponent), depth, -10000, 10000, True)
+            if move >= 0:
+                best_move = move
+    except TimeoutError:
+        pass
+    
+    return best_move

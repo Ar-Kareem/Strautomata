@@ -1,0 +1,81 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Provides the next best move for Tic-Tac-Toe on a 3x3 board.
+    Uses minimax with alpha-beta pruning for optimal play.
+    """
+    INF = float('inf')
+    
+    def get_actions(board):
+        actions = []
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    actions.append((i, j))
+        return actions
+    
+    def is_terminal(board):
+        # Check for wins
+        for player in [1, -1]:
+            # Rows
+            for row in range(3):
+                if all(board[row][col] == player for col in range(3)):
+                    return True, player
+            # Columns
+            for col in range(3):
+                if all(board[row][col] == player for row in range(3)):
+                    return True, player
+            # Diagonals
+            if all(board[i][i] == player for i in range(3)):
+                return True, player
+            if all(board[i][2-i] == player for i in range(3)):
+                return True, player
+        # Check if board is full
+        if all(board[i][j] != 0 for i in range(3) for j in range(3)):
+            return True, 0  # Tie
+        return False, None
+    
+    def minimax(board, alpha, beta, maximizing):
+        terminal, winner = is_terminal(board)
+        if terminal:
+            if winner == 1:
+                return 10, None  # Max wins
+            elif winner == -1:
+                return -10, None  # Min wins
+            else:
+                return 0, None  # Tie
+        
+        if maximizing:
+            max_eval = -INF
+            best_action = None
+            for action in get_actions(board):
+                i, j = action
+                board[i][j] = 1  # Make move
+                eval, _ = minimax(board, alpha, beta, False)
+                board[i][j] = 0  # Undo move
+                if eval > max_eval:
+                    max_eval = eval
+                    best_action = action
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval, best_action
+        else:
+            min_eval = INF
+            best_action = None
+            for action in get_actions(board):
+                i, j = action
+                board[i][j] = -1  # Opponent move
+                eval, _ = minimax(board, alpha, beta, True)
+                board[i][j] = 0  # Undo move
+                if eval < min_eval:
+                    min_eval = eval
+                    best_action = action
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval, best_action
+    
+    # Start minimax for maximizing player (us)
+    _, best_action = minimax(board, -INF, INF, True)
+    return best_action

@@ -1,0 +1,80 @@
+
+import random
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Chooses the best move from the list of legal moves.
+
+    Args:
+        pieces: A dictionary mapping squares to piece codes.
+        to_play: The color to play ('white' or 'black').
+        legal_moves: A list of legal moves.
+
+    Returns:
+        A legal move string.
+    """
+
+    def evaluate_move(move: str, pieces: dict[str, str], to_play: str) -> float:
+        """
+        Evaluates the quality of a given move.
+
+        Args:
+            move: The move to evaluate
+            pieces: Current board state.
+            to_play: Color to play
+
+        Returns:
+            A score representing the move's quality (higher is better).
+        """
+        score = 0.0
+
+        # Checkmate
+        if "#" in move:
+            score += 1000
+
+        # Captures
+        if "x" in move:
+            captured_piece = move[move.find("x") + 1]
+            if captured_piece.isupper() and captured_piece != "K":
+                if captured_piece == "Q":
+                    score += 9
+                elif captured_piece == "R":
+                    score += 5
+                elif captured_piece == "B":
+                    score += 3
+                elif captured_piece == "N":
+                    score += 3
+                elif captured_piece == "P" or captured_piece.islower():
+                    score += 1
+            else:
+              score -= 0.5 #discourage king capture
+
+        # Check
+        if "+" in move:
+            score += 0.5
+
+        # Castling
+        if "O-O" in move:
+            score += 1
+        if "O-O-O" in move:
+            score += 1.5
+
+        # Piece development (simple heuristic)
+        # Just move a piece to a square where it isn't already.
+        score += 0.1
+        return score
+
+    best_move = None
+    best_score = float('-inf')
+
+    for move in legal_moves:
+        score = evaluate_move(move, pieces, to_play)
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    if best_move is None:  #Should not happen, but safety check.
+        return random.choice(legal_moves)
+
+    return best_move

@@ -1,0 +1,377 @@
+The strategy for this policy is:
+
+- Always generate legal moves correctly, with mandatory captures enforced.
+- Use a small alpha-beta search to look ahead a few plies.
+- Evaluate positions mainly by:
+  - material balance,
+  - king advantage,
+  - man advancement toward promotion,
+  - center control,
+  - mobility,
+  - back-rank structure.
+- Prefer tactical moves in ordering:
+  - captures first,
+  - promotions,
+  - moves toward the center.
+- Adapt search depth to board size so it stays within time limits.
+- Include safe fallback behavior so the function always returns a legal move if one exists.
+
+<code>
+from __future__ import annotations
+
+from math import inf
+import random
+
+
+# ============================================================
+# Checkers policy
+# ============================================================
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Return a legal move ((from_row, from_col), (to_row, to_col)).
+
+    Board coordinates:
+      - rows 0..7 bottom to top
+      - cols 0..7 left to right
+      - black ('b') moves downward: row - 1
+      - white ('w') moves upward: row + 1
+    """
+    # Convert to sets for speed
+    my_men = set(map(tuple, my_men))
+    my_kings = set(map(tuple, my_kings))
+    opp_men = set(map(tuple, opp_men))
+    opp_kings = set(map(tuple, opp_kings))
+
+    if color == 'b':
+        bm, bk, wm, wk = my_men, my_kings, opp_men, opp_kings
+        root_color = 'b'
+    else:
+        wm, wk, bm, bk = my_men, my_kings, opp_men, opp_kings
+        root_color = 'w'
+
+    moves = generate_moves(bm, bk, wm, wk, root_color)
+
+    # If no legal moves exist, the position is terminal.
+    # Arena should normally not call policy here, but we guard anyway.
+    if not moves:
+        # Best effort impossible fallback:
+        pieces = list((bm | bk) if root_color == 'b' else (wm | wk))
+        if pieces:
+            p = pieces[0]
+            return (p, p)
+        return ((0, 0), (0, 0))
+
+    total_pieces = len(bm) + len(bk) + len(wm) + len(wk)
+    if total_pieces <= 6:
+        depth = 8
+    elif total_pieces <= 10:
+        depth = 7
+    elif total_pieces <= 14:
+        depth = 6
+    elif total_pieces <= 18:
+        depth = 5
+    else:
+        depth = 4
+
+    # Move ordering before search
+    ordered = sorted(
+        moves,
+        key=lambda m: move_order_score(m, bm, bk, wm, wk, root_color),
+        reverse=True
+    )
+
+    best_move = ordered[0]
+    best_score = -inf
+    alpha = -inf
+    beta = inf
+
+    for mv in ordered:
+        nbm, nbk, nwm, nwk, next_turn = apply_move(bm, bk, wm, wk, root_color, mv)
+        score = -negamax(nbm, nbk, nwm, nwk, next_turn, depth - 1, -beta, -alpha, root_color)
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+
+    return (best_move[0], best_move[1])
+
+
+# ============================================================
+# Move generation
+# ============================================================
+
+ALL_DIRS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+
+def in_bounds(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def man_dirs(color):
+    return [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+
+
+def promotion_row(color):
+    return 0 if color == 'b' else 7
+
+
+def generate_moves(bm, bk, wm, wk, turn):
+    """
+    Returns legal moves for side to move.
+    Move format: ((fr, fc), (tr, tc), is_capture)
+    Mandatory capture enforced.
+    """
+    if turn == 'b':
+        men, kings = bm, bk
+        opp = wm | wk
+        dirs_for_men = man_dirs('b')
+    else:
+        men, kings = wm, wk
+        opp = bm | bk
+        dirs_for_men = man_dirs('w')
+
+    occupied = bm | bk | wm | wk
+    captures = []
+
+    # Men captures
+    for r, c in men:
+        for dr, dc in dirs_for_men:
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if in_bounds(tr, tc) and (mr, mc) in opp and (tr, tc) not in occupied:
+                captures.append(((r, c), (tr, tc), True))
+
+    # King captures
+    for r, c in kings:
+        for dr, dc in ALL_DIRS:
+            mr, mc = r + dr, c + dc
+            tr, tc = r + 2 * dr, c + 2 * dc
+            if in_bounds(tr, tc) and (mr, mc) in opp and (tr, tc) not in occupied:
+                captures.append(((r, c), (tr, tc), True))
+
+    if captures:
+        return captures
+
+    quiet = []
+
+    # Men quiet moves
+    for r, c in men:
+        for dr, dc in dirs_for_men:
+            tr, tc = r + dr, c + dc
+            if in_bounds(tr, tc) and (tr, tc) not in occupied:
+                quiet.append(((r, c), (tr, tc), False))
+
+    # King quiet moves
+    for r, c in kings:
+        for dr, dc in ALL_DIRS:
+            tr, tc = r + dr, c + dc
+            if in_bounds(tr, tc) and (tr, tc) not in occupied:
+                quiet.append(((r, c), (tr, tc), False))
+
+    return quiet
+
+
+def apply_move(bm, bk, wm, wk, turn, move):
+    """
+    Apply move and switch side to move.
+    Returns new_bm, new_bk, new_wm, new_wk, next_turn
+    """
+    (fr, fc), (tr, tc), is_capture = move
+
+    bm = set(bm)
+    bk = set(bk)
+    wm = set(wm)
+    wk = set(wk)
+
+    if turn == 'b':
+        if (fr, fc) in bm:
+            bm.remove((fr, fc))
+            became_king = (tr == promotion_row('b'))
+            if became_king:
+                bk.add((tr, tc))
+            else:
+                bm.add((tr, tc))
+        else:
+            bk.remove((fr, fc))
+            bk.add((tr, tc))
+
+        if is_capture:
+            mr, mc = (fr + tr) // 2, (fc + tc) // 2
+            if (mr, mc) in wm:
+                wm.remove((mr, mc))
+            else:
+                wk.discard((mr, mc))
+
+        return bm, bk, wm, wk, 'w'
+
+    else:
+        if (fr, fc) in wm:
+            wm.remove((fr, fc))
+            became_king = (tr == promotion_row('w'))
+            if became_king:
+                wk.add((tr, tc))
+            else:
+                wm.add((tr, tc))
+        else:
+            wk.remove((fr, fc))
+            wk.add((tr, tc))
+
+        if is_capture:
+            mr, mc = (fr + tr) // 2, (fc + tc) // 2
+            if (mr, mc) in bm:
+                bm.remove((mr, mc))
+            else:
+                bk.discard((mr, mc))
+
+        return bm, bk, wm, wk, 'b'
+
+
+# ============================================================
+# Search
+# ============================================================
+
+def negamax(bm, bk, wm, wk, turn, depth, alpha, beta, root_color):
+    moves = generate_moves(bm, bk, wm, wk, turn)
+
+    if depth <= 0 or not moves:
+        return evaluate_terminal_or_static(bm, bk, wm, wk, turn, root_color, moves)
+
+    ordered = sorted(
+        moves,
+        key=lambda m: move_order_score(m, bm, bk, wm, wk, turn),
+        reverse=True
+    )
+
+    best = -inf
+    for mv in ordered:
+        nbm, nbk, nwm, nwk, next_turn = apply_move(bm, bk, wm, wk, turn, mv)
+
+        # Small extension for tactical positions
+        extra = 1 if mv[2] and depth <= 2 else 0
+
+        val = -negamax(nbm, nbk, nwm, nwk, next_turn, depth - 1 + extra, -beta, -alpha, root_color)
+        if val > best:
+            best = val
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+
+    return best
+
+
+# ============================================================
+# Evaluation
+# ============================================================
+
+def evaluate_terminal_or_static(bm, bk, wm, wk, turn, root_color, moves=None):
+    if moves is None:
+        moves = generate_moves(bm, bk, wm, wk, turn)
+
+    # Side to move with no moves loses
+    if not moves:
+        if turn == root_color:
+            return -100000
+        return 100000
+
+    return evaluate_position(bm, bk, wm, wk, root_color)
+
+
+def evaluate_position(bm, bk, wm, wk, root_color):
+    # Material
+    b_men = len(bm)
+    b_kings = len(bk)
+    w_men = len(wm)
+    w_kings = len(wk)
+
+    material = 100 * (b_men - w_men) + 175 * (b_kings - w_kings)
+
+    # Advancement for men
+    b_adv = sum(7 - r for r, _ in bm)
+    w_adv = sum(r for r, _ in wm)
+    advancement = 8 * (b_adv - w_adv)
+
+    # Center control
+    def center_score(pieces, kings=False):
+        s = 0
+        for r, c in pieces:
+            # Encourage center four files/ranks
+            if 2 <= r <= 5 and 2 <= c <= 5:
+                s += 6 if kings else 4
+            elif 1 <= r <= 6 and 1 <= c <= 6:
+                s += 3 if kings else 2
+        return s
+
+    center = center_score(bm, False) + center_score(bk, True) - center_score(wm, False) - center_score(wk, True)
+
+    # Back-rank guard: helps avoid easy promotions
+    back_rank = 0
+    back_rank += 5 * sum(1 for r, _ in bm if r == 7)
+    back_rank -= 5 * sum(1 for r, _ in wm if r == 0)
+
+    # Mobility
+    b_moves = len(generate_moves(bm, bk, wm, wk, 'b'))
+    w_moves = len(generate_moves(bm, bk, wm, wk, 'w'))
+    mobility = 3 * (b_moves - w_moves)
+
+    # Promotion threats
+    promo_threat = 0
+    promo_threat += 12 * sum(1 for r, _ in bm if r == 1)
+    promo_threat -= 12 * sum(1 for r, _ in wm if r == 6)
+
+    # Slight edge to king activity in endgames
+    total_pieces = b_men + b_kings + w_men + w_kings
+    king_activity = 0
+    if total_pieces <= 10:
+        king_activity += 4 * center_score(bk, True)
+        king_activity -= 4 * center_score(wk, True)
+
+    score_black = material + advancement + center + back_rank + mobility + promo_threat + king_activity
+
+    return score_black if root_color == 'b' else -score_black
+
+
+# ============================================================
+# Move ordering
+# ============================================================
+
+def move_order_score(move, bm, bk, wm, wk, turn):
+    (fr, fc), (tr, tc), is_capture = move
+    score = 0
+
+    if is_capture:
+        score += 1000
+        mr, mc = (fr + tr) // 2, (fc + tc) // 2
+        if turn == 'b':
+            if (mr, mc) in wk:
+                score += 80
+            else:
+                score += 40
+        else:
+            if (mr, mc) in bk:
+                score += 80
+            else:
+                score += 40
+
+    # Promotion bonus
+    if turn == 'b' and (fr, fc) in bm and tr == 0:
+        score += 200
+    if turn == 'w' and (fr, fc) in wm and tr == 7:
+        score += 200
+
+    # Prefer center and forward progress
+    score -= abs(3.5 - tr) * 6
+    score -= abs(3.5 - tc) * 4
+
+    if turn == 'b':
+        score += (7 - tr)
+    else:
+        score += tr
+
+    # Slight randomization to avoid deterministic bad ties
+    score += random.random() * 0.01
+    return score
+</code>

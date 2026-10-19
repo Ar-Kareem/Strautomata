@@ -1,0 +1,123 @@
+
+from functools import lru_cache
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Perfect-play Tic Tac Toe policy.
+    board[r][c]:
+      0 = empty
+      1 = our move
+     -1 = opponent move
+    Returns a legal (row, col).
+    """
+
+    def legal_moves(b):
+        return [(r, c) for r in range(3) for c in range(3) if b[r][c] == 0]
+
+    def winner_flat(flat):
+        lines = [
+            (0, 1, 2), (3, 4, 5), (6, 7, 8),
+            (0, 3, 6), (1, 4, 7), (2, 5, 8),
+            (0, 4, 8), (2, 4, 6),
+        ]
+        for i, j, k in lines:
+            s = flat[i] + flat[j] + flat[k]
+            if s == 3:
+                return 1
+            if s == -3:
+                return -1
+        return 0
+
+    @lru_cache(maxsize=None)
+    def minimax(flat, turn):
+        """
+        Returns score from our perspective:
+          1 = forced win
+          0 = forced draw
+         -1 = forced loss
+        turn is 1 for us, -1 for opponent.
+        """
+        w = winner_flat(flat)
+        if w != 0:
+            return w
+
+        if 0 not in flat:
+            return 0
+
+        empties = [i for i, v in enumerate(flat) if v == 0]
+
+        if turn == 1:
+            best = -2
+            for i in empties:
+                new_flat = list(flat)
+                new_flat[i] = 1
+                score = minimax(tuple(new_flat), -1)
+                if score > best:
+                    best = score
+                if best == 1:
+                    break
+            return best
+        else:
+            best = 2
+            for i in empties:
+                new_flat = list(flat)
+                new_flat[i] = -1
+                score = minimax(tuple(new_flat), 1)
+                if score < best:
+                    best = score
+                if best == -1:
+                    break
+            return best
+
+    # Defensive legality fallback
+    moves = legal_moves(board)
+    if not moves:
+        return (0, 0)
+
+    flat = tuple(board[r][c] for r in range(3) for c in range(3))
+
+    # 1) Immediate winning move
+    for r, c in moves:
+        b2 = [row[:] for row in board]
+        b2[r][c] = 1
+        flat2 = tuple(b2[i][j] for i in range(3) for j in range(3))
+        if winner_flat(flat2) == 1:
+            return (r, c)
+
+    # 2) Immediate block of opponent win
+    opp_wins = []
+    for r, c in moves:
+        b2 = [row[:] for row in board]
+        b2[r][c] = -1
+        flat2 = tuple(b2[i][j] for i in range(3) for j in range(3))
+        if winner_flat(flat2) == -1:
+            opp_wins.append((r, c))
+    if opp_wins:
+        # Prefer center, then corners, then edges among blocking moves
+        pref = [(1, 1), (0, 0), (0, 2), (2, 0), (2, 2), (0, 1), (1, 0), (1, 2), (2, 1)]
+        for m in pref:
+            if m in opp_wins:
+                return m
+        return opp_wins[0]
+
+    # 3) Full minimax search with tie-breaking preferences
+    preferences = [(1, 1), (0, 0), (0, 2), (2, 0), (2, 2), (0, 1), (1, 0), (1, 2), (2, 1)]
+
+    best_score = -2
+    best_moves = []
+
+    for r, c in moves:
+        new_flat = list(flat)
+        new_flat[r * 3 + c] = 1
+        score = minimax(tuple(new_flat), -1)
+        if score > best_score:
+            best_score = score
+            best_moves = [(r, c)]
+        elif score == best_score:
+            best_moves.append((r, c))
+
+    for m in preferences:
+        if m in best_moves:
+            return m
+
+    return best_moves[0] if best_moves else moves[0]

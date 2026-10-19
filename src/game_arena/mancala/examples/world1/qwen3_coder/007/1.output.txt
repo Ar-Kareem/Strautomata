@@ -1,0 +1,398 @@
+<thinking>
+I need to implement a policy function for the game Kalah. Let me break down the strategy:
+
+1. **Immediate captures**: If I can make a move that ends in an empty house and captures opponent's seeds, that's usually good.
+2. **Extra turns**: If I can make a move that ends in my store, I get another move - this is very valuable.
+3. **General strategy**: I want to maximize my seeds in the long run, considering both immediate gains and future opportunities.
+
+Let me think about move evaluation:
+- **Extra move**: Landing exactly in my store gives an additional move. This is powerful.
+- **Capture**: Landing in an empty house on my side where the opponent's opposite house has seeds.
+- **Seeds moved**: Generally want to move more seeds forward.
+
+I'll check all legal moves and:
+1. First, see if any move gives an extra turn (lands in store)
+2. Then, see if any move allows a capture
+3. Otherwise, choose the move that moves the most seeds or progresses best
+
+To simulate moves:
+- For move `i`, I remove `you[i]` seeds
+- I place them starting from `i+1`, wrapping around correctly, skipping opponent's store
+- Count the positions to see where the last seed lands
+
+Let me also consider simple heuristics like:
+- Not giving the opponent easy captures on their next move
+- Keeping flexibility (don't empty houses unnecessarily)
+
+Actually, let me implement with these priorities:
+1. Extra turn moves (highest priority)
+2. Capture moves 
+3. Moves that put more seeds in my houses
+4. Default to first legal move
+
+For simplicity, I'll implement a straightforward approach that checks for immediate tactical benefits.
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Kalah policy function to select the best move.
+    
+    Args:
+        you: Your side [h0, h1, h2, h3, h4, h5, store]
+        opponent: Opponent's side [h0, h1, h2, h3, h4, h5, store]
+        
+    Returns:
+        int: Index of house to play (0-5)
+    """
+    
+    # Find all legal moves
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    if not legal_moves:
+        # Should not happen according to problem statement
+        return 0
+    
+    # Check for moves that give an extra turn (land exactly in store)
+    best_moves = []
+    
+    for move in legal_moves:
+        seeds = you[move]
+        # Calculate where the last seed will land
+        # Total positions to consider: you[0]-you[5], you[6], opponent[0]-opponent[5] 
+        # That's 13 positions, and we skip opponent[6]
+        # Position mapping: 
+        # 0-5: you[0]-you[5]
+        # 6: you[6] (store)
+        # 7-12: opponent[0]-opponent[5]
+        # Then it wraps around to you[0] again (13 is same as 0), etc.
+        
+        # Last seed position (0-based from start position after the moved house)
+        last_pos = seeds - 1  # We place seeds in positions 0, 1, ..., seeds-1
+        
+        # Map to actual board positions
+        # Positions 0-5: your houses (move+1 to 5, then wrap)
+        # Position 6: your store
+        # Positions 7-12: opponent houses (0 to 5)
+        # Position 13+ wraps back to your houses
+        
+        # We need to account for the fact that we start placing after house 'move'
+        # So first position (0) is (move+1) % 13, but we also need to skip opponent store
+        
+        # Let's think differently:
+        # Positions to fill in order:
+        # you[move+1] to you[5]  -> (6-move-1) positions = (5-move) positions
+        # you[6]                 -> 1 position 
+        # opponent[0] to opponent[5] -> 6 positions
+        # you[0] to you[5] -> 6 positions
+        # opponent[0] to opponent[5] -> 6 positions
+        # ...
+        
+        # But we have seeds to place, so:
+        # If seeds <= (5-move): all seeds placed in you[move+1:move+1+seeds]  
+        # If seeds <= (5-move) + 1: last seed might be in you[6]
+        # etc.
+        
+        # Simpler approach: simulate the placement
+        final_position = simulate_move(move, seeds)
+        
+        if final_position == 6:  # Lands in my store
+            best_moves.append(move)
+    
+    if best_moves:
+        # Sort by the number of seeds for tie-breaking
+        return max(best_moves, key=lambda m: you[m])
+    
+    # Check for capture moves
+    capture_moves = []
+    for move in legal_moves:
+        seeds = you[move]
+        final_position = simulate_move(move, seeds)
+        
+        # Check if it's a capture: 
+        # 1. Final position is one of my houses (0-5) 
+        # 2. That house was empty before sowing
+        # 3. Opposite house has seeds
+        
+        if 0 <= final_position <= 5:  # My house
+            # Check if that house was empty before sowing
+            # Since we remove all seeds from 'move', the final house will have at least 1 seed
+            # But for capture, it must have been empty BEFORE sowing and gets exactly 1 seed
+            # This is true if the last seed is the only seed placed there
+            
+            # For this to be a capture:
+            # - The house at final_position was empty (you[final_position] == 0)
+            # - But wait, that can't be since we're moving from a non-empty house
+            
+            # Let me re-read the capture rule:
+            # "If the last seed lands in one of your houses you[i] (0..5) and it was empty 
+            #  before the drop, and the opposite house opponent[5-i] has seeds"
+            
+            # This means the house where the last seed lands was empty before we placed ANY seeds there
+            # But we have removed the seeds from the starting house, so that house is now 0
+            # Actually, we're talking about the final house receiving a seed
+            
+            # Proper interpretation:
+            # The last seed lands in you[i] (0-5)
+            # Before placing that last seed, you[i] was 0
+            # The opponent's opposite house has seeds
+            
+            # To check this, I need to simulate the whole sowing process...
+            is_capture, captured_seeds = is_capture_move(you, opponent, move)
+            if is_capture:
+                capture_moves.append((move, captured_seeds))
+    
+    if capture_moves:
+        # Return the move with the most captured seeds
+        return max(capture_moves, key=lambda x: x[1])[0]
+    
+    # Heuristic: choose move that moves most seeds forward
+    # Or prefer moves closer to the store
+    return max(legal_moves, key=lambda m: (you[m], -m))  # More seeds, or closer to store if tie
+
+
+def simulate_move(move: int, seeds: int) -> int:
+    """Simulate a move and return the final position (0-12) where 6 is your store."""
+    # Start position after taking seeds from house 'move'
+    # We'll number positions as:
+    # 0-5: your houses (0-5)  
+    # 6: your store
+    # 7-12: opponent houses (0-5)
+    # 13-18: your houses again (0-5) 
+    # etc.
+    
+    start_pos = move + 1  # First position to place a seed
+    final_pos = start_pos + seeds - 1  # Last seed placed here (0-based from your house 0)
+    
+    # But we need to skip opponent's store (position 19 in our mapping would be opponent store)
+    # Opponent store would be at positions 6 + 1 + 6 + 6*n + 6 = 19 + 13*n ... 
+    # Actually let's think differently.
+    
+    # Positions in cycle:
+    # 0-5: your houses  
+    # 6: your store
+    # 7-12: opponent houses
+    # 13-18: your houses again
+    # 19: your store again (but we never place here as it's opponent's store in actuality)
+    # 20-25: opponent houses again
+    # Total cycle length = 13 (6+1+6)
+    
+    # The opponent's store is not in the cycle, it's skipped.
+    # So positions map to:
+    # 0-5 -> you[0-5] 
+    # 6 -> you[6] 
+    # 7-12 -> opponent[0-5] 
+    # 13-18 -> you[0-5] 
+    # 19 -> skipped (opponent store) 
+    # 20-25 -> opponent[0-5] 
+    # 26 -> skipped again
+    # etc.
+    
+    # So we reduce modulo 13, and if result >= 7 and (result-7) % 13 >= 6, we adjust
+    
+    # Actually simpler:
+    # Every 13 positions, we skip 1 (opponent's store)
+    # So for position p, the actual position is:
+    # - if p < 7: as is 
+    # - if p >= 7: we subtract floor((p-7)/6) because we skip 1 every 6 opponent positions
+    
+    # No, even simpler. We just note that in every block of 13:
+    # positions 0-5: your houses (6 positions)  
+    # position 6: your store (1 position)
+    # positions 7-12: opponent houses (6 positions, we skip 1)
+    
+    # No wait that's wrong. We don't place in opponent store.
+    
+    # Let's re-read:
+    # Place seeds "in order" 
+    # 1. you[i+1] through you[5] 
+    # 2. you[6]
+    # 3. opponent[0] through opponent[5] 
+    # 4. you[0] etc.
+    
+    # So the sequence is:
+    # you[i+1], you[i+2], ..., you[5], you[6], opponent[0], opponent[1], ..., opponent[5], you[0], you[1], ...
+    
+    # Map this to positions: 0,1,2,... 
+    # Positions 0 to (5-i): you[i+1] to you[5]
+    # Position (5-i)+1: you[6]  
+    # Positions (5-i)+2 to (5-i)+1+6: opponent[0] to opponent[5]
+    # Positions (5-i)+1+6+1 onwards: you[0] onwards
+    # So position p maps to:
+    # p <= 5-i: you[i+p+1] 
+    # p == 5-i+1: you[6]
+    # p > 5-i+1: see below
+    
+    # To find where seed number 'seeds' lands:
+    # It's placed in position (seeds - 1) starting from position 0 being you[i+1]
+    
+    # Offset from you[0] is (i+1) + (seeds-1) = i + seeds 
+    # But we skip opponent store
+    
+    total_steps = seeds 
+    current_pos = move  # We start "from" this house (but don't place here)
+    
+    for step in range(total_steps):
+        current_pos += 1
+        # Normalize current_pos with wrapping and skipping opponent store  
+        # Map 0-5: you houses
+        # Map 6: your store 
+        # Map 7-12: opponent houses
+        # Map 13+: wrap around
+        
+        # To skip opponent store (which logically would occupy a position),
+        # we note that after moving through 13 positions (6 yours + 1 store + 6 opponent),
+        # the pattern repeats but we need to skip the opponent's store slot
+        
+        # A clearer approach: model coordinates as a list and advance
+    
+    # Let's hand-code the pattern:
+    if seeds == 0:
+        return move  # No seeds moved
+    
+    # Need to place 'seeds' seeds starting from house after 'move' 
+    positions = []  # What actual positions get seeds
+    
+    start_house = move + 1
+    seeds_to_place = seeds
+    pos = start_house
+    
+    while seeds_to_place > 0:
+        # pos tells us where we are:
+        # 0-5: your houses
+        # 6: your store  
+        # 7-12: opponent houses
+        # >=13: normalize
+        
+        normalized_pos = pos % 13
+        if normalized_pos == 12:  # This would be opponent's store
+            pos += 1
+            continue  # Skip this position
+            
+        positions.append(normalized_pos)
+        seeds_to_place -= 1
+        pos += 1
+    
+    return positions[-1] if positions else move
+
+
+def is_capture_move(you: list[int], opponent: list[int], move: int) -> tuple[bool, int]:
+    """Check if a move results in a capture and return (is_capture, captured_seeds)."""
+    seeds = you[move]
+    if seeds == 0:
+        return (False, 0)
+        
+    final_position = simulate_move(move, seeds)
+    
+    # Check if it's a capture:
+    # 1. Final position is your house (0-5) 
+    # 2. That house was empty before placing the last seed
+    # 3. Opposite house has seeds
+    
+    if not (0 <= final_position <= 5):
+        return (False, 0)
+        
+    # Need to determine if final house was empty before placing the last seed
+    # This is tricky without full simulation, 
+    # but a good approximation is that if you[final_position] was 0, it was empty
+    
+    # Actually, to be precise, it was empty at the moment we placed the last seed
+    # If it's the final house we place a seed in, and if no previous seeds 
+    # were placed there during this move, and it was 0 originally, then yes.
+    
+    # But we removed all seeds from move index first, so if move == final_position,
+    # then that house became 0 before we started planting.
+    
+    # A simple approximation: if you[final_position] is currently 0 (and final_position != move),
+    # or final_position == move (which means we emptied it):
+    if final_position == move:
+        was_empty = True  # We removed all seeds from it
+    else:
+        was_empty = (you[final_position] == 0)  # Was empty before our move
+        
+    if not was_empty:
+        return (False, 0)
+        
+    # Check opposite house
+    opposite_house = 5 - final_position
+    if opponent[opposite_house] == 0:
+        return (False, 0)
+        
+    # It's a capture
+    captured = 1 + opponent[opposite_house]  # The seed we landed on + seeds in opposite house
+    return (True, captured)
+
+
+# Simplified version for fast decision
+def policy(you: list[int], opponent: list[int]) -> int:
+    """Simplified but effective Kalah policy."""
+    
+    # Find legal moves
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if not legal_moves:
+        return 0
+    
+    # Check for extra turn opportunities 
+    extra_turn_moves = []
+    for move in legal_moves:
+        seeds = you[move]
+        # Calculate if last seed lands in store (position 6)
+        # We move from position 'move' to position 'move'+seeds
+        # But need to account for wrapping and skipping opponent store
+        
+        # Simplified check by simulation
+        last_position = (move + seeds) % 13
+        # Positions map cyclically but accurately modeling requires checking every position passed
+        
+        # Quick approximation:
+        # After you[move], we go:
+        # you[move+1]...you[5], you[6], opponent[0]...opponent[5], you[0]...
+        # Total cycle length = 6+1+6 = 13
+        # Position mapping in cycle:
+        # 0 1 2 3 4 5 6 7 8 9 10 11 12
+        # 0 1 2 3 4 5 S 0 1 2 3  4  5   (S=store)
+        
+        steps = seeds  # Number of steps to take
+        current_relative_pos = move  # Starting after removing from 'move'
+        
+        for _ in range(steps):
+            current_relative_pos += 1
+            if current_relative_pos % 13 == 6:  # This would be a store  
+                if (current_relative_pos - move - 1) == seeds - 1:  # Last seed
+                    extra_turn_moves.append(move)
+                current_relative_pos += 1  # Skip store, it doesn't count as a position for counting
+        
+        # More accurate simulation:
+        pos = move
+        for s in range(seeds):
+            pos += 1
+            # Map pos to board positions considering wrapping and skipped opponent store
+            # This is complex, so use known results for common cases or do direct simulation
+            
+            # Approximate by just using modulo on number of valid positions:
+            # Valid positions in cycle: 0-5 you, 6 store, 7-12 opponent  
+            # Total 13, but one of them is skipped when we would reach opponent's store
+            # But opponent's store is not in our sequence - we skip placing there
+            # So the cycle is truly 6+1+6 = 13
+            effective_pos = pos % 13
+            if effective_pos == 6 and s == seeds - 1:  # Landed in store on last move
+                extra_turn_moves.append(move)
+    
+    if extra_turn_moves:
+        return extra_turn_moves[0]  # Return first one, or can sort by value
+    
+    # Check for captures - simplified  
+    for move in legal_moves:
+        seeds = you[move] 
+        landing_pos = (move + seeds) % 13
+        # If lands in your house positions and conditions are met
+        if 0 <= landing_pos <= 5:  # Landed in your house
+            final_house = landing_pos
+            # Simple capture check:
+            # If that house was empty and opposite has seeds
+            if (final_house == move or you[final_house] == 0) and opponent[5 - final_house] > 0:
+                return move
+    
+    # Default strategy: move from the house with the most seeds, preferring closer to store
+    return max(legal_moves, key=lambda m: (you[m], 6-m))
+</code>

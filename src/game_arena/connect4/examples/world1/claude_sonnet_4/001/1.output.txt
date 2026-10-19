@@ -1,0 +1,166 @@
+<thinking>
+I need to implement a Connect 4 policy that can make good moves within 1 second. Let me think about the strategy:
+
+1. **Win immediately**: If I can make a move that gives me 4 in a row, I should do it.
+2. **Block opponent wins**: If my opponent can win on their next move, I should block them.
+3. **Create threats**: Look for moves that create multiple winning opportunities.
+4. **Avoid giving opponent wins**: Don't make moves that allow the opponent to win immediately on their next turn.
+5. **Strategic positioning**: Prefer center columns, build on existing pieces, etc.
+
+For the implementation approach:
+- I'll use a minimax-like evaluation but keep it simple due to time constraints
+- Check for immediate wins/blocks first (these are critical)
+- Use a simple heuristic evaluation for other moves
+- Since I have 1 second, I can afford some computation but should keep it reasonable
+
+Key functions I'll need:
+- `is_valid_move(board, col)`: Check if a column has space
+- `make_move(board, col, player)`: Simulate dropping a piece
+- `check_win(board, player)`: Check if a player has won
+- `get_valid_moves(board)`: Get all valid column indices
+- `evaluate_position(board)`: Heuristic evaluation of board state
+
+Let me implement this step by step:
+
+1. First, check for immediate wins
+2. Then check for blocks needed
+3. Finally, use heuristic to pick best remaining move
+
+For the heuristic, I'll consider:
+- Center column preference
+- Building on existing pieces
+- Creating potential 4-in-a-rows
+- Avoiding moves that set up opponent wins
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> int:
+    def is_valid_move(board, col):
+        return board[0][col] == 0
+    
+    def get_valid_moves(board):
+        return [col for col in range(7) if is_valid_move(board, col)]
+    
+    def drop_piece(board, col, player):
+        # Create a copy and drop piece
+        new_board = [row[:] for row in board]
+        for row in range(5, -1, -1):
+            if new_board[row][col] == 0:
+                new_board[row][col] = player
+                break
+        return new_board
+    
+    def check_win(board, player):
+        # Check horizontal
+        for row in range(6):
+            for col in range(4):
+                if all(board[row][col + i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for row in range(3):
+            for col in range(7):
+                if all(board[row + i][col] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (positive slope)
+        for row in range(3):
+            for col in range(4):
+                if all(board[row + i][col + i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (negative slope)
+        for row in range(3):
+            for col in range(3, 7):
+                if all(board[row + i][col - i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def count_sequences(board, player, length):
+        count = 0
+        
+        # Check horizontal
+        for row in range(6):
+            for col in range(7 - length + 1):
+                if all(board[row][col + i] in [0, player] for i in range(length)) and \
+                   sum(board[row][col + i] == player for i in range(length)) == length:
+                    count += 1
+        
+        # Check vertical
+        for row in range(6 - length + 1):
+            for col in range(7):
+                if all(board[row + i][col] in [0, player] for i in range(length)) and \
+                   sum(board[row + i][col] == player for i in range(length)) == length:
+                    count += 1
+        
+        # Check diagonals
+        for row in range(6 - length + 1):
+            for col in range(7 - length + 1):
+                if all(board[row + i][col + i] in [0, player] for i in range(length)) and \
+                   sum(board[row + i][col + i] == player for i in range(length)) == length:
+                    count += 1
+                    
+                if all(board[row + i][col + length - 1 - i] in [0, player] for i in range(length)) and \
+                   sum(board[row + i][col + length - 1 - i] == player for i in range(length)) == length:
+                    count += 1
+        
+        return count
+    
+    def evaluate_move(board, col):
+        # Try the move
+        new_board = drop_piece(board, col, 1)
+        
+        # Check if we win immediately
+        if check_win(new_board, 1):
+            return 1000
+        
+        # Check if opponent can win after our move
+        opponent_moves = get_valid_moves(new_board)
+        for opp_col in opponent_moves:
+            opp_board = drop_piece(new_board, opp_col, -1)
+            if check_win(opp_board, -1):
+                return -1000  # Bad move, gives opponent a win
+        
+        # Heuristic evaluation
+        score = 0
+        
+        # Prefer center columns
+        score += (3 - abs(3 - col)) * 3
+        
+        # Count our potential winning sequences
+        score += count_sequences(new_board, 1, 3) * 5
+        score += count_sequences(new_board, 1, 2) * 2
+        
+        # Penalize opponent sequences
+        score -= count_sequences(new_board, -1, 3) * 5
+        score -= count_sequences(new_board, -1, 2) * 2
+        
+        return score
+    
+    # Check for immediate winning move
+    valid_moves = get_valid_moves(board)
+    
+    for col in valid_moves:
+        test_board = drop_piece(board, col, 1)
+        if check_win(test_board, 1):
+            return col
+    
+    # Check for blocking opponent's winning move
+    for col in valid_moves:
+        test_board = drop_piece(board, col, -1)
+        if check_win(test_board, -1):
+            return col
+    
+    # Evaluate all moves and pick the best
+    best_move = valid_moves[0]
+    best_score = float('-inf')
+    
+    for col in valid_moves:
+        score = evaluate_move(board, col)
+        if score > best_score:
+            best_score = score
+            best_move = col
+    
+    return best_move
+</code>

@@ -1,0 +1,296 @@
+
+import random
+
+# ----------------------------------------------------------------------
+# Constants
+WIN_SCORE = 100_000          # macro‑board win
+SMALL_WIN_SCORE = 1_000       # winning a small board
+
+# Lines of a 3×3 board (row, col pairs)
+LINES = [
+    [(0,0),(0,1),(0,2)],
+    [(1,0),(1,1),(1,2)],
+    [(2,0),(2,1),(2,2)],
+    [(0,0),(1,0),(2,0)],
+    [(0,1),(1,1),(2,1)],
+    [(0,2),(1,2),(2,2)],
+    [(0,0),(1,1),(2,2)],
+    [(0,2),(1,1),(2,0)],
+]
+
+MAX_DEPTH = 4                 # search depth
+
+# ----------------------------------------------------------------------
+# Helper functions for board handling
+
+def small_board_winner(board3x3):
+    """Return 'x', 'o' or None for a 3×3 small board."""
+    for line in LINES:
+        a, b, c = line
+        v1 = board3x3[a[0]][a[1]]
+        v2 = board3x3[b[0]][b[1]]
+        v3 = board3x3[c[0]][c[1]]
+        if v1 != 'b' and v1 == v2 == v3:
+            return v1
+    return None
+
+
+def is_board_full(board, br, bc):
+    """Check whether the small board (br,bc) is completely filled."""
+    small = board[br][bc]
+    for r in range(3):
+        for c in range(3):
+            if small[r][c] == 'b':
+                return False
+    return True
+
+
+def check_macro_winner(board):
+    """Return the winner of the macro board (or None)."""
+    macro = [[None]*3 for _ in range(3)]
+    for br in range(3):
+        for bc in range(3):
+            macro[br][bc] = small_board_winner(board[br][bc])
+    for line in LINES:
+        a, b, c = line
+        v1 = macro[a[0]][a[1]]
+        v2 = macro[b[0]][b[1]]
+        v3 = macro[c[0]][c[1]]
+        if v1 is not None and v1 == v2 == v3:
+            return v1
+    return None
+
+
+def evaluate(board, player):
+    """Static evaluation from the perspective of *player*."""
+    opponent = 'o' if player == 'x' else 'x'
+
+    # Macro‑board win?
+    macro_winner = check_macro_winner(board)
+    if macro_winner == player:
+        return WIN_SCORE
+    if macro_winner == opponent:
+        return -WIN_SCORE
+
+    score = 0
+
+    # Small‑board contributions
+    for br in range(3):
+        for bc in range(3):
+            small = board[br][bc]
+            win = small_board_winner(small)
+            if win == player:
+                score += SMALL_WIN_SCORE
+            elif win == opponent:
+                score -= SMALL_WIN_SCORE
+            else:
+                for line in LINES:
+                    p = sum(1 for (r, c) in line if small[r][c] == player)
+                    o = sum(1 for (r, c) in line if small[r][c] == opponent)
+                    if o == 0:
+                        score += 3 ** p
+                    if p == 0:
+                        score -= 3 ** o
+
+    # Macro‑board line contributions
+    macro = [[None]*3 for _ in range(3)]
+    for br in range(3):
+        for bc in range(3):
+            macro[br][bc] = small_board_winner(board[br][bc])
+
+    for line in LINES:
+        p = sum(1 for (r, c) in line if macro[r][c] == player)
+        o = sum(1 for (r, c) in line if macro[r][c] == opponent)
+        if o == 0:
+            score += (3 ** p) * 10
+        if p == 0:
+            score -= (3 ** o) * 10
+
+    return score
+
+
+def get_legal_moves(board, current_board):
+    """Return list of legal moves (br,bc,cr,cc) using 0‑based indices."""
+    moves = []
+    if current_board is not None:
+        br, bc = current_board
+        if not is_board_full(board, br, bc):
+            for cr in range(3):
+                for cc in range(3):
+                    if board[br][bc][cr][cc] == 'b':
+                        moves.append((br, bc, cr, cc))
+            return moves
+    # current board is full or absent → any board
+    for br in range(3):
+        for bc in range(3):
+            if is_board_full(board, br, bc):
+                continue
+            for cr in range(3):
+                for cc in range(3):
+                    if board[br][bc][cr][cc] == 'b':
+                        moves.append((br, bc, cr, cc))
+    return moves
+
+
+def order_moves(board, moves, player):
+    """Return moves sorted by static evaluation after the move (best first)."""
+    scored = []
+    for m in moves:
+        board[m[0]][m[1]][m[2]][m[3]] = player
+        s = evaluate(board, player)
+        scored.append((s, m))
+        board[m[0]][m[1]][m[2]][m[3]] = 'b'
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [m for _, m in scored]
+
+
+def apply_move(board, move, player):
+    br, bc, cr, cc = move
+    board[br][bc][cr][cc] = player
+
+
+def undo_move(board, move):
+    br, bc, cr, cc = move
+    board[br][bc][cr][cc] = 'b'
+
+
+# ----------------------------------------------------------------------
+# Alpha‑Beta search
+
+def alphabeta(board, depth, alpha, beta, player, next_board):
+    """Alpha‑beta search returning the evaluation from the perspective of the
+    original root player (the sign is flipped on each recursive call)."""
+    if depth == 0:
+        return evaluate(board, player)
+
+    # Terminal check – macro board winner
+    macro_win = check_macro_winner(board)
+    if macro_win is not None:
+        if macro_win == player:
+            return WIN_SCORE - (MAX_DEPTH - depth)
+        else:
+            return -WIN_SCORE + (MAX_DEPTH - depth)
+
+    legal = get_legal_moves(board, next_board)
+    if not legal:                     # draw (all boards full)
+        return evaluate(board, player)
+
+    # Move ordering for better pruning
+    ordered = order_moves(board, legal, player)
+
+    opponent = 'o' if player == 'x' else 'x'
+    for move in ordered:
+        apply_move(board, move, player)
+
+        # Determine the board for the opponent
+        nb_full = is_board_full(board, move[2], move[3])
+        child_next = None if nb_full else (move[2], move[3])
+
+        # Immediate win detection (pruning)
+        if check_macro_winner(board) == player:
+            undo_move(board, move)
+            return WIN_SCORE - (MAX_DEPTH - depth)
+
+        score = -alphabeta(board, depth - 1, -beta, -alpha,
+                          opponent, child_next)
+        undo_move(board, move)
+
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    return alpha
+
+# ----------------------------------------------------------------------
+# Main policy entry point
+
+def policy(state, role):
+    # ------------------------------------------------------------------
+    # Build board representation (4‑dimensional)
+    board = [[[['b' for _ in range(3)] for _ in range(3)] for _ in range(3)] for _ in range(3)]
+
+    current_board = None
+    for prop in state:
+        if prop[0] == 'cell':
+            # prop: ["cell", br, bc, cr, cc, player]
+            br = int(prop[1]) - 1
+            bc = int(prop[2]) - 1
+            cr = int(prop[3]) - 1
+            cc = int(prop[4]) - 1
+            player = prop[5]
+            board[br][bc][cr][cc] = player
+        elif prop[0] == 'current':
+            # prop: ["current", br, bc]
+            br = int(prop[1]) - 1
+            bc = int(prop[2]) - 1
+            current_board = (br, bc)
+
+    # ------------------------------------------------------------------
+    # Basic legality – we should always have at least one legal move
+    legal = get_legal_moves(board, current_board)
+    if not legal:
+        # Should not happen, but return a dummy move to avoid crash
+        return "mark(1,1,1,1)"
+
+    # ------------------------------------------------------------------
+    # 1) Immediate winning move?
+    for move in legal:
+        apply_move(board, move, role)
+        if check_macro_winner(board) == role:
+            undo_move(board, move)
+            br, bc, cr, cc = move
+            return f"mark({br+1},{bc+1},{cr+1},{cc+1})"
+        undo_move(board, move)
+
+    # ------------------------------------------------------------------
+    # 2) Block opponent's immediate win
+    opponent = 'o' if role == 'x' else 'x'
+    for move in legal:
+        apply_move(board, move, opponent)
+        if check_macro_winner(board) == opponent:
+            undo_move(board, move)
+            br, bc, cr, cc = move
+            return f"mark({br+1},{bc+1},{cr+1},{cc+1})"
+        undo_move(board, move)
+
+    # ------------------------------------------------------------------
+    # 3) Search with α‑β pruning
+    best_move = None
+    best_score = -10**9
+    alpha = -10**9
+    beta = 10**9
+
+    # Order moves using a quick static evaluation
+    ordered = order_moves(board, legal, role)
+
+    for move in ordered:
+        apply_move(board, move, role)
+
+        nb_full = is_board_full(board, move[2], move[3])
+        next_board = None if nb_full else (move[2], move[3])
+
+        # If this move already wins the macro board, take it immediately
+        if check_macro_winner(board) == role:
+            undo_move(board, move)
+            br, bc, cr, cc = move
+            return f"mark({br+1},{bc+1},{cr+1},{cc+1})"
+
+        score = -alphabeta(board, MAX_DEPTH - 1, -beta, -alpha,
+                         opponent, next_board)
+        undo_move(board, move)
+
+        if score > best_score:
+            best_score = score
+            best_move = move
+        alpha = max(alpha, score)
+
+        # Early exit if we already reached a winning score
+        if best_score >= WIN_SCORE - 10:
+            break
+
+    # In the extremely unlikely case best_move stayed None, pick first legal move
+    if best_move is None:
+        best_move = legal[0]
+
+    br, bc, cr, cc = best_move
+    return f"mark({br+1},{bc+1},{cr+1},{cc+1})"

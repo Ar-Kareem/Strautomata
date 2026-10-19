@@ -1,0 +1,197 @@
+
+import numpy as np
+import sys
+import time
+
+# Constants for board values
+EMPTY = 0
+ME = 1
+OPP = 2
+ARROW = -1
+
+# Directions: 8 queens moves (orthogonal + diagonal)
+DIRS = [
+    (-1, 0), (1, 0), (0, -1), (0, 1),  # Orthogonal
+    (-1, -1), (-1, 1), (1, -1), (1, 1)  # Diagonal
+]
+
+# Heuristic weights for territory control (Center bias)
+# 6x6 Board weights (simple center bias)
+WEIGHTS = np.array([
+    [0, 0, 0, 0, 0, 0],
+    [0, 1, 1, 1, 1, 0],
+    [0, 1, 2, 2, 1, 0],
+    [0, 1, 2, 2, 1, 0],
+    [0, 1, 1, 1, 1, 0],
+    [0, 0, 0, 0, 0, 0]
+], dtype=np.float32)
+
+TIME_LIMIT = 0.9  # Seconds
+start_time = 0
+
+def policy(board: np.ndarray) -> str:
+    global start_time
+    start_time = time.time()
+    
+    # 1. Check for immediate win (opponent has no moves)
+    # We need to simulate our move to see if we can leave opponent with 0 moves.
+    # But for now, let's just run the search.
+    
+    best_move = None
+    best_score = -np.inf
+    
+    # Get all legal moves
+    moves = get_all_moves(board, ME)
+    
+    # Sort moves by heuristic to try best ones first (helps Alpha-Beta)
+    moves.sort(key=lambda m: heuristic_move(board, m), reverse=True)
+    
+    # Depth 3 Search: Me -> Opp -> Me (Eval)
+    alpha = -np.inf
+    beta = np.inf
+    
+    for move in moves:
+        if time.time() - start_time > TIME_LIMIT:
+            return format_move(move) # Return best found so far
+            
+        # Apply move (Me)
+        next_board = apply_move(board, move, ME)
+        
+        # Generate opponent moves
+        opp_moves = get_all_moves(next_board, OPP)
+        
+        # If opponent has no moves, I win immediately
+        if not opp_moves:
+            return format_move(move)
+            
+        # Minimize opponent's best response
+        min_score = np.inf
+        for opp_move in opp_moves:
+            if time.time() - start_time > TIME_LIMIT:
+                break
+                
+            # Apply opponent move
+            opp_board = apply_move(next_board, opp_move, OPP)
+            
+            # Generate my moves (Ply 3)
+            my_moves_3 = get_all_moves(opp_board, ME)
+            
+            # If I have no moves here, this branch is a loss for me (bad)
+            if not my_moves_3:
+                score = -np.inf # Loss
+            else:
+                # Evaluate or continue search
+                # For speed, we evaluate at Ply 3 (Maximize my mobility/territory)
+                score = max(evaluate(b, ME) for b in [apply_move(opp_board, m, ME) for m in my_moves_3])
+            
+            if score < min_score:
+                min_score = score
+            
+            # Alpha-Beta Pruning
+            if min_score <= alpha:
+                break
+        
+        # Maximize my min score
+        if min_score > best_score:
+            best_score = min_score
+            best_move = move
+            
+        if best_score > alpha:
+            alpha = best_score
+            
+        if alpha >= beta:
+            break
+            
+    if best_move is None and moves:
+        best_move = moves[0] # Fallback
+        
+    return format_move(best_move)
+
+def get_all_moves(board, player):
+    moves = []
+    amazons = np.argwhere(board == player)
+    
+    for r, c in amazons:
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            # Slide
+            while 0 <= nr < 6 and 0 <= nc < 6 and board[nr, nc] == EMPTY:
+                # Try shooting arrow from (nr, nc)
+                arrow_moves = get_shots(board, nr, nc)
+                for ar, ac in arrow_moves:
+                    moves.append(((r, c), (nr, nc), (ar, ac)))
+                
+                nr += dr
+                nc += dc
+                
+                # Optimization: Stop if we hit a vacated square (not relevant here as board is static input)
+    return moves
+
+def get_shots(board, r, c):
+    shots = []
+    # Temporarily treat square as occupied to prevent shooting at self
+    # Actually, we can shoot anywhere reachable that is empty on the board.
+    # Note: The 'from' square is not yet empty in the input board, 
+    # but logically it becomes empty. The arrow path cannot cross other pieces.
+    # We treat the board as is, but the arrow cannot land on the original 'to' 
+    # because it's currently occupied by the moving amazon.
+    # Wait, the arrow is shot AFTER the amazon moves. 
+    # So the 'to' square (r,c) is occupied by the amazon.
+    # The arrow must land on an empty square.
+    # The path cannot cross other pieces (1, 2, -1).
+    
+    # We need a modified board where 'from' is empty and 'to' is occupied for arrow generation
+    # But 'from' is passed in as a parameter to get_all_moves, but we don't know 'from' here easily.
+    # Actually, we just need to find valid arrow targets.
+    # The path check must ignore the starting square (r,c) but block others.
+    
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        while 0 <= nr < 6 and 0 <= nc < 6:
+            if board[nr, nc] != EMPTY:
+                break # Blocked by existing piece
+            
+            # Valid landing spot for arrow
+            shots.append((nr, nc))
+            
+            nr += dr
+            nc += dc
+    return shots
+
+def apply_move(board, move, player):
+    new_board = board.copy()
+    (fr, fc), (tr, tc), (ar, ac) = move
+    
+    new_board[fr, fc] = EMPTY  # Vacate source
+    new_board[tr, tc] = player # Move amazon
+    new_board[ar, ac] = ARROW # Shoot arrow
+    
+    return new_board
+
+def evaluate(board, player):
+    # Heuristic: Mobility + Territory
+    # 1. Mobility count
+    my_moves = len(get_all_moves(board, player))
+    opp_moves = len(get_all_moves(board, 3 - player)) # 3-1=2, 3-2=1
+    
+    mobility_score = 10 * (my_moves - opp_moves)
+    
+    # 2. Territory/Position score (Weighted center)
+    pos_score = 0
+    my_amazons = np.argwhere(board == player)
+    for r, c in my_amazons:
+        pos_score += WEIGHTS[r, c]
+        
+    return mobility_score + pos_score
+
+def heuristic_move(board, move):
+    # Quick scoring for sorting moves
+    # Prefer moves that go to center or block opponent
+    (_, _), (tr, tc), _ = move
+    return WEIGHTS[tr, tc]
+
+def format_move(move):
+    if not move:
+        return "" 
+    (fr, fc), (tr, tc), (ar, ac) = move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"

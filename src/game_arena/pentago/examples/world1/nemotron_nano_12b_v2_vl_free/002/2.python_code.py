@@ -1,0 +1,100 @@
+
+import numpy as np
+
+def rotate_quadrant(you, opp, quad, direction):
+    # Extract top-left corner for the quadrant.
+    start_row, start_col = 0, 0
+    if quad == 1:
+        start_col = 3
+    elif quad == 2:
+        start_row = 3
+    elif quad == 3:
+        start_row, start_col = 3, 3
+
+    # Extract quadrant from your and opponent's boards
+    quad_you = you[start_row:start_row+3, start_col:start_col+3]
+    quad_opp = opp[start_row:start_row+3, start_col:start_col+3]
+
+    # Rotate the quadrant
+    if direction == 'R':  # Clockwise
+        quad_you_rot = np.rot90(quad_you, 1)
+        quad_opp_rot = np.rot90(quad_opp, 1)
+    else:  # Anticlockwise
+        quad_you_rot = np.rot90(quad_you, -1)
+        quad_opp_rot = np.rot90(quad_opp, -1)
+
+    # Apply rotation to the simulated boards
+    you[start_row:start_row+3, start_col:start_col+3] = quad_you_rot
+    opp[start_row:start_row+3, start_col:start_col+3] = quad_opp_rot
+
+def has_win(board):
+    # Check rows
+    for r in range(6):
+        for c in range(2):  # Columns 0 and 1
+            if np.all(board[r, c:c+5] == 1):
+                return True
+
+    # Check columns
+    for c in range(6):
+        for r in range(2):  # Rows 0 and 1
+            if np.all(board[r:r+5, c] == 1):
+                return True
+
+    # Check diagonal down-right (top-left to bottom-right)
+    for r in range(2):
+        for c in range(2):
+            if np.all(np.diag(board[r:r+5, c:c+5]) == 1):
+                return True
+
+    # Check diagonal down-left (top-right to bottom-left)
+    # Flip board horizontally and check the diagonal
+    flipped = np.fliplr(board)
+    for r in range(2):
+        for c in range(2):
+            if np.all(np.diag(flipped[r:r+5, c:c+5]) == 1):
+                return True
+
+    return False
+
+def policy(you, opponent):
+    # Convert input to numpy arrays for efficient operations
+    you = np.array(you, dtype=int)
+    opponent = np.array(opponent, dtype=int)
+
+    # Find all empty cells
+    empty_cells = []
+    for r in range(6):
+        for c in range(6):
+            if you[r, c] == 0 and opponent[r, c] == 0:
+                empty_cells.append((r, c))
+
+    # Generate all possible moves
+    possible_moves = []
+    for r, c in empty_cells:
+        for q in range(4):
+            for d in ['L', 'R']:
+                possible_moves.append((r, c, q, d))
+
+    # Check each move for an immediate win
+    for move in possible_moves:
+        r, c, q, d = move
+        # Make a deep copy of the current state to simulate the move
+        temp_you = np.copy(you)
+        temp_opp = np.copy(opponent)
+
+        # Place your marble
+        temp_you[r, c] = 1
+
+        # Rotate the quadrant
+        rotate_quadrant(temp_you, temp_opp, q, d)
+
+        # Check for win
+        if has_win(temp_you):
+            return f"{r+1},{c+1},{q},{d}"
+
+    # If no winning move, return the first possible move
+    if possible_moves:
+        r, c, q, d = possible_moves[0]
+        return f"{r+1},{c+1},{q},{d}"
+    else:
+        return ""  # Shouldn't happen as per problem constraints

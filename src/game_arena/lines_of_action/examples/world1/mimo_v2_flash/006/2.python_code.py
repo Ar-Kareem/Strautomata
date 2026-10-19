@@ -1,0 +1,283 @@
+
+import numpy as np
+import sys
+
+def policy(board: np.ndarray) -> str:
+    """
+    Calculates the next move for Lines of Action using a heuristic approach.
+    """
+    # Define constants
+    ME = 1
+    OPP = -1
+    EMPTY = 0
+    SIZE = 8
+    
+    # Directions: (dr, dc)
+    DIRS = [
+        (0, 1), (0, -1), (1, 0), (-1, 0),
+        (1, 1), (1, -1), (-1, 1), (-1, -1)
+    ]
+
+    def get_groups(b, player):
+        """Returns a disjoint set union of connectivity and size map."""
+        parent = {}
+        size = {}
+
+        def find(i):
+            if parent[i] != i:
+                parent[i] = find(parent[i])
+            return parent[i]
+
+        def union(i, j):
+            root_i = find(i)
+            root_j = find(j)
+            if root_i != root_j:
+                if size[root_i] < size[root_j]:
+                    root_i, root_j = root_j, root_i
+                parent[root_j] = root_i
+                size[root_i] += size[root_j]
+
+        # Initialize
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if b[r][c] == player:
+                    idx = r * SIZE + c
+                    parent[idx] = idx
+                    size[idx] = 1
+
+        # Union neighbors
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if b[r][c] == player:
+                    idx = r * SIZE + c
+                    for dr, dc in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < SIZE and 0 <= nc < SIZE:
+                            if b[nr][nc] == player:
+                                nidx = nr * SIZE + nc
+                                union(idx, nidx)
+        
+        # Return parent, size, and a set of root indices for quick lookup
+        roots = set(find(idx) for idx in parent)
+        return parent, size, roots
+
+    def get_valid_moves(b, player):
+        moves = []
+        opp = -player
+        my_pieces = []
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if b[r][c] == player:
+                    my_pieces.append((r, c))
+        
+        # We need group size per direction.
+        # Since group size varies based on WHICH piece we pick (line count),
+        # we calculate line counts locally.
+        
+        for r, c in my_pieces:
+            for dr, dc in DIRS:
+                # Count pieces in line
+                cnt = 0
+                cr, cc = r, c
+                # Step forward
+                while True:
+                    cr, cc = cr + dr, cc + dc
+                    if not (0 <= cr < SIZE and 0 <= cc < SIZE): break
+                    if b[cr][cc] == EMPTY: break
+                    cnt += 1
+                # Step backward
+                cr, cc = r, c
+                while True:
+                    cr, cc = cr - dr, cc - dc
+                    if not (0 <= cr < SIZE and 0 <= cc < SIZE): break
+                    if b[cr][cc] == EMPTY: break
+                    cnt += 1
+                
+                # Total pieces in line (excluding self) is cnt
+                # We need to move cnt squares.
+                dist = cnt
+                
+                # Calculate target
+                tr = r + dr * dist
+                tc = c + dc * dist
+                
+                if not (0 <= tr < SIZE and 0 <= tc < SIZE):
+                    continue
+                
+                # Check path validity (no jumping over enemy)
+                path_valid = True
+                # Check strictly intermediate cells (excluding start r,c and target tr,tc)
+                steps = dist
+                if steps > 0:
+                    for step in range(1, steps):
+                        rr = r + dr * step
+                        cc = c + dc * step
+                        # If we hit an enemy before target, invalid.
+                        # If we hit a friendly, it's technically allowed by "jumping over",
+                        # but in Lines of Action, the path must be clear of enemies.
+                        # However, usually "jump over" implies we can pass over friends.
+                        # The rule "cannot jump over enemy" is key.
+                        if b[rr][cc] == opp:
+                            path_valid = False
+                            break
+                        # Wait, does the path include the landing spot?
+                        # If the landing spot has a friendly, is it valid?
+                        # Rules: "A piece may jump over friendly pieces but may not jump over enemy pieces."
+                        # Usually, landing on a friendly is NOT allowed (must be empty or enemy capture).
+                        # So, intermediate cells must be empty or friendly.
+                        # Target cell must be empty or enemy.
+                
+                if not path_valid:
+                    continue
+                
+                # Check target
+                target_cell = b[tr][tc]
+                if target_cell == player:
+                    # Cannot land on own piece
+                    continue
+                if target_cell == opp:
+                    # Capture allowed
+                    pass
+                if target_cell == EMPTY:
+                    # Move allowed
+                    pass
+                
+                # Special check: Do not move if it results in isolation of the piece
+                # (Unless it's a capture or connects to a large group)
+                # We will handle this in scoring.
+                
+                moves.append(((r, c), (tr, tc), dist))
+        return moves
+
+    # --- Heuristic Scoring ---
+
+    # 1. Initial State Analysis
+    my_roots, my_sizes, _ = get_groups(board, ME)
+    my_max_size = max(my_sizes.values()) if my_sizes else 0
+    my_total_pieces = len(my_sizes)
+    my_components = len(set(find(idx) for idx in my_roots)) if my_roots else 0 # Wait, my_roots is parent dict
+    
+    # Calculate actual number of components for ME
+    me_roots_set = set()
+    for idx in my_roots:
+        me_roots_set.add(find(idx))
+    my_comp_count = len(me_roots_set)
+    
+    opp_roots, opp_sizes, _ = get_groups(board, OPP)
+    opp_roots_set = set()
+    for idx in opp_roots:
+        opp_roots_set.add(find(idx))
+    opp_comp_count = len(opp_roots_set)
+
+    # Check immediate win (if I have 1 component and enough pieces to connect?)
+    # Actually, winning condition is all pieces connected (1 component).
+    if my_total_pieces > 0 and my_comp_count == 1:
+        # I have already won? Should not happen as policy is called on my turn.
+        # But let's ensure we don't mess up.
+        # Just pick a random valid move if already won (unlikely).
+        pass
+
+    moves = get_valid_moves(board, ME)
+    
+    if not moves:
+        # Fallback: if no moves (should not happen in valid game unless stuck)
+        # But return a dummy to not crash
+        return "0,0:0,0"
+
+    best_move = None
+    best_score = -float('inf')
+    
+    for src, dst, dist in moves:
+        sr, sc = src
+        dr, dc = dst
+        
+        # Create hypothetical board
+        new_board = board.copy()
+        # Move piece
+        new_board[sr][sc] = EMPTY
+        # Check capture
+        captured = new_board[dr][dc] == OPP
+        new_board[dr][dc] = ME
+        
+        # Move Scoring
+        
+        # 1. Connectivity Score (High Weight)
+        # Check if my component count decreases or if max size increases
+        new_parent, new_size, _ = get_groups(new_board, ME)
+        new_roots = set()
+        for idx in new_parent:
+            new_roots.add(find(idx))
+        new_comp_count = len(new_roots)
+        
+        # Score: Reduction in component count is very good
+        conn_score = (my_comp_count - new_comp_count) * 100
+        
+        # Also add max component size increase
+        new_max_size = max(new_size.values()) if new_size else 0
+        conn_score += (new_max_size - my_max_size) * 20
+
+        # 2. Capture Score
+        cap_score = 50 if captured else 0
+
+        # 3. Opponent Disruption
+        # If we land on a square that was connected to opponent?
+        # Hard to calculate quickly. Let's just check if we break opponent connectivity
+        # by simply being there (blocking paths).
+        # Actually, we already handle captures. 
+        # A move that splits opponent is good.
+        # We can simulate opponent's connectivity before/after.
+        # But this is expensive. Let's approximate: 
+        # If we capture, we remove an opponent piece (good).
+        # If we land near opponent, we might block.
+        # Simple check: did we significantly increase opponent components?
+        
+        # Calculate opponent new components
+        opp_new_parent, opp_new_size, _ = get_groups(new_board, OPP)
+        opp_new_roots = set()
+        for idx in opp_new_parent:
+            opp_new_roots.add(opp_new_parent[idx]) # Use parent directly here as it's not DSU compressed in loop
+        # Need to compress
+        def find_opp(idx):
+            p = opp_new_parent[idx]
+            if p != idx: return find_opp(p)
+            return p
+            
+        opp_roots_set_new = set()
+        for idx in opp_new_parent:
+            opp_roots_set_new.add(find_opp(idx))
+        opp_comp_count_new = len(opp_roots_set_new)
+        
+        opp_disc_score = (opp_comp_count_new - opp_comp_count) * 10
+
+        # 4. Safety / Proximity
+        # If the destination is surrounded by many opponent pieces, it might be bad.
+        # But if it connects to a large group, it's safe.
+        # Let's penalize isolated moves if they don't capture or connect.
+        danger = 0
+        if not captured and new_comp_count == my_comp_count:
+             # We moved but didn't connect. Is the piece alone?
+             # Check if the moved piece is size 1 in new board
+             idx = dr * SIZE + dc
+             # We need to check the root size of this specific piece
+             root = find_opp(idx) # Wait, use new_parent
+             # Actually need to check ME size
+             # Re-use new_size map
+             # The piece is at dr, dc.
+             # We need to check if the group it belongs to has size > 1
+             # Find root of moved piece for ME
+             me_root = find(idx) # Using new_parent from ME
+             if new_size.get(me_root, 0) == 1:
+                 danger -= 20
+
+        total_score = conn_score + cap_score + opp_disc_score + danger
+        
+        if total_score > best_score:
+            best_score = total_score
+            best_move = (src, dst)
+            
+    # If multiple moves have same score, prefer captures or simple connectivity
+    # If still no best move (unlikely), pick first
+    if best_move is None and moves:
+        best_move = moves[0][:2]
+
+    return f"{best_move[0][0]},{best_move[0][1]}:{best_move[1][0]},{best_move[1][1]}"

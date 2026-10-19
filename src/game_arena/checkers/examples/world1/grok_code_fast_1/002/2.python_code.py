@@ -1,0 +1,105 @@
+
+import numpy as np
+
+def evaluate(my_men, my_kings, opp_men, opp_kings, color):
+    my_score = len(my_men) + 5 * len(my_kings)
+    opp_score = len(opp_men) + 5 * len(opp_kings)
+    if color == 'b':
+        my_score += sum(7 - p[0] for p in my_men) / 10.0
+        opp_score += sum(p[0] for p in opp_men) / 10.0
+    else:
+        my_score += sum(p[0] for p in my_men) / 10.0
+        opp_score += sum(7 - p[0] for p in opp_men) / 10.0
+    return my_score - opp_score
+
+def simulate_move(from_pos, to_pos, my_men, my_kings, opp_men, opp_kings, color):
+    my_men = [p for p in my_men if p != from_pos]
+    my_kings = [p for p in my_kings if p != from_pos]
+    piece_type = 'king' if from_pos in my_kings else 'man'
+    
+    dr = to_pos[0] - from_pos[0]
+    dc = to_pos[1] - from_pos[1]
+    if abs(dr) == 2:
+        er = from_pos[0] + dr // 2
+        ec = from_pos[1] + dc // 2
+        if (er, ec) in opp_men:
+            opp_men = [p for p in opp_men if p != (er, ec)]
+        elif (er, ec) in opp_kings:
+            opp_kings = [p for p in opp_kings if p != (er, ec)]
+    
+    promoted = (color == 'b' and to_pos[0] == 0) or (color == 'w' and to_pos[0] == 7)
+    if promoted and piece_type == 'man':
+        my_kings.append(to_pos)
+    elif piece_type == 'man':
+        my_men.append(to_pos)
+    else:
+        my_kings.append(to_pos)
+    
+    return my_men, my_kings, opp_men, opp_kings
+
+def possible_moves(my_men, my_kings, opp_men, opp_kings, color):
+    moves = []
+    all_my = my_men + my_kings
+    all_opp = opp_men + opp_kings
+    occupied = set(all_my + all_opp)
+    captures = []
+    
+    # Check for captures
+    for man in my_men + my_kings:
+        is_king = man in my_kings
+        jumps = generate_jumps(man, is_king, my_men, my_kings, opp_men, opp_kings, color, occupied)
+        for jump in jumps:
+            captures.append((man, jump))
+    
+    if captures:
+        return captures
+    
+    # Normal moves
+    forward_dir = -1 if color == 'b' else 1
+    for man in my_men:
+        for dc in [-1, 1]:
+            nr, nc = man[0] + forward_dir, man[1] + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and (nr + nc) % 2 == 0 and (nr, nc) not in occupied:
+                moves.append((man, (nr, nc)))
+    
+    for king in my_kings:
+        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            nr, nc = king[0] + dr, king[1] + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and (nr + nc) % 2 == 0 and (nr, nc) not in occupied:
+                moves.append((king, (nr, nc)))
+    
+    return moves
+
+def generate_jumps(pos, is_king, my_men, my_kings, opp_men, opp_kings, color, occupied):
+    jumps = []
+    if not is_king:
+        forward = -1 if color == 'b' else 1
+        dirs = [(forward, -1), (forward, 1)]
+    else:
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    for dr, dc in dirs:
+        er, ec = pos[0] + dr, pos[1] + dc
+        if 0 <= er < 8 and 0 <= ec < 8 and (er, ec) in occupied and (er, ec) in (opp_men + opp_kings):
+            lr, lc = pos[0] + 2 * dr, pos[1] + 2 * dc
+            if 0 <= lr < 8 and 0 <= lc < 8 and (lr, lc) not in occupied:
+                jumps.append((lr, lc))
+    return jumps
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    moves = possible_moves(my_men, my_kings, opp_men, opp_kings, color)
+    if not moves:
+        # Should not happen, but in case, return an invalid move to signal error; however, assume always a move
+        return ((0, 0), (0, 0))
+    
+    best_eval = float('-inf')
+    best_move = None
+    for from_p, to_p in moves:
+        new_my_men, new_my_kings, new_opp_men, new_opp_kings = simulate_move(
+            from_p, to_p, my_men, my_kings, opp_men, opp_kings, color
+        )
+        eval_v = evaluate(new_my_men, new_my_kings, new_opp_men, new_opp_kings, color)
+        if eval_v > best_eval:
+            best_eval = eval_v
+            best_move = (from_p, to_p)
+    return best_move

@@ -1,0 +1,473 @@
+The strategy for this policy is to implement a robust Chess engine within the strict single-file constraints. It uses a 1D list board representation and implements a custom move generator. The generator produces strictly legal moves by filtering out any moves that leave the king in check. Due to the stateless nature of the input (no history for En Passant or Castling rights), the generator conservatively excludes Castling and En Passant moves to prevent illegal outputs, unless `legal_moves` are explicitly provided by the environment (detected via variadic arguments). The decision-making uses a Depth-2 Minimax search with Alpha-Beta pruning, evaluating positions based on Material difference and Piece-Square Tables (PST) to guide piece development and center control.
+
+<code>
+import math
+
+def policy(pieces: dict[str, str], to_play: str, *args) -> str:
+    """
+    Chess policy matching the required API.
+    Handles optional legal_moves passed as *args by some arenas.
+    """
+    # ---------------------------
+    # Constants & Config
+    # ---------------------------
+    WHITE, BLACK = 0, 1
+    
+    # Piece Encodings: 0=Empty. White=1..6, Black=9..14
+    # Type masks: P=1, N=2, B=3, R=4, Q=5, K=6
+    # Color mask: 8 (if set, is black)
+    EMPTY = 0
+    W_PAWN, W_KNIGHT, W_BISHOP, W_ROOK, W_QUEEN, W_KING = 1, 2, 3, 4, 5, 6
+    B_PAWN, B_KNIGHT, B_BISHOP, B_ROOK, B_QUEEN, B_KING = 9, 10, 11, 12, 13, 14
+    
+    # Value mapping for evaluation
+    VALUES = {
+        1: 100, 2: 320, 3: 330, 4: 500, 5: 900, 6: 20000,
+        9: 100, 10: 320, 11: 330, 12: 500, 13: 900, 14: 20000,
+        0: 0
+    }
+    
+    # Piece Square Tables (PST) - Simplified
+    # Generic bonus for center control and development
+    # Defined for White (flipped for Black)
+    PST_PAWN = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ]
+    PST_KNIGHT = [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ]
+    
+    # ---------------------------
+    # Helpers
+    # ---------------------------
+    def parse_square(sq_str):
+        f = ord(sq_str[0]) - ord('a')
+        r = int(sq_str[1]) - 1
+        return r * 8 + f
+
+    def to_uci_string(move):
+        # move is (start, end, promotion_piece_type)
+        f1, r1 = move[0] % 8, move[0] // 8
+        f2, r2 = move[1] % 8, move[1] // 8
+        s = f"{chr(f1 + ord('a'))}{r1 + 1}{chr(f2 + ord('a'))}{r2 + 1}"
+        if move[2]:
+            # promotion map
+            pmap = {W_QUEEN: 'q', W_ROOK: 'r', W_BISHOP: 'b', W_KNIGHT: 'n',
+                    B_QUEEN: 'q', B_ROOK: 'r', B_BISHOP: 'b', B_KNIGHT: 'n'}
+            s += pmap.get(move[2] + (8 if move[2] < 8 else 0), 'q') # adjust for color logic if needed
+            # Actually move[2] in my logic will be the target piece code (e.g. 5 or 13)
+            # Simplified: just return char
+            if move[2] in [W_QUEEN, B_QUEEN]: s += 'q'
+            elif move[2] in [W_ROOK, B_ROOK]: s += 'r'
+            elif move[2] in [W_BISHOP, B_BISHOP]: s += 'b'
+            elif move[2] in [W_KNIGHT, B_KNIGHT]: s += 'n'
+        return s
+
+    def parse_uci(uci, color):
+        s = parse_square(uci[0:2])
+        e = parse_square(uci[2:4])
+        promo = 0
+        if len(uci) > 4:
+            c_offset = 0 if color == WHITE else 8
+            if uci[4] == 'q': promo = 5 + c_offset
+            elif uci[4] == 'r': promo = 4 + c_offset
+            elif uci[4] == 'b': promo = 3 + c_offset
+            elif uci[4] == 'n': promo = 2 + c_offset
+        return (s, e, promo)
+
+    # ---------------------------
+    # Board Logic
+    # ---------------------------
+    class Board:
+        def __init__(self, pieces_dict, turn_color):
+            self.board = [EMPTY] * 64
+            self.turn = turn_color # 0=White, 1=Black
+            
+            # Parsing
+            p_map = {'P': 1, 'N': 2, 'B': 3, 'R': 4, 'Q': 5, 'K': 6}
+            for sq_str, p_code in pieces_dict.items():
+                sq = parse_square(sq_str)
+                color_offset = 0 if p_code[0] == 'w' else 8
+                ptype = p_map[p_code[1]]
+                self.board[sq] = ptype + color_offset
+        
+        def copy(self):
+            # Lightweight copy
+            b = Board({}, self.turn)
+            b.board = list(self.board)
+            return b
+            
+        def is_on_board(self, sq):
+            return 0 <= sq < 64
+
+        def get_rank_file(self, sq):
+            return sq // 8, sq % 8
+
+        def get_piece_color(self, piece):
+            if piece == EMPTY: return -1
+            return 1 if piece > 8 else 0
+            
+        def is_attacked(self, sq, by_color):
+            # Check for attacks on 'sq' by 'by_color'
+            # Ray casting for sliding pieces
+            # Pawn attacks, Knight jumps, King steps
+            enemy_offset = 8 if by_color == BLACK else 0
+            
+            # Pawns
+            # If by_color is White, they attack from (rank-1, file+/-1)
+            # If by_color is Black, they attack from (rank+1, file+/-1)
+            r, f = self.get_rank_file(sq)
+            pawn_dir = -1 if by_color == WHITE else 1 # direction pawn moves
+            # Attacks come from opposite direction
+            attack_from_r = r - pawn_dir 
+            if 0 <= attack_from_r < 8:
+                for df in [-1, 1]:
+                    if 0 <= f + df < 8:
+                        p_sq = attack_from_r * 8 + (f + df)
+                        piece = self.board[p_sq]
+                        if piece == (W_PAWN if by_color==WHITE else B_PAWN):
+                            return True
+
+            # Knights
+            knight_moves = [-17, -15, -10, -6, 6, 10, 15, 17]
+            kn = W_KNIGHT if by_color == WHITE else B_KNIGHT
+            for d in knight_moves:
+                t = sq + d
+                if 0 <= t < 64:
+                    # check wrap around
+                    tr, tf = self.get_rank_file(t)
+                    if abs(tr - r) + abs(tf - f) == 3: # valid L-shape
+                        if self.board[t] == kn: return True
+                        
+            # King
+            ki = W_KING if by_color == WHITE else B_KING
+            king_dirs = [-9, -8, -7, -1, 1, 7, 8, 9]
+            for d in king_dirs:
+                t = sq + d
+                if 0 <= t < 64:
+                    tr, tf = self.get_rank_file(t)
+                    if abs(tr - r) <= 1 and abs(tf - f) <= 1:
+                        if self.board[t] == ki: return True
+                        
+            # Sliders (R, B, Q)
+            # Rooks/Queens
+            dirs_orth = [-8, 8, -1, 1]
+            rq = [W_ROOK, W_QUEEN] if by_color == WHITE else [B_ROOK, B_QUEEN]
+            for d in dirs_orth:
+                curr = sq
+                while True:
+                    curr += d
+                    cr, cf = self.get_rank_file(curr)
+                    pr, pf = self.get_rank_file(curr - d)
+                    if not (0 <= curr < 64) or (abs(cr - pr) + abs(cf - pf) != 1): # Bounds/Wrap check
+                        break
+                    p = self.board[curr]
+                    if p != EMPTY:
+                        if p in rq: return True
+                        break # Blocked
+
+            # Bishops/Queens
+            dirs_diag = [-9, -7, 7, 9]
+            bq = [W_BISHOP, W_QUEEN] if by_color == WHITE else [B_BISHOP, B_QUEEN]
+            for d in dirs_diag:
+                curr = sq
+                while True:
+                    curr += d
+                    cr, cf = self.get_rank_file(curr)
+                    pr, pf = self.get_rank_file(curr - d)
+                    if not (0 <= curr < 64) or (abs(cr - pr) != 1 or abs(cf - pf) != 1): # specific check for diag
+                        break
+                    p = self.board[curr]
+                    if p != EMPTY:
+                        if p in bq: return True
+                        break
+            return False
+
+        def get_pseudo_legal_moves(self, color):
+            moves = []
+            # Color specific constants
+            my_offset = 0 if color == WHITE else 8
+            opp_offset = 8 if color == WHITE else 0
+            
+            pawn_dir = 1 if color == WHITE else -1
+            start_rank = 1 if color == WHITE else 6
+            
+            for sq in range(64):
+                piece = self.board[sq]
+                if piece == EMPTY or (piece >> 3) != color:
+                    continue
+                
+                ptype = piece & 7
+                r, f = self.get_rank_file(sq)
+                
+                # Pawn
+                if ptype == 1: # P
+                    # Push 1
+                    dest = sq + (pawn_dir * 8)
+                    if 0 <= dest < 64 and self.board[dest] == EMPTY:
+                        # Promotion?
+                        if (r == 6 and color == WHITE) or (r == 1 and color == BLACK):
+                            for promo in [5, 4, 3, 2]: # Q, R, B, N
+                                moves.append((sq, dest, promo + my_offset))
+                        else:
+                            moves.append((sq, dest, 0))
+                        
+                        # Push 2
+                        if r == start_rank:
+                            dest2 = sq + (pawn_dir * 16)
+                            if self.board[dest2] == EMPTY:
+                                moves.append((sq, dest2, 0))
+                    
+                    # Capture
+                    for df in [-1, 1]:
+                        if 0 <= f + df < 8:
+                            dest = sq + (pawn_dir * 8) + df
+                            if 0 <= dest < 64:
+                                target = self.board[dest]
+                                if target != EMPTY and (target >> 3) != color:
+                                    # Promotion?
+                                    if (r == 6 and color == WHITE) or (r == 1 and color == BLACK):
+                                        for promo in [5, 4, 3, 2]:
+                                            moves.append((sq, dest, promo + my_offset))
+                                    else:
+                                        moves.append((sq, dest, 0))
+                
+                # Knight
+                elif ptype == 2: # N
+                    jumps = [-17, -15, -10, -6, 6, 10, 15, 17]
+                    for d in jumps:
+                        dest = sq + d
+                        if 0 <= dest < 64:
+                            dr, df = self.get_rank_file(dest)
+                            if abs(dr - r) + abs(df - f) == 3:
+                                target = self.board[dest]
+                                if target == EMPTY or (target >> 3) != color:
+                                    moves.append((sq, dest, 0))
+                                    
+                # King
+                elif ptype == 6: # K
+                    steps = [-9, -8, -7, -1, 1, 7, 8, 9]
+                    for d in steps:
+                        dest = sq + d
+                        if 0 <= dest < 64:
+                            dr, df = self.get_rank_file(dest)
+                            if abs(dr - r) <= 1 and abs(df - f) <= 1:
+                                target = self.board[dest]
+                                if target == EMPTY or (target >> 3) != color:
+                                    moves.append((sq, dest, 0))
+                    # No Castling generated (missing rights info)
+
+                # Sliders
+                else:
+                    dirs = []
+                    if ptype == 3: dirs = [-9, -7, 7, 9] # B
+                    elif ptype == 4: dirs = [-8, 8, -1, 1] # R
+                    elif ptype == 5: dirs = [-9, -7, 7, 9, -8, 8, -1, 1] # Q
+                    
+                    for d in dirs:
+                        curr = sq
+                        while True:
+                            prev_r, prev_f = self.get_rank_file(curr)
+                            curr += d
+                            if not (0 <= curr < 64): break
+                            curr_r, curr_f = self.get_rank_file(curr)
+                            
+                            # Geometric constraint for wraps
+                            # If ortho, one coord constant. If diag, diffs equal 1.
+                            delta_r, delta_f = abs(curr_r - prev_r), abs(curr_f - prev_f)
+                            is_ortho = (d in [-8, 8, -1, 1])
+                            if is_ortho:
+                                if delta_r + delta_f != 1: break # Wrapped
+                            else:
+                                if delta_r != 1 or delta_f != 1: break # Wrapped
+                            
+                            target = self.board[curr]
+                            if target == EMPTY:
+                                moves.append((sq, curr, 0))
+                            else:
+                                if (target >> 3) != color:
+                                    moves.append((sq, curr, 0))
+                                break # Blocked
+            return moves
+
+        def make_move(self, move):
+            # Returns new Board
+            nb = self.copy()
+            s, e, promo = move
+            p = nb.board[s]
+            nb.board[s] = EMPTY
+            nb.board[e] = promo if promo else p
+            nb.turn = 1 - nb.turn
+            return nb
+
+        def find_king(self, color):
+            k = W_KING if color == WHITE else B_KING
+            for i in range(64):
+                if self.board[i] == k:
+                    return i
+            return -1
+
+    # ---------------------------
+    # Evaluation
+    # ---------------------------
+    def evaluate(b: Board):
+        score = 0
+        
+        # Determine game phase loosely (count minor pieces/queens?)
+        # Simple implementation
+        
+        for sq in range(64):
+            p = b.board[sq]
+            if p == EMPTY: continue
+            
+            val = VALUES[p]
+            ptype = p & 7
+            is_white = (p <= 8)
+            
+            # Position bonus
+            pst_val = 0
+            # Flip rank/file for blacks perspective? No, array index map.
+            # If white, sq is correct. If black, mirror sq?
+            # Standard: White at bottom (0-7). Black at top (56-63).
+            # PST is defined for White.
+            # Black index = 63 - sq
+            
+            pst_idx = sq if is_white else (63 - sq)
+            
+            if ptype == 1: pst_val = PST_PAWN[pst_idx]
+            elif ptype == 2: pst_val = PST_KNIGHT[pst_idx]
+            # Add other PSTs or simplifications if space allows
+            
+            if is_white:
+                score += val + pst_val
+            else:
+                score -= (val + pst_val)
+                
+        return score if b.turn == WHITE else -score
+        # Wait, Minimax expects heuristic for MAX player.
+        # Standard: return score relative to White.
+        # If 'score' is White advantage.
+
+    # ---------------------------
+    # Search
+    # ---------------------------
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        if depth == 0:
+            # Return eval relative to White (global score)
+            # Evaluate returns white relative score
+            s = evaluate(board, )
+            return s
+            
+        # Move generation (Strict Legal)
+        pseudo = board.get_pseudo_legal_moves(board.turn)
+        legal = []
+        my_color = board.turn
+        for m in pseudo:
+            nb = board.make_move(m)
+            k_sq = nb.find_king(my_color) # King position of the one who moved
+            if k_sq != -1 and not nb.is_attacked(k_sq, 1 - my_color):
+                legal.append(m)
+        
+        if not legal:
+            # Checkmate or Stalemate
+            k_sq = board.find_king(my_color)
+            if board.is_attacked(k_sq, 1 - my_color):
+                 # Checkmate: huge penalty/bonus
+                 return -100000 + (2 - depth) if maximizing_player else 100000 - (2 - depth)
+            else:
+                 return 0 # Stalemate
+
+        if maximizing_player: # White
+            max_eval = -float('inf')
+            for m in legal:
+                nb = board.make_move(m)
+                ev = minimax(nb, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, ev)
+                alpha = max(alpha, ev)
+                if beta <= alpha: break
+            return max_eval
+        else: # Black
+            min_eval = float('inf')
+            for m in legal:
+                nb = board.make_move(m)
+                ev = minimax(nb, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, ev)
+                beta = min(beta, ev)
+                if beta <= alpha: break
+            return min_eval
+
+    # ---------------------------
+    # Main Execution
+    # ---------------------------
+    color_code = WHITE if to_play == 'white' else BLACK
+    board = Board(pieces, color_code)
+    
+    # Are legal moves provided?
+    provided_moves = None
+    if args and isinstance(args[0], list) and len(args[0]) > 0:
+        provided_moves = args[0]
+    
+    candidates = []
+    
+    if provided_moves:
+        # Use provided strings, convert to internal tuples
+        for m_str in provided_moves:
+            m_tuple = parse_uci(m_str, color_code)
+            candidates.append((m_tuple, m_str))
+    else:
+        # Generate strict legal moves
+        pseudo = board.get_pseudo_legal_moves(color_code)
+        for m in pseudo:
+            nb = board.make_move(m)
+            k_sq = nb.find_king(color_code)
+            if k_sq == -1: continue # King captured? Should not happen
+            if not nb.is_attacked(k_sq, 1 - color_code):
+                candidates.append((m, to_uci_string(m)))
+
+    if not candidates:
+        return "0000" # Should effectively disqualify or resign, but fulfills return type
+
+    # Search (Depth 2)
+    # If provided_moves, we just pick best among them
+    # We want max score for Me.
+    # If I am White, maximize. If I am Black, minimize.
+    # Wait, convention: standard minimax `negamax` or `minimax` usually returns value relative to root player?
+    # My minimax returns White-Relative score.
+    
+    best_move_str = candidates[0][1]
+    
+    if color_code == WHITE:
+        best_val = -float('inf')
+        for m_tup, m_str in candidates:
+            nb = board.make_move(m_tup)
+            # Next is Black (Minimize)
+            val = minimax(nb, 1, -float('inf'), float('inf'), False)
+            if val > best_val:
+                best_val = val
+                best_move_str = m_str
+    else:
+        best_val = float('inf')
+        for m_tup, m_str in candidates:
+            nb = board.make_move(m_tup)
+            # Next is White (Maximize)
+            val = minimax(nb, 1, -float('inf'), float('inf'), True)
+            if val < best_val:
+                best_val = val
+                best_move_str = m_str
+                
+    return best_move_str
+</code>

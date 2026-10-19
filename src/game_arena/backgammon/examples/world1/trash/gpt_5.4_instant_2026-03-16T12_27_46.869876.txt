@@ -1,0 +1,361 @@
+The strategy for this policy is a fast legal-move search plus a heuristic evaluator. It first generates all legal move strings by simulating the rules implied by the engine: bar entry priority, blocked points, using both dice when possible, and using the higher die when only one can be played. It then scores resulting positions with a backgammon-inspired heuristic that prefers:
+- entering from the bar and avoiding being on the bar,
+- bearing off checkers,
+- making points, especially in the home board,
+- hitting blots,
+- reducing exposed blots,
+- improving racing position by advancing checkers,
+- keeping a strong home board and anchor points.
+
+Among all legal actions, it returns the move string with the best heuristic score. Because it explicitly enumerates legal actions and falls back to `H:P,P` only when no move exists, it always returns a legal move string.
+
+<code>
+from typing import List, Tuple, Dict
+
+# Backgammon policy:
+# - Generate all legal actions for the current dice.
+# - Score each resulting state with a heuristic.
+# - Return the best legal move string.
+
+
+def policy(state: dict) -> str:
+    my_pts = list(state["my_pts"])
+    opp_pts = list(state["opp_pts"])
+    my_bar = int(state["my_bar"])
+    opp_bar = int(state["opp_bar"])
+    my_off = int(state["my_off"])
+    opp_off = int(state["opp_off"])
+    dice = list(state["dice"])
+
+    actions = generate_legal_actions(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, dice)
+    if not actions:
+        return "H:P,P"
+
+    best_score = None
+    best_action = None
+    for action_str, new_state in actions:
+        score = evaluate_state(*new_state)
+        # Stable tie-break by action string for determinism
+        key = (score, action_str)
+        if best_score is None or key > best_score:
+            best_score = key
+            best_action = action_str
+    return best_action
+
+
+# ----------------------------
+# Move generation
+# ----------------------------
+
+def generate_legal_actions(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, dice):
+    # Returns list of (action_str, (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off))
+    if len(dice) == 0:
+        return [("H:P,P", (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)))]
+
+    if len(dice) == 1:
+        d = dice[0]
+        seqs = generate_one_die_moves(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, d)
+        if not seqs:
+            return [("H:P,P", (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)))]
+        actions = []
+        for from1, st in seqs:
+            action = "H:%s,P" % token_from(from1)
+            actions.append((action, st))
+        return actions
+
+    d1, d2 = dice[0], dice[1]
+    hi = max(d1, d2)
+    lo = min(d1, d2)
+
+    # Try both orders if dice differ; same die still represented as two sequential moves.
+    all_two = []
+
+    # Higher then lower
+    seqs_hl = generate_two_die_order(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, hi, lo)
+    for (from1, from2, st) in seqs_hl:
+        all_two.append(("H:%s,%s" % (token_from(from1), token_from(from2)), st))
+
+    # Lower then higher
+    seqs_lh = generate_two_die_order(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, lo, hi)
+    for (from1, from2, st) in seqs_lh:
+        all_two.append(("L:%s,%s" % (token_from(from1), token_from(from2)), st))
+
+    # If any way exists to play both dice, must play both.
+    if all_two:
+        # Deduplicate by action string
+        uniq = {}
+        for a, st in all_two:
+            uniq[a] = st
+        return [(a, uniq[a]) for a in sorted(uniq.keys())]
+
+    # Otherwise, if only one die can be played, must play the higher die when possible.
+    seq_hi = generate_one_die_moves(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, hi)
+    if seq_hi:
+        actions = []
+        for from1, st in seq_hi:
+            actions.append(("H:%s,P" % token_from(from1), st))
+        return actions
+
+    seq_lo = generate_one_die_moves(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, lo)
+    if seq_lo:
+        actions = []
+        for from1, st in seq_lo:
+            # First encoded checker move uses lower die.
+            actions.append(("L:%s,P" % token_from(from1), st))
+        return actions
+
+    return [("H:P,P", (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off))]
+
+
+def generate_two_die_order(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, first_die, second_die):
+    results = []
+    first_moves = generate_one_die_moves(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, first_die)
+    for from1, st1 in first_moves:
+        my_pts1, opp_pts1, my_bar1, opp_bar1, my_off1, opp_off1 = st1
+        second_moves = generate_one_die_moves(my_pts1, opp_pts1, my_bar1, opp_bar1, my_off1, opp_off1, second_die)
+        for from2, st2 in second_moves:
+            results.append((from1, from2, st2))
+    return results
+
+
+def generate_one_die_moves(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, die):
+    moves = []
+
+    # Must enter from bar first.
+    if my_bar > 0:
+        dest = 24 - die
+        if is_open_for_me(opp_pts, dest):
+            st = apply_move(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, "B", die)
+            if st is not None:
+                moves.append(("B", st))
+        return moves
+
+    # Normal moves from points 0..23 where my checker exists.
+    for src in range(24):
+        if my_pts[src] <= 0:
+            continue
+        st = apply_move(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, src, die)
+        if st is not None:
+            moves.append((src, st))
+    return moves
+
+
+def apply_move(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off, src, die):
+    my_pts = list(my_pts)
+    opp_pts = list(opp_pts)
+    my_bar = int(my_bar)
+    opp_bar = int(opp_bar)
+    my_off = int(my_off)
+    opp_off = int(opp_off)
+
+    if src == "B":
+        if my_bar <= 0:
+            return None
+        dest = 24 - die
+        if dest < 0 or dest > 23:
+            return None
+        if not is_open_for_me(opp_pts, dest):
+            return None
+        my_bar -= 1
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            opp_bar += 1
+        my_pts[dest] += 1
+        return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    src = int(src)
+    if src < 0 or src > 23 or my_pts[src] <= 0:
+        return None
+
+    dest = src - die
+
+    # Regular move within board
+    if dest >= 0:
+        if not is_open_for_me(opp_pts, dest):
+            return None
+        my_pts[src] -= 1
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            opp_bar += 1
+        my_pts[dest] += 1
+        return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    # Bearing off
+    if not all_in_home(my_pts, my_bar):
+        return None
+
+    # Exact bear off
+    if dest == -1 or src == die - 1:
+        my_pts[src] -= 1
+        my_off += 1
+        return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    # Oversized die: allowed only if no checker on higher points than src
+    # Higher points in home board are indices greater than src.
+    if src < die - 1:
+        for j in range(src + 1, 6):
+            if my_pts[j] > 0:
+                return None
+        my_pts[src] -= 1
+        my_off += 1
+        return (my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off)
+
+    return None
+
+
+def is_open_for_me(opp_pts, dest):
+    return opp_pts[dest] <= 1
+
+
+def all_in_home(my_pts, my_bar):
+    if my_bar > 0:
+        return False
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+
+def token_from(src):
+    if src == "B":
+        return "B"
+    if src == "P":
+        return "P"
+    return "A%d" % int(src)
+
+
+# ----------------------------
+# Evaluation
+# ----------------------------
+
+def evaluate_state(my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off):
+    score = 0.0
+
+    # Strong priorities
+    score += 140.0 * my_off
+    score -= 135.0 * opp_off
+    score -= 95.0 * my_bar
+    score += 70.0 * opp_bar
+
+    # Pip/race approximation: smaller is better for us.
+    my_pip = pip_count_me(my_pts, my_bar)
+    opp_pip = pip_count_opp(opp_pts, opp_bar)
+    score += 1.15 * (opp_pip - my_pip)
+
+    # Board structure
+    my_blots = 0
+    opp_blots = 0
+    my_points_made = 0
+    opp_points_made = 0
+    my_home_points = 0
+    opp_home_points = 0
+
+    for i in range(24):
+        m = my_pts[i]
+        o = opp_pts[i]
+        if m == 1:
+            my_blots += 1
+        if o == 1:
+            opp_blots += 1
+        if m >= 2:
+            my_points_made += 1
+            if 0 <= i <= 5:
+                my_home_points += 1
+        if o >= 2:
+            opp_points_made += 1
+            # Opponent's home from their perspective is our indices 18..23
+            if 18 <= i <= 23:
+                opp_home_points += 1
+
+    score -= 18.0 * my_blots
+    score += 14.0 * opp_blots
+    score += 11.0 * my_points_made
+    score -= 9.0 * opp_points_made
+    score += 16.0 * my_home_points
+    score -= 14.0 * opp_home_points
+
+    # Anchors / advanced points
+    if my_pts[20] >= 2:
+        score += 8.0
+    if my_pts[21] >= 2:
+        score += 10.0
+    if my_pts[22] >= 2:
+        score += 8.0
+    if my_pts[23] >= 2:
+        score += 6.0
+
+    # Penalize exposed blots that are easy to hit
+    score -= 7.0 * count_direct_shots_against_me(my_pts, opp_pts)
+
+    # Reward our attacking chances
+    score += 5.0 * count_direct_shots_for_me(my_pts, opp_pts)
+
+    # Mild preference for distribution in home board for bearoff efficiency
+    home_weight = [6, 5, 4, 3, 2, 1]
+    for i in range(6):
+        score += 1.5 * my_pts[i] * home_weight[i]
+
+    # Small stack penalty for heavy towers outside home
+    for i in range(6, 24):
+        if my_pts[i] > 3:
+            score -= 1.5 * (my_pts[i] - 3)
+
+    return score
+
+
+def pip_count_me(my_pts, my_bar):
+    # Distance to bear off: point i needs i+1 pips. Bar entry then traverse all 24.
+    total = my_bar * 25
+    for i, n in enumerate(my_pts):
+        total += n * (i + 1)
+    return total
+
+
+def pip_count_opp(opp_pts, opp_bar):
+    # Opponent moves from 0 to 23, so distance from point i is 24 - i.
+    total = opp_bar * 25
+    for i, n in enumerate(opp_pts):
+        total += n * (24 - i)
+    return total
+
+
+def count_direct_shots_against_me(my_pts, opp_pts):
+    # Count my blots that opponent could hit in one roll from behind them.
+    count = 0
+    opp_positions = [i for i, n in enumerate(opp_pts) if n > 0]
+    for j, n in enumerate(my_pts):
+        if n != 1:
+            continue
+        vulnerable = False
+        # Opponent moves upward, so they hit point j from i = j-d, d in 1..6
+        for d in range(1, 7):
+            i = j - d
+            if i < 0:
+                break
+            if opp_pts[i] > 0:
+                vulnerable = True
+                break
+        if vulnerable:
+            count += 1
+    return count
+
+
+def count_direct_shots_for_me(my_pts, opp_pts):
+    # Count opponent blots that we could hit in one roll from ahead of them.
+    count = 0
+    for j, n in enumerate(opp_pts):
+        if n != 1:
+            continue
+        attackable = False
+        # We move downward, so from i = j+d
+        for d in range(1, 7):
+            i = j + d
+            if i > 23:
+                break
+            if my_pts[i] > 0:
+                attackable = True
+                break
+        if attackable:
+            count += 1
+    return count
+</code>

@@ -1,0 +1,73 @@
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Determines the next action in a simplified Blackjack-like game.
+    
+    Args:
+        hand: List of current cards in hand
+        target: Target score to approach (between 10 and 30)
+    
+    Returns:
+        "HIT" or "STAY" based on the policy
+    """
+    
+    def compute_hand_value(cards: list[str]) -> None:
+        """
+        Computes the hand value with Ace adjustment.
+        Returns None if hand busts (exceeds target).
+        """
+        value = 0
+        ace_count = 0
+        
+        for card in cards:
+            if card == 'A':
+                ace_count += 1
+                value += 11
+            elif card in ['J', 'Q', 'K']:
+                value += 10
+            else:  # '2' through '10'
+                value += int(card)
+        
+        # Adjust Aces from 11 to 1 until value <= target or no Aces left
+        while value > target and ace_count > 0:
+            value -= 10
+            ace_count -= 1
+        
+        return None if value > target else value
+    
+    # Calculate current hand value
+    current_value = compute_hand_value(hand)
+    if current_value is None:
+        # Already bust - must stay (though this shouldn't happen in normal play)
+        return "STAY"
+    
+    # Define the complete deck
+    full_deck = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K']
+    
+    # Find remaining cards in the deck
+    remaining_cards = [card for card in full_deck if card not in hand]
+    
+    # Check which cards are safe to draw (won't cause bust)
+    safe_cards = []
+    for card in remaining_cards:
+        new_hand = hand + [card]
+        new_value = compute_hand_value(new_hand)
+        if new_value is not None:
+            safe_cards.append(card)
+    
+    # If no safe cards available, must stay
+    if not safe_cards:
+        return "STAY"
+    
+    # Close to target (within 2) - stay to avoid busting
+    if current_value >= target - 2:
+        return "STAY"
+    
+    # Danger zone (within 4 of target) - check if majority of cards cause bust
+    if current_value >= target - 4:
+        bust_cards = len(remaining_cards) - len(safe_cards)
+        if bust_cards >= len(safe_cards):  # More bust cards than safe cards
+            return "STAY"
+    
+    # Far from target - hit to improve hand
+    return "HIT"

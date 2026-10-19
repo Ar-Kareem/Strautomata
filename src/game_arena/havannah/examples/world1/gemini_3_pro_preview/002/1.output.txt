@@ -1,0 +1,409 @@
+The strategy for this policy is based on a robust static evaluation that prioritizes the three winning conditions of Havannah: Ring, Bridge, and Fork.
+
+1.  **Board Topology Analysis**: At the start (cached), the policy analyzes the `valid_mask` to identify the graph structure of the board. It walks the boundary of valid cells to dynamically identify **Corners** (sharp turns in the boundary) and **Edges** (segments between corners). This allows the policy to work on any board shape (rhombus, hexagon, etc.) fitting within the 15x15 grid, assuming standard connectivity.
+2.  **Connectivity & Grouping**: It uses a Union-Find data structure to track groups of connected stones for both the player and the opponent. For each group, it maintains the set of touched Edges and Corners.
+3.  **Immediate Win/Block Calculation**:
+    *   **Offense**: Iterates through all candidate moves to check if placing a stone completes a Bridge (connects 2 corners), a Fork (connects 3 edges), or a Ring (encircles at least one cell). If a winning move is found, it plays it immediately.
+    *   **Defense**: Performs the same check for the opponent. If the opponent has a winning move, the policy identifies it and plays there to block. If there are multiple blocking moves, it chooses the one that maximizes its own connectivity.
+4.  **Ring Detection**: A Ring is detected by temporarily checking if the placement of a stone creates a cycle that isolates any empty or opponent cells from the board boundary (using a fast flood-fill algorithm).
+5.  **Heuristic Scoring**: If no immediate termination is found, moves are scored based on:
+    *   **Structural Value**: Connection to corners (high value) and edges (medium value).
+    *   **Connectivity**: Extends existing groups and merges disjoint groups.
+    *   **Centrality**: slight bias towards the center.
+    *   **Local Density**: Preference for moves touching opponent stones to maintain contact/interference.
+
+The policy uses the "Odd-Q" vertical hexagonal layout logic derived from the problem description to determine neighbor connectivity correctly.
+
+<code>
+import numpy as np
+import collections
+import sys
+
+# Global cache for parsing the board geometry (corners, edges)
+_BOARD_GEOMETRY_CACHE = {}
+
+def get_neighbors(r, c, shape):
+    rows, cols = shape
+    # Logic derived from prompt:
+    # Odd Col: Vertical(+-1,0), Left((-1,-1),(0,-1)), Right((-1,1),(0,1))
+    # Even Col: Vertical(+-1,0), Left((0,-1),(1,-1)), Right((0,1),(1,1))
+    
+    if c % 2 != 0: # Odd
+        offsets = [(-1, 0), (1, 0), (-1, -1), (0, -1), (-1, 1), (0, 1)]
+    else: # Even
+        offsets = [(-1, 0), (1, 0), (0, -1), (1, -1), (0, 1), (1, 1)]
+        
+    for dr, dc in offsets:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < rows and 0 <= nc < cols:
+            yield nr, nc
+
+def get_direction_id(r, c, nr, nc):
+    """Maps a move vector to a direction ID 0-5 to detect corners in boundary walk."""
+    dr, dc = nr - r, nc - c
+    
+    # Map based on column parity of 'from' cell (c)
+    if c % 2 != 0: # Odd
+        # Rotational order: Up, UpRight, DownRight, Down, DownLeft, UpLeft
+        m = {
+            (-1, 0): 0, (-1, 1): 1, (0, 1): 2,
+            (1, 0): 3, (0, -1): 4, (-1, -1): 5
+        }
+    else: # Even
+        m = {
+            (-1, 0): 0, (0, 1): 1, (1, 1): 2,
+            (1, 0): 3, (1, -1): 4, (0, -1): 5
+        }
+    return m.get((dr, dc), -1)
+
+class BoardGeometry:
+    def __init__(self, valid_mask):
+        self.shape = valid_mask.shape
+        self.valid_mask = valid_mask
+        self.rows, self.cols = self.shape
+        
+        self.is_corner = np.zeros(self.shape, dtype=bool)
+        self.edge_id = np.full(self.shape, -1, dtype=int)
+        self.boundary_indices = []
+        
+        self._analyze()
+        
+    def _analyze(self):
+        # 1. Identify all boundary cells (valid cells with < 6 valid neighbors)
+        valid_cells = set(zip(*np.where(self.valid_mask)))
+        boundary_candidates = set()
+        for r, c in valid_cells:
+            deg = sum(1 for nr, nc in get_neighbors(r, c, self.shape) if self.valid_mask[nr, nc])
+            if deg < 6:
+                boundary_candidates.add((r, c))
+        
+        if not boundary_candidates:
+            return
+
+        # 2. Walk the boundary to order it cyclically
+        # Start at top-leftmost boundary cell
+        start = min(boundary_candidates) 
+        path = [start]
+        visited = {start}
+        curr = start
+        
+        # Greedy walk
+        while True:
+            # Find neighbors in boundary set
+            r, c = curr
+            candidates = [n for n in get_neighbors(r, c, self.shape) if n in boundary_candidates]
+            
+            # Prefer unvisited; if only visited is start and len > 2, close loop
+            next_node = None
+            for n in candidates:
+                if n == path[0] and len(path) > 2:
+                    next_node = n
+                    break # Closing loop
+            
+            if next_node is None:
+                for n in candidates:
+                    if n not in visited:
+                        next_node = n
+                        break
+            
+            if next_node and next_node == path[0]:
+                break # Loop closed
+            
+            if next_node:
+                visited.add(next_node)
+                path.append(next_node)
+                curr = next_node
+            else:
+                break # Should not happen on standard board
+        
+        self.boundary_indices = path
+        
+        # 3. Detect corners by direction changes
+        corners = []
+        L = len(path)
+        if L < 3: return
+        
+        # Calculate direction IDs
+        dirs = []
+        for i in range(L):
+            u = path[i]
+            v = path[(i+1)%L]
+            dirs.append(get_direction_id(u[0], u[1], v[0], v[1]))
+            
+        # Find a rotation to align distinct segments
+        # Locate a point where direction changes, start there
+        rotate_idx = 0
+        for i in range(L):
+            if dirs[i] != dirs[(i+1)%L]:
+                rotate_idx = (i+1)%L
+                break
+                
+        # Rotated path: starts after a corner
+        rot_path = path[rotate_idx:] + path[:rotate_idx]
+        rot_dirs = dirs[rotate_idx:] + dirs[:rotate_idx]
+        
+        # Identify corners
+        corner_indices_in_rot = []
+        for i in range(L):
+            # incoming dir: rot_dirs[i-1]
+            # outgoing dir: rot_dirs[i]
+            d_in = rot_dirs[(i-1)%L]
+            d_out = rot_dirs[i]
+            if d_in != d_out:
+                self.is_corner[rot_path[i]] = True
+                corner_indices_in_rot.append(i)
+                
+        # 4. Assign Edge IDs
+        # Edges are segments between corners
+        if not corner_indices_in_rot: return
+        
+        for k in range(len(corner_indices_in_rot)):
+            start_idx = corner_indices_in_rot[k]
+            end_idx = corner_indices_in_rot[(k+1)%len(corner_indices_in_rot)]
+            
+            # Cells strictly between corners are edges
+            # Wrap around indices logic
+            if end_idx > start_idx:
+                segment = range(start_idx + 1, end_idx)
+            else:
+                segment = list(range(start_idx + 1, L)) + list(range(0, end_idx))
+            
+            for idx in segment:
+                self.edge_id[rot_path[idx]] = k
+
+class UnionFind:
+    def __init__(self):
+        self.parent = {}
+        self.edges = collections.defaultdict(set)
+        self.corners = collections.defaultdict(set)
+        
+    def find(self, i):
+        path = []
+        while i != self.parent.get(i, i):
+            path.append(i)
+            i = self.parent[i]
+        for node in path:
+            self.parent[node] = i
+        return i
+        
+    def add(self, i, edge_id, is_corner):
+        if i not in self.parent:
+            self.parent[i] = i
+            if edge_id != -1: self.edges[i].add(edge_id)
+            if is_corner: self.corners[i].add(i)
+            
+    def union(self, i, j):
+        root_i = self.find(i)
+        root_j = self.find(j)
+        if root_i != root_j:
+            self.parent[root_i] = root_j
+            self.edges[root_j].update(self.edges[root_i])
+            self.corners[root_j].update(self.corners[root_i])
+            return True
+        return False
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    # 1. Parse Board Geometry (Once)
+    mask_id = valid_mask.shape 
+    # Use a simplified key or assume valid_mask is static for the session
+    # For coding challenge safety, assume standard valid_mask
+    global _BOARD_GEOMETRY_CACHE
+    cache_key = id(valid_mask)
+    if cache_key not in _BOARD_GEOMETRY_CACHE:
+        _BOARD_GEOMETRY_CACHE[cache_key] = BoardGeometry(valid_mask)
+    bg = _BOARD_GEOMETRY_CACHE[cache_key]
+    
+    rows, cols = valid_mask.shape
+    stones_me = set(me)
+    stones_opp = set(opp)
+    occupied = stones_me | stones_opp
+    
+    # Helper to get valid neighbors
+    def get_valid_nbs(r, c):
+        for nr, nc in get_neighbors(r, c, bg.shape):
+            if valid_mask[nr, nc]:
+                yield nr, nc
+                
+    # 2. Identify Candidates (neighbors of occupied cells, or center)
+    candidates = set()
+    if not occupied:
+        # Pick center or closest valid
+        cy, cx = rows // 2, cols // 2
+        q = collections.deque([(cy, cx)])
+        visi = {(cy, cx)}
+        while q:
+            r, c = q.popleft()
+            if valid_mask[r, c]: return (r, c)
+            for nr, nc in get_neighbors(r, c, bg.shape):
+                if 0<=nr<rows and 0<=nc<cols and (nr, nc) not in visi:
+                    visi.add((nr, nc))
+                    q.append((nr, nc))
+        return (0, 0) # Fallback
+
+    for r, c in occupied:
+        for nr, nc in get_valid_nbs(r, c):
+            if (nr, nc) not in occupied:
+                candidates.add((nr, nc))
+    
+    candidate_list = list(candidates)
+    if not candidate_list:
+        # Search anywhere
+        ys, xs = np.where(valid_mask)
+        for r, c in zip(ys, xs):
+            if (r, c) not in occupied:
+                return (r, c)
+                
+    # 3. Build Connectivity
+    def build_uf(stones):
+        uf = UnionFind()
+        for s in stones:
+            uf.add(s, bg.edge_id[s], bg.is_corner[s])
+        for s in stones:
+            for n in get_valid_nbs(s[0], s[1]):
+                if n in stones:
+                    uf.union(s, n)
+        return uf
+        
+    uf_me_base = build_uf(stones_me)
+    uf_opp_base = build_uf(stones_opp)
+    
+    total_valid_cells = np.count_nonzero(valid_mask)
+    
+    # 4. Check Move Logic
+    def evaluate_win(uf_base, stones, candidate, is_me):
+        # Determine if 'candidate' connects groups to form win
+        nbs_in_group = [n for n in get_valid_nbs(candidate[0], candidate[1]) if n in stones]
+        roots = {uf_base.find(n) for n in nbs_in_group}
+        
+        # Aggregate topology
+        c_edges = set()
+        c_corners = set()
+        
+        # Add candidate's own features
+        cid = bg.edge_id[candidate]
+        if cid != -1: c_edges.add(cid)
+        if bg.is_corner[candidate]: c_corners.add(candidate)
+        
+        for r in roots:
+            c_edges.update(uf_base.edges[r])
+            c_corners.update(uf_base.corners[r])
+            
+        # Win Conditions
+        if len(c_corners) >= 2: return True # Bridge
+        if len(c_edges) >= 3: return True # Fork
+        
+        # Ring Check
+        # Trigger if cycle formed (connected neighbors > roots) or simply always check?
+        # Only check if we are connecting something or it's a tight spot
+        possible_cycle = (len(nbs_in_group) > len(roots)) or (len(nbs_in_group) >= 2)
+        
+        if possible_cycle:
+            # Flood Fill to verify ring
+            # A ring makes some empty/opp cells unreachable from boundary
+            current_stones = stones | {candidate}
+            visited = set()
+            q = collections.deque()
+            
+            # Seeds: all valid boundary cells not in current_stones
+            # Optimization: use precomputed boundary if possible, but stones block them
+            # Just iterate boundary_indices from Geometry
+            reached_count = 0
+            
+            for b_node in bg.boundary_indices:
+                if b_node not in current_stones and b_node not in visited:
+                    visited.add(b_node)
+                    q.append(b_node)
+                    reached_count += 1
+            
+            while q:
+                ur, uc = q.popleft()
+                for vr, vc in get_valid_nbs(ur, uc):
+                    if (vr, vc) not in current_stones and (vr, vc) not in visited:
+                        visited.add((vr, vc))
+                        reached_count += 1
+                        q.append((vr, vc))
+            
+            # If reachable count < Total Valid - Len(stones), we encircled something
+            if reached_count < (total_valid_cells - len(current_stones)):
+                return True
+                
+        return False
+
+    # Check for My Win
+    for m in candidate_list:
+        if evaluate_win(uf_me_base, stones_me, m, True):
+            return m
+            
+    # Check for Opponent Win (Block)
+    best_block = None
+    best_block_val = -1
+    
+    blocking_candidates = []
+    for m in candidate_list:
+        if evaluate_win(uf_opp_base, stones_opp, m, False):
+            blocking_candidates.append(m)
+            
+    if blocking_candidates:
+        # Pick block that helps me most
+        for m in blocking_candidates:
+            # Heuristic: num neighbors of my color
+            val = sum(1 for n in get_valid_nbs(m[0], m[1]) if n in stones_me)
+            if val > best_block_val:
+                best_block_val = val
+                best_block = m
+        return best_block
+
+    # 5. Strategic Heuristic
+    best_move = candidate_list[0]
+    best_score = -float('inf')
+    
+    center_r, center_c = rows / 2.0, cols / 2.0
+    
+    for m in candidate_list:
+        score = 0.0
+        
+        # Neighbors
+        nbs = list(get_valid_nbs(m[0], m[1]))
+        my_nbs = [n for n in nbs if n in stones_me]
+        opp_nbs = [n for n in nbs if n in stones_opp]
+        
+        score += len(my_nbs) * 2.0
+        score += len(opp_nbs) * 1.5 # Interference
+        
+        # Topology connections
+        # What do I connect?
+        my_roots = {uf_me_base.find(n) for n in my_nbs}
+        edges_acc = set()
+        corners_acc = set()
+        
+        if bg.edge_id[m] != -1: edges_acc.add(bg.edge_id[m])
+        if bg.is_corner[m]: corners_acc.add(m)
+        
+        # Sum existing group potentials
+        group_size_sum = 0
+        for r in my_roots:
+            edges_acc.update(uf_me_base.edges[r])
+            corners_acc.update(uf_me_base.corners[r])
+            # Estimate size roughly?
+            group_size_sum += 1 # Not tracking size in UF explicitly here to save lines, implies connectivity
+            
+        score += len(edges_acc) * 5.0
+        score += len(corners_acc) * 10.0
+        score += len(my_roots) * 3.0 # Merging groups is good
+        
+        # Connectivity to Edge/Corner proximity (1 step lookahead implicitly via neighbors)
+        # If neighbor is edge/corner
+        for n in nbs:
+            if bg.edge_id[n] != -1: score += 1.0
+            if bg.is_corner[n]: score += 2.0
+            
+        # Centrality
+        dist = ((m[0]-center_r)**2 + (m[1]-center_c)**2)**0.5
+        score -= dist * 0.1
+        
+        if score > best_score:
+            best_score = score
+            best_move = m
+            
+    return best_move
+</code>

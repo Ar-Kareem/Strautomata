@@ -1,0 +1,102 @@
+
+# Precompute all winning lines for 3x3x3 Tic Tac Toe
+winning_lines = []
+
+# Lines along x-axis (for each y and z)
+for y in range(3):
+    for z in range(3):
+        winning_lines.append([(0, y, z), (1, y, z), (2, y, z)])
+
+# Lines along y-axis (for each x and z)
+for x in range(3):
+    for z in range(3):
+        winning_lines.append([(x, 0, z), (x, 1, z), (x, 2, z)])
+
+# Lines along z-axis (for each x and y)
+for x in range(3):
+    for y in range(3):
+        winning_lines.append([(x, y, 0), (x, y, 1), (x, y, 2)])
+
+# Diagonals in xy planes (for each z)
+for z in range(3):
+    winning_lines.append([(0, 0, z), (1, 1, z), (2, 2, z)])  # main diagonal
+    winning_lines.append([(0, 2, z), (1, 1, z), (2, 0, z)])  # anti-diagonal
+
+# Diagonals in yz planes (for each x)
+for x in range(3):
+    winning_lines.append([(x, 0, 0), (x, 1, 1), (x, 2, 2)])  # main diagonal
+    winning_lines.append([(x, 2, 0), (x, 1, 1), (x, 0, 2)])  # anti-diagonal
+
+# Diagonals in zx planes (for each y)
+for y in range(3):
+    winning_lines.append([(0, y, 0), (1, y, 1), (2, y, 2)])  # main diagonal
+    winning_lines.append([(2, y, 0), (1, y, 1), (0, y, 2)])  # anti-diagonal
+
+# Space diagonals
+winning_lines.extend([
+    [(0, 0, 0), (1, 1, 1), (2, 2, 2)],
+    [(0, 0, 2), (1, 1, 1), (2, 2, 0)],
+    [(0, 2, 0), (1, 1, 1), (2, 0, 2)],
+    [(0, 2, 2), (1, 1, 1), (2, 0, 0)]
+])
+
+# Predefine lists for heuristic choice
+corners = [(x, y, z) for x in [0, 2] for y in [0, 2] for z in [0, 2]]
+face_centers = [(1, 1, 0), (1, 1, 2), (1, 0, 1), (1, 2, 1), (0, 1, 1), (2, 1, 1)]
+edge_centers = []  # All other cells that are not corner, center, or face center
+
+def policy(board):
+    # Find all empty cells
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[z][y][x] == 0:
+                    empty_cells.append((x, y, z))
+    
+    if not empty_cells:
+        return None  # No move possible
+    
+    # Check for winning moves
+    for (x, y, z) in empty_cells:
+        board[z][y][x] = 1  # Simulate placing my piece
+        # Check if I win
+        for line in winning_lines:
+            if all(board[z1][y1][x1] == 1 for (x1, y1, z1) in line):
+                board[z][y][x] = 0  # Revert the change
+                return (x, y, z)
+        board[z][y][x] = 0  # Revert the change
+    
+    # Check for threats to block
+    threat_cells = []
+    for (x, y, z) in empty_cells:
+        # Check if this cell is part of a line with two opponent pieces
+        for line in winning_lines:
+            if (x, y, z) in line:
+                # Check the other two cells in the line
+                cells = [c for c in line if c != (x, y, z)]
+                if board[cells[0][2]][cells[0][1]][cells[0][0]] == -1 and \
+                   board[cells[1][2]][cells[1][1]][cells[1][0]] == -1:
+                    threat_cells.append((x, y, z))
+                    break
+    
+    if threat_cells:
+        return threat_cells[0]  # Block the first threat
+    
+    # Heuristic choice based on cell importance
+    # Priority: center, corners, face centers, edge centers
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+    
+    # Check corners
+    for (x, y, z) in corners:
+        if board[z][y][x] == 0:
+            return (x, y, z)
+    
+    # Check face centers
+    for (x, y, z) in face_centers:
+        if board[z][y][x] == 0:
+            return (x, y, z)
+    
+    # Fallback: choose any empty cell, but since all cases above should cover, we'll return the first empty cell
+    return empty_cells[0]

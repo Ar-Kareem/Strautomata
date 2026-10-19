@@ -1,0 +1,172 @@
+The strategy for this policy is to parse the current 6x6 board from the `state`, generate all legal Reversi moves for `role` by checking flips in all 8 directions, and then choose the move using a fast heuristic:
+1) Prefer moves that flip more opponent disks.
+2) Prefer moves that occupy strong squares (corners > edge > center), and avoid “bad” squares adjacent to empty corners early.
+3) If multiple moves tie, choose the one that maximizes (my_disks_after - opp_disks_after).
+As a safe fallback (should the state be malformed), it returns the first legal move found.
+
+<code>
+import re
+from typing import List, Tuple, Optional
+
+SIZE = 6
+DIRS = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+
+def _parse_board(state: list[list[object]]) -> Tuple[list[list[str]], str]:
+    # board[r][c] in {"red","blue",""} where r,c in 1..6
+    board = [["" for _ in range(SIZE)] for _ in range(SIZE)]
+    control_role = None
+    for fact in state:
+        if not fact:
+            continue
+        if fact[0] == "control" and len(fact) >= 2:
+            control_role = str(fact[1])
+        if fact[0] == "cell" and len(fact) >= 4:
+            _, r, c, col = fact[0], str(fact[1]), str(fact[2]), str(fact[3])
+            rr = int(r) - 1
+            cc = int(c) - 1
+            if 0 <= rr < SIZE and 0 <= cc < SIZE:
+                board[rr][cc] = col
+    return board, control_role
+
+def _opponent(color: str) -> str:
+    return "blue" if color == "red" else "red"
+
+def _in_bounds(r:int,c:int)->bool:
+    return 0 <= r < SIZE and 0 <= c < SIZE
+
+def _flips_for_move(board: list[list[str]], color: str, r0: int, c0: int) -> list[Tuple[int,int]]:
+    if board[r0][c0] != "":
+        return []
+    opp = _opponent(color)
+    all_flips = []
+    for dr, dc in DIRS:
+        r, c = r0 + dr, c0 + dc
+        line = []
+        while _in_bounds(r,c) and board[r][c] == opp:
+            line.append((r,c))
+            r += dr
+            c += dc
+        if line and _in_bounds(r,c) and board[r][c] == color:
+            all_flips.extend(line)
+    return all_flips
+
+def _legal_moves(board: list[list[str]], color: str) -> list[Tuple[int,int,list[Tuple[int,int]]]]:
+    moves = []
+    for r in range(SIZE):
+        for c in range(SIZE):
+            flips = _flips_for_move(board, color, r, c)
+            if flips:
+                moves.append((r,c,flips))
+    return moves
+
+def _count_disks(board: list[list[str]]) -> Tuple[int,int]:
+    red = sum(1 for r in range(SIZE) for c in range(SIZE) if board[r][c] == "red")
+    blue = sum(1 for r in range(SIZE) for c in range(SIZE) if board[r][c] == "blue")
+    return red, blue
+
+def _square_heuristic(r:int,c:int, board: list[list[str]], color: str) -> int:
+    # Coordinates are 0..5. Corners are (0,0),(0,5),(5,0),(5,5)
+    # Adjacent to corners: (1,0),(0,1),(1,1) etc; penalize if corresponding corner is empty.
+    corner = {(0,0),(0,SIZE-1),(SIZE-1,0),(SIZE-1,SIZE-1)}
+    adj = {
+        (0,1),(1,0),(1,1),
+        (0,SIZE-2),(1,SIZE-1),(1,SIZE-2),
+        (SIZE-2,0),(SIZE-1,1),(SIZE-2,1),
+        (SIZE-2,SIZE-1),(SIZE-1,SIZE-2),(SIZE-2,SIZE-2)
+    }
+    edge = 1 if (r in (0,SIZE-1) or c in (0,SIZE-1)) else 0
+    center = -1 if (r in (1,4) and c in (1,4) ) else 0  # mild
+
+    if (r,c) in corner:
+        return 100
+    if (r,c) in adj:
+        # determine which corner(s) it's near
+        # Penalize only if the nearby corner is empty; otherwise it's less bad.
+        nearby_corners = []
+        if (r,c) in {(0,1),(1,0),(1,1)}:
+            nearby_corners.append((0,0))
+        if (r,c) in {(0,SIZE-2),(1,SIZE-1),(1,SIZE-2)}:
+            nearby_corners.append((0,SIZE-1))
+        if (r,c) in {(SIZE-2,0),(SIZE-1,1),(SIZE-2,1)}:
+            nearby_corners.append((SIZE-1,0))
+        if (r,c) in {(SIZE-2,SIZE-1),(SIZE-1,SIZE-2),(SIZE-2,SIZE-2)}:
+            nearby_corners.append((SIZE-1,SIZE-1))
+        if any(board[cr][cc] == "" for (cr,cc) in nearby_corners):
+            return -35
+        return -10
+    if edge:
+        return 8
+    return -2 + center
+
+def _choose_move(state: list[list[object]], role: str) -> str:
+    board, _ = _parse_board(state)
+    color = role  # role is "red" or "blue"
+    legal = _legal_moves(board, color)
+    if not legal:
+        # Fallback: if no legal moves can be inferred (shouldn't happen in valid play),
+        # return a syntactically legal but may be illegal move.
+        return "move(1,1)"
+
+    # Game phase: early when many empty squares.
+    empties = sum(1 for r in range(SIZE) for c in range(SIZE) if board[r][c] == "")
+    phase = "early" if empties > 18 else ("mid" if empties > 8 else "late")
+
+    opp = _opponent(color)
+    my_disks, opp_disks = _count_disks(board)
+
+    best = None
+    best_score = -10**9
+
+    for r,c,flips in legal:
+        flip_count = len(flips)
+
+        # Simulate one ply for disk difference
+        after_my = my_disks + 1 + flip_count
+        after_opp = opp_disks - flip_count
+        diff = (after_my - after_opp)
+
+        # Mobility: count legal moves for self after this move (fast-ish, still small board)
+        b2 = [row[:] for row in board]
+        b2[r][c] = color
+        for rr,cc in flips:
+            b2[rr][cc] = color
+        next_moves = _legal_moves(b2, color)
+        mobility = len(next_moves)
+
+        sq = _square_heuristic(r,c, board, color)
+
+        # Corner grab and avoiding giving opponent corners is partially handled by square heuristic.
+        # Additional quick penalty if opponent gets corner immediately.
+        opp_corner_gain_penalty = 0
+        for rr,cc,_fl in _legal_moves(b2, opp):
+            if (rr,cc) in {(0,0),(0,SIZE-1),(SIZE-1,0),(SIZE-1,SIZE-1)}:
+                opp_corner_gain_penalty = 25
+                break
+
+        # Weights depending on phase
+        if phase == "early":
+            score = 3.0*flip_count + 1.5*diff + 1.2*sq + 0.3*mobility - opp_corner_gain_penalty
+        elif phase == "mid":
+            score = 2.3*flip_count + 2.0*diff + 1.1*sq + 0.5*mobility - 0.7*opp_corner_gain_penalty
+        else:  # late
+            score = 1.0*flip_count + 3.0*diff + 1.0*sq + 0.6*mobility - 0.3*opp_corner_gain_penalty
+
+        # Tie-breaker: prefer larger flip_count then better disk diff
+        if score > best_score or (score == best_score and (flip_count > best[2]) ) if best else False:
+            pass
+
+        if score > best_score:
+            best_score = score
+            best = (r,c,flip_count)
+
+    if best is None:
+        r,c,_ = legal[0]
+    else:
+        r,c,_ = best
+
+    # Stanford move format uses 1-based coordinates
+    return f"move({r+1},{c+1})"
+
+def policy(state: list[list[object]], role: str) -> str:
+    return _choose_move(state, role)
+</code>

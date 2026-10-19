@@ -1,0 +1,48 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+
+    for move in legal_moves:
+        current_score = 0.0
+
+        # Add bonus for moves that are checks
+        if move.endswith('+'):
+            current_score += 0.1
+
+        # Process castling moves
+        is_castling = move in ['O-O', 'O-O-O']
+        if not is_castling:
+            # Extract the destination square
+            dest_part = move.rstrip('+#=QRBN')
+            dest_square = dest_part[-2:] if len(dest_part) >= 2 else dest_part
+
+            # Check for captures and their net gain
+            if 'x' in move:
+                captured_square = dest_square
+                captured = pieces.get(captured_square)
+                if captured:
+                    captured_type = captured[1]
+                    captured_val = piece_values[captured_type]
+                    # Determine moving piece type
+                    moving_char = move[0]
+                    moving_type = moving_char if moving_char in ['N', 'B', 'R', 'Q', 'K'] else 'P'
+                    moving_val = piece_values[moving_type]
+                    net_gain = captured_val - moving_val
+                    if net_gain > 0:
+                        current_score += net_gain
+
+            # Handle promotions
+            if '=' in move:
+                promoted_type = move[-1]
+                promoted_val = piece_values.get(promoted_type, 0)
+                current_score += 1000.0 + promoted_val  # Significant weight for promotion
+
+        # Update best move if current is better
+        if current_score > best_score:
+            best_score = current_score
+            best_move = move
+
+    return best_move

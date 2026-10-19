@@ -1,0 +1,379 @@
+The strategy for this policy is to **always return a legal move** by explicitly generating all legal 1- or 2-step move sequences for the rolled dice (respecting bar-entry priority, blocked points, mandatory use of both dice when possible, and the “play the higher die if only one can be played” rule). Among the legal moves, it selects the move with the best heuristic evaluation that balances **race (pip count/off progress)**, **tactical advantage (hitting and sending opponent to the bar)**, **containment (closed home board when opponent is on the bar)**, and **safety (avoiding vulnerable blots)**.
+
+<code>
+# backgammon_policy.py
+from __future__ import annotations
+
+from typing import List, Tuple, Dict, Any, Optional
+
+
+def policy(state: dict) -> str:
+    """
+    Required API:
+        def policy(state: dict) -> str
+
+    Returns a move string: "<ORDER>:<FROM1>,<FROM2>" with ORDER in {"H","L"}.
+    Always returns a legal move by generating and selecting among legal sequences.
+    """
+
+    dice = list(state.get("dice", []))
+    if not dice:
+        return "H:P,P"
+
+    my_pts = list(state["my_pts"])
+    opp_pts = list(state["opp_pts"])
+    my_bar = int(state["my_bar"])
+    opp_bar = int(state["opp_bar"])
+    my_off = int(state["my_off"])
+    opp_off = int(state["opp_off"])
+
+    # Normalize dice to length 2 with optional second.
+    if len(dice) == 1:
+        d_first = dice[0]
+        # Only one die available; encode as one move then pass.
+        candidates = _generate_sequences(
+            my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off,
+            dice_order=[d_first, None],
+            order_char="H"
+        )
+        # Filter / choose best (should be straightforward)
+        if not candidates:
+            return "H:P,P"
+        best = _choose_best(candidates, state)
+        return best["move_str"]
+
+    # Two dice:
+    d1, d2 = dice[0], dice[1]
+    hi, lo = (d1, d2) if d1 >= d2 else (d2, d1)
+
+    # Generate for both orderings (if distinct); if equal, only one needed.
+    all_cands = []
+    all_cands.extend(_generate_sequences(
+        my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off,
+        dice_order=[hi, lo],
+        order_char="H"
+    ))
+    if hi != lo:
+        all_cands.extend(_generate_sequences(
+            my_pts, opp_pts, my_bar, opp_bar, my_off, opp_off,
+            dice_order=[lo, hi],
+            order_char="L"
+        ))
+
+    if not all_cands:
+        # Should be very rare (engine still expects a string)
+        return "H:P,P"
+
+    # Enforce mandatory usage rules:
+    # - must use maximum number of dice possible
+    max_used = max(c["used"] for c in all_cands)
+    cands = [c for c in all_cands if c["used"] == max_used]
+
+    # - if only one die can be played, must play higher die when possible
+    if len(dice) == 2 and max_used == 1 and hi != lo:
+        any_hi = any(c["used_dice"][0] == hi for c in cands if c["used_dice"])
+        if any_hi:
+            cands = [c for c in cands if c["used_dice"] and c["used_dice"][0] == hi]
+
+    best = _choose_best(cands, state)
+    return best["move_str"]
+
+
+# ----------------------------
+# Move generation and legality
+# ----------------------------
+
+def _generate_sequences(
+    my_pts: List[int],
+    opp_pts: List[int],
+    my_bar: int,
+    opp_bar: int,
+    my_off: int,
+    opp_off: int,
+    dice_order: List[Optional[int]],
+    order_char: str
+) -> List[Dict[str, Any]]:
+    """
+    Generate all legal sequences for dice_order (len=2, second may be None).
+    Returns list of dicts with:
+      - move_str
+      - final board fields
+      - used (0..2)
+      - used_dice (dice values actually played, in order of play)
+      - from_tokens (len=2)
+    """
+    results = []
+
+    init = {
+        "my_pts": my_pts,
+        "opp_pts": opp_pts,
+        "my_bar": my_bar,
+        "opp_bar": opp_bar,
+        "my_off": my_off,
+        "opp_off": opp_off,
+    }
+
+    def rec(step: int, board: Dict[str, Any], from_tokens: List[str], used_dice: List[int]) -> None:
+        if step >= 2:
+            # Build move string
+            f1 = from_tokens[0] if len(from_tokens) > 0 else "P"
+            f2 = from_tokens[1] if len(from_tokens) > 1 else "P"
+            move_str = f"{order_char}:{f1},{f2}"
+            used = sum(1 for t in [f1, f2] if t != "P")
+            results.append({
+                "move_str": move_str,
+                "from_tokens": [f1, f2],
+                "used": used,
+                "used_dice": used_dice[:],
+                "final": board,
+            })
+            return
+
+        die = dice_order[step]
+        if die is None:
+            # No second die available -> must pass that slot.
+            rec(step + 1, board, from_tokens + ["P"], used_dice)
+            return
+
+        legal_sources = _legal_sources_for_die(board, die)
+        if not legal_sources:
+            rec(step + 1, board, from_tokens + ["P"], used_dice)
+            return
+
+        for src in legal_sources:
+            new_board = _apply_move(board, die, src)
+            token = "B" if src == -1 else f"A{src}"
+            rec(step + 1, new_board, from_tokens + [token], used_dice + [die])
+
+    rec(0, _copy_board(init), [], [])
+    return results
+
+
+def _copy_board(b: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "my_pts": list(b["my_pts"]),
+        "opp_pts": list(b["opp_pts"]),
+        "my_bar": int(b["my_bar"]),
+        "opp_bar": int(b["opp_bar"]),
+        "my_off": int(b["my_off"]),
+        "opp_off": int(b["opp_off"]),
+    }
+
+
+def _all_in_home(board: Dict[str, Any]) -> bool:
+    # Home board for us: points 0..5.
+    if board["my_bar"] != 0:
+        return False
+    return sum(board["my_pts"][6:]) == 0
+
+
+def _entry_dest_for_die(die: int) -> int:
+    # We move 23 -> 0, so bar entry is at index 24 - die.
+    return 24 - die
+
+
+def _dest_from_point(src: int, die: int) -> int:
+    return src - die
+
+
+def _is_blocked(opp_pts: List[int], dest: int) -> bool:
+    return opp_pts[dest] >= 2
+
+
+def _legal_sources_for_die(board: Dict[str, Any], die: int) -> List[int]:
+    """
+    Returns list of legal sources for this die in the given board.
+    Source encoding:
+      -1 means Bar ("B")
+      0..23 means point index
+    """
+    my_pts = board["my_pts"]
+    opp_pts = board["opp_pts"]
+
+    if board["my_bar"] > 0:
+        dest = _entry_dest_for_die(die)
+        if 0 <= dest <= 23 and not _is_blocked(opp_pts, dest):
+            return [-1]
+        return []
+
+    sources = []
+    in_bearoff = _all_in_home(board)
+
+    for src in range(24):
+        if my_pts[src] <= 0:
+            continue
+
+        dest = _dest_from_point(src, die)
+
+        if dest >= 0:
+            if not _is_blocked(opp_pts, dest):
+                sources.append(src)
+        else:
+            # Bearing off attempt
+            if not in_bearoff:
+                continue
+            if src > 5:
+                continue
+            # Exact bear-off: die == src+1
+            if die == src + 1:
+                sources.append(src)
+            # Overshoot bear-off allowed only if no checkers on higher points in home board
+            elif die > src + 1:
+                if sum(my_pts[src + 1:6]) == 0:
+                    sources.append(src)
+
+    return sources
+
+
+def _apply_move(board: Dict[str, Any], die: int, src: int) -> Dict[str, Any]:
+    """
+    Applies a legal move (assumed legal) and returns a new board dict.
+    src == -1 means from bar.
+    """
+    b = _copy_board(board)
+    my_pts = b["my_pts"]
+    opp_pts = b["opp_pts"]
+
+    if src == -1:
+        # From bar
+        b["my_bar"] -= 1
+        dest = _entry_dest_for_die(die)
+        # dest must be in 0..23 for entry moves
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            b["opp_bar"] += 1
+        my_pts[dest] += 1
+        return b
+
+    # From board point
+    my_pts[src] -= 1
+    dest = _dest_from_point(src, die)
+
+    if dest >= 0:
+        if opp_pts[dest] == 1:
+            opp_pts[dest] = 0
+            b["opp_bar"] += 1
+        my_pts[dest] += 1
+        return b
+
+    # Bearing off
+    b["my_off"] += 1
+    return b
+
+
+# ----------------------------
+# Heuristic evaluation
+# ----------------------------
+
+def _pip_count_my(board: Dict[str, Any]) -> int:
+    # Distance to bear off from point i is i+1 (moving downwards to -1/off).
+    return board["my_bar"] * 25 + sum(board["my_pts"][i] * (i + 1) for i in range(24))
+
+
+def _pip_count_opp(board: Dict[str, Any]) -> int:
+    # Opponent moves 0 -> 23, distance to bear off from point i is (24 - i).
+    return board["opp_bar"] * 25 + sum(board["opp_pts"][i] * (24 - i) for i in range(24))
+
+
+def _blot_risk(board: Dict[str, Any], i: int) -> int:
+    """
+    Approximate vulnerability of a single checker at point i.
+    Opponent hits by moving +die from (i-die).
+    """
+    if board["my_pts"][i] != 1:
+        return 0
+    opp_pts = board["opp_pts"]
+    risk = 0
+    # direct hits from opponent checkers behind (i-1..i-6)
+    for d in range(1, 7):
+        s = i - d
+        if s >= 0 and opp_pts[s] > 0:
+            risk += 1
+    # if opponent on bar, they enter into our home board (0..5); can hit blots there
+    if board["opp_bar"] > 0 and 0 <= i <= 5:
+        risk += 1
+    return risk
+
+
+def _choose_best(cands: List[Dict[str, Any]], orig_state: dict) -> Dict[str, Any]:
+    # Evaluate after-state with a fast heuristic.
+    base = {
+        "my_pts": list(orig_state["my_pts"]),
+        "opp_pts": list(orig_state["opp_pts"]),
+        "my_bar": int(orig_state["my_bar"]),
+        "opp_bar": int(orig_state["opp_bar"]),
+        "my_off": int(orig_state["my_off"]),
+        "opp_off": int(orig_state["opp_off"]),
+    }
+
+    best = None
+    best_score = -1e18
+
+    for c in cands:
+        b = c["final"]
+        score = _eval_board(b, base)
+        # Tie-breaker: prefer using more dice, then prefer hitting, then arbitrary stable string
+        if score > best_score:
+            best_score = score
+            best = c
+        elif score == best_score and best is not None:
+            # deterministic tie-break
+            if c["used"] > best["used"]:
+                best = c
+            else:
+                hits_c = b["opp_bar"] - base["opp_bar"]
+                hits_b = best["final"]["opp_bar"] - base["opp_bar"]
+                if hits_c > hits_b:
+                    best = c
+                elif hits_c == hits_b and c["move_str"] < best["move_str"]:
+                    best = c
+
+    return best if best is not None else {"move_str": "H:P,P", "final": base, "used": 0, "used_dice": [], "from_tokens": ["P", "P"]}
+
+
+def _eval_board(b: Dict[str, Any], base: Dict[str, Any]) -> float:
+    my_pip = _pip_count_my(b)
+    opp_pip = _pip_count_opp(b)
+
+    # Core race / progress
+    score = 0.0
+    score += (opp_pip - my_pip) * 1.0
+    score += (b["my_off"] - b["opp_off"]) * 120.0
+
+    # Bar dynamics
+    score += (b["opp_bar"] - base["opp_bar"]) * 18.0  # reward hits
+    score += b["opp_bar"] * 12.0
+    score -= b["my_bar"] * 35.0
+
+    # Made points and structure
+    my_pts = b["my_pts"]
+    made_home = 0
+    for i in range(24):
+        if my_pts[i] >= 2:
+            if 0 <= i <= 5:
+                score += 3.2
+                made_home += 1
+            elif 6 <= i <= 11:
+                score += 2.1
+            elif 12 <= i <= 17:
+                score += 1.5
+            else:  # 18..23 anchors / advanced points
+                score += 2.6
+
+    # If opponent is on the bar, value a closed home board more
+    if b["opp_bar"] > 0:
+        score += made_home * 6.0
+
+    # Blots (vulnerability penalty)
+    for i in range(24):
+        if my_pts[i] == 1:
+            risk = _blot_risk(b, i)
+            score -= 1.0
+            score -= 4.0 * risk
+
+    # Small preference to reduce checkers in opponent's prime zone? (avoid being trapped)
+    # (Very mild; mostly handled by pip count and blot risk.)
+    score -= sum(my_pts[i] for i in range(18, 24)) * 0.15
+
+    return score
+</code>

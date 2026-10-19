@@ -1,0 +1,181 @@
+
+import itertools
+
+def policy(state: dict) -> str:
+    my_pts = list(state['my_pts'])
+    opp_pts = list(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = list(state['dice'])
+    
+    if len(dice) == 0:
+        return "H:P,P"
+    
+    def is_opp_blocked(pt):
+        """Check if point pt is blocked by opponent (2+ checkers)"""
+        if pt < 0 or pt > 23:
+            return False
+        return opp_pts[pt] >= 2
+    
+    def try_move(m_pts, m_bar, m_off, o_pts, o_bar, die_val, src):
+        """Try to apply a single die move. Returns new state or None if illegal."""
+        mp = list(m_pts)
+        op = list(o_pts)
+        mb = m_bar
+        mo = m_off
+        ob = o_bar
+        
+        if src == 'B':
+            if mb <= 0:
+                return None
+            dest = 24 - die_val  # entering from bar: point 24-die
+            if dest < 0 or dest > 23:
+                return None
+            if op[dest] >= 2:
+                return None
+            mb -= 1
+            if op[dest] == 1:
+                op[dest] = 0
+                ob += 1
+            mp[dest] += 1
+        elif src == 'P':
+            return (mp, mb, mo, op, ob)
+        else:
+            pt = src
+            if mb > 0:
+                return None  # must move from bar first
+            if mp[pt] <= 0:
+                return None
+            dest = pt - die_val
+            if dest < 0:
+                # bearing off
+                all_home = all(mp[i] == 0 for i in range(6, 24)) and mb == 0
+                if not all_home:
+                    return None
+                if dest < 0 and die_val != pt + 1:
+                    # Check if there's a higher point with checkers
+                    for higher in range(pt + 1, 6):
+                        if mp[higher] > 0:
+                            return None
+                mp[pt] -= 1
+                mo += 1
+            else:
+                if op[dest] >= 2:
+                    return None
+                mp[pt] -= 1
+                if op[dest] == 1:
+                    op[dest] = 0
+                    ob += 1
+                mp[dest] += 1
+        return (mp, mb, mo, op, ob)
+    
+    def evaluate(mp, mb, mo, op, ob):
+        score = 0.0
+        score += mo * 50
+        score -= ob * (-15)  # opponent on bar is good for us
+        score += ob * 15
+        score -= mb * 40
+        
+        pip = sum(mp[i] * (i + 1) for i in range(24)) + mb * 25
+        score -= pip * 0.5
+        
+        # Home board points made
+        for i in range(6):
+            if mp[i] >= 2:
+                score += 8
+            elif mp[i] == 1:
+                score -= 3 * (1 + (6 - i) * 0.5)
+        
+        # Blots elsewhere
+        for i in range(6, 24):
+            if mp[i] == 1:
+                score -= 4
+            if mp[i] >= 2:
+                score += 2
+        
+        # Anchors in opponent's home (points 18-23)
+        for i in range(18, 24):
+            if mp[i] >= 2:
+                score += 5
+        
+        # Prime detection
+        consec = 0
+        max_consec = 0
+        for i in range(24):
+            if mp[i] >= 2:
+                consec += 1
+                max_consec = max(max_consec, consec)
+            else:
+                consec = 0
+        score += max_consec * 5
+        
+        return score
+    
+    # Generate all possible sources
+    sources = ['B'] + [f'A{i}' for i in range(24)] + ['P']
+    
+    def src_to_val(s):
+        if s == 'B':
+            return 'B'
+        elif s == 'P':
+            return 'P'
+        else:
+            return int(s[1:])
+    
+    best_score = -1e18
+    best_move = "H:P,P"
+    
+    if len(dice) == 1:
+        d = dice[0]
+        for s in sources:
+            sv = src_to_val(s)
+            result = try_move(my_pts, my_bar, my_off, opp_pts, opp_bar, d, sv)
+            if result is not None:
+                mp, mb, mo, op, ob = result
+                sc = evaluate(mp, mb, mo, op, ob)
+                if sc > best_score:
+                    best_score = sc
+                    best_move = f"H:{s},P"
+        return best_move
+    
+    d_high = max(dice)
+    d_low = min(dice)
+    
+    for s1 in sources:
+        for s2 in sources:
+            for order in ['H', 'L']:
+                if order == 'H':
+                    first_die, second_die = d_high, d_low
+                else:
+                    first_die, second_die = d_low, d_high
+                
+                sv1 = src_to_val(s1)
+                sv2 = src_to_val(s2)
+                
+                r1 = try_move(my_pts, my_bar, my_off, opp_pts, opp_bar, first_die, sv1)
+                if r1 is None:
+                    if sv1 != 'P':
+                        continue
+                    r1 = (list(my_pts), my_bar, my_off, list(opp_pts), opp_bar)
+                
+                mp1, mb1, mo1, op1, ob1 = r1
+                r2 = try_move(mp1, mb1, mo1, op1, ob1, second_die, sv2)
+                if r2 is None:
+                    if sv2 != 'P':
+                        continue
+                    r2 = (mp1, mb1, mo1, op1, ob1)
+                
+                mp2, mb2, mo2, op2, ob2 = r2
+                
+                # Count moves played
+                moves_played = (0 if sv1 == 'P' else 1) + (0 if sv2 == 'P' else 1)
+                
+                sc = evaluate(mp2, mb2, mo2, op2, ob2) + moves_played * 100
+                
+                if sc > best_score:
+                    best_score = sc
+                    best_move = f"{order}:{s1},{s2}"
+    
+    return best_move

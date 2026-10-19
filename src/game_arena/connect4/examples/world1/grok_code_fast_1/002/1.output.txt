@@ -1,0 +1,137 @@
+The strategy for this policy is a minimax-based approach with alpha-beta pruning to search up to depth 6 for optimal moves. The evaluation function scores positions based on all possible 4-disc windows (horizontal, vertical, and diagonal), assigning high scores for potential 4-in-a-rows (e.g., 100 for three in a row with a space, 1000 for a win). Moves are ordered starting from the center column for faster pruning. Immediate winning moves are prioritized, followed by blocks of the opponent's immediate wins.
+
+<code>
+import numpy as np
+
+def check_winner(board, player):
+    rows, cols = len(board), len(board[0])
+    # directions: right, down, diag-down-right, diag-up-right
+    directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+    for r in range(rows):
+        for c in range(cols):
+            if board[r][c] == player:
+                for dr, dc in directions:
+                    if all(0 <= r + i*dr < rows and 0 <= c + i*dc < cols and board[r + i*dr][c + i*dc] == player for i in range(4)):
+                        return True
+    return False
+
+def is_full(board):
+    return all(board[0][c] != 0 for c in range(7))
+
+def is_terminal(board):
+    return check_winner(board, 1) or check_winner(board, -1) or is_full(board)
+
+def evaluate_window(window, player):
+    count_player = window.count(player)
+    count_empty = window.count(0)
+    count_opponent = window.count(-player)
+    if count_opponent == 0:
+        if count_player == 4:
+            return 1000
+        elif count_player == 3 and count_empty == 1:
+            return 100
+        elif count_player == 2 and count_empty == 2:
+            return 10
+        elif count_player == 1 and count_empty == 3:
+            return 1
+    elif count_player == 0:
+        if count_opponent == 4:
+            return -1000
+        elif count_opponent == 3 and count_empty == 1:
+            return -100
+        elif count_opponent == 2 and count_empty == 2:
+            return -10
+        elif count_opponent == 1 and count_empty == 3:
+            return -1
+    return 0
+
+def heuristic(board):
+    score = 0
+    # horizontal
+    for r in range(6):
+        for c in range(4):
+            window = [board[r][c+i] for i in range(4)]
+            score += evaluate_window(window, 1)
+            score += evaluate_window(window, -1)
+    # vertical
+    for r in range(3):
+        for c in range(7):
+            window = [board[r+i][c] for i in range(4)]
+            score += evaluate_window(window, 1)
+            score += evaluate_window(window, -1)
+    # diagonal /
+    for r in range(3):
+        for c in range(4):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, 1)
+            score += evaluate_window(window, -1)
+    # diagonal \
+    for r in range(3):
+        for c in range(3, 7):
+            window = [board[r+i][c-i] for i in range(4)]
+            score += evaluate_window(window, 1)
+            score += evaluate_window(window, -1)
+    return score // 10  # normalize a bit
+
+def get_legal_moves(board):
+    return [c for c in range(7) if board[0][c] == 0]
+
+def make_move(board, col, player):
+    new_board = [row[:] for row in board]
+    for r in range(5, -1, -1):
+        if new_board[r][col] == 0:
+            new_board[r][col] = player
+            return new_board
+    return new_board  # shouldn't happen
+
+def minimax(board, depth, alpha, beta, maximizing_player):
+    if depth == 0 or is_terminal(board):
+        return heuristic(board)
+    
+    legal_moves = get_legal_moves(board)
+    
+    if maximizing_player:
+        max_eval = -np.inf
+        for col in legal_moves:
+            child = make_move(board, col, 1)
+            eval = minimax(child, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = np.inf
+        for col in legal_moves:
+            child = make_move(board, col, -1)
+            eval = minimax(child, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(board):
+    # check for immediate win
+    for col in get_legal_moves(board):
+        test_board = make_move(board, col, 1)
+        if check_winner(test_board, 1):
+            return col
+    
+    # check for immediate block
+    for col in get_legal_moves(board):
+        test_board = make_move(board, col, -1)
+        if check_winner(test_board, -1):
+            return col
+    
+    # else, minimax with move ordering (center first)
+    move_order = [3, 2, 4, 1, 5, 0, 6]
+    legal = [m for m in move_order if m in get_legal_moves(board)]
+    scores = {}
+    for col in legal:
+        child = make_move(board, col, 1)
+        score = minimax(child, 6, -np.inf, np.inf, False)
+        scores[col] = score
+    
+    return max(scores, key=scores.get)
+</code>

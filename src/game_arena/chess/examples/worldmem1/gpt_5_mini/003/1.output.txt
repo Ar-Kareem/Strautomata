@@ -1,0 +1,425 @@
+The strategy for this policy is:
+- Parse SAN-style legal moves and score each by a fast, robust static evaluator that prioritizes checkmate, captures (by material gain), promotions, checks, king safety (castling), centralization, and piece safety (avoid leaving pieces en prise).
+- Use a lightweight move applier and attacker detector (pseudo-legal move generation) to detect which captures are possible and whether the moved piece becomes attacked; penalize hanging moves and prefer favorable exchanges.
+- Always return a legal move from the given list; fall back to safe heuristics if parsing edge-cases occur.
+
+<code>
+import re
+import math
+from typing import Dict, Tuple, List
+
+# Piece values
+VAL = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+
+FILES = 'abcdefgh'
+RANKS = '12345678'
+
+def square_to_coord(sq: str):
+    return FILES.index(sq[0]), RANKS.index(sq[1])
+
+def coord_to_square(x: int, y: int):
+    return FILES[x] + RANKS[y]
+
+def in_board(x, y):
+    return 0 <= x < 8 and 0 <= y < 8
+
+def parse_move(move: str):
+    m = move
+    # strip check/mate symbols
+    m = m.replace('+', '').replace('#', '')
+    # detect castle
+    if m.startswith('O-O'):
+        return {'castle': 'O-O-O' if m.startswith('O-O-O') else 'O-O', 'orig': None, 'dest': None, 'piece': 'K', 'capture': False, 'promo': None}
+    promo = None
+    if '=' in m:
+        # promotion like b8=Q
+        parts = m.split('=')
+        promo = parts[1][0]
+        m = parts[0]  # keep left part
+    # find last square occurrence
+    squares = re.findall(r'[a-h][1-8]', m)
+    dest = squares[-1] if squares else None
+    is_capture = 'x' in m
+    piece = 'P'
+    if m[0] in 'KQRBN':
+        piece = m[0]
+    # disambiguation: characters between piece letter (if any) and dest (before any 'x')
+    disamb_file, disamb_rank = None, None
+    if dest:
+        dest_pos = m.rfind(dest)
+        prefix = m[:dest_pos]
+        # remove piece letter if present
+        if prefix and prefix[0] in 'KQRBN':
+            prefix = prefix[1:]
+        # remove 'x' if present
+        prefix = prefix.replace('x', '')
+        # prefix now may contain file/rank disamb or origin
+        for ch in prefix:
+            if ch in FILES:
+                disamb_file = ch
+            if ch in RANKS:
+                disamb_rank = ch
+    return {'castle': None, 'piece': piece, 'dest': dest, 'capture': is_capture, 'promo': promo, 'disamb_file': disamb_file, 'disamb_rank': disamb_rank}
+
+def get_color_prefix(color: str) -> str:
+    return 'w' if color == 'white' else 'b'
+
+def opponent(color: str) -> str:
+    return 'black' if color == 'white' else 'white'
+
+def piece_at(board: Dict[str,str], sq: str):
+    return board.get(sq)
+
+def is_opponent_piece(board: Dict[str,str], sq: str, color: str):
+    p = piece_at(board, sq)
+    if not p: return False
+    return (p[0] == 'w') != (get_color_prefix(color) == 'w')  # True if opposite
+
+def is_own_piece(board: Dict[str,str], sq: str, color: str):
+    p = piece_at(board, sq)
+    if not p: return False
+    return p[0] == get_color_prefix(color)
+
+def can_slide_attack(board: Dict[str,str], origin: Tuple[int,int], dest: Tuple[int,int], deltas: List[Tuple[int,int]]):
+    ox, oy = origin
+    dx = dest[0] - ox
+    dy = dest[1] - oy
+    # direction must be some delta multiple
+    for ddx, ddy in deltas:
+        if ddx == 0 and ddy == 0:
+            continue
+        # must be integer multiple and same direction sign
+        if ddx == 0:
+            if dx != 0: continue
+            step_y = 1 if dy > 0 else -1
+            if ddy != step_y: continue
+        elif ddy == 0:
+            if dy != 0: continue
+            step_x = 1 if dx > 0 else -1
+            if ddx != step_x: continue
+        else:
+            # check ratio
+            if dx * ddy != dy * ddx:
+                continue
+            step_x = 1 if dx > 0 else -1
+            if ddx != step_x: continue
+        # now verify path clear
+        step_x = 1 if dx > 0 else (-1 if dx < 0 else 0)
+        step_y = 1 if dy > 0 else (-1 if dy < 0 else 0)
+        x, y = ox + step_x, oy + step_y
+        blocked = False
+        while (x, y) != dest:
+            if piece_at(board, coord_to_square(x,y)) is not None:
+                blocked = True
+                break
+            x += step_x
+            y += step_y
+        if not blocked:
+            return True
+    return False
+
+def pseudo_can_move(board: Dict[str,str], origin_sq: str, dest_sq: str, color: str, piece_type: str) -> bool:
+    # ignore checks; basic movement and collisions
+    ox, oy = square_to_coord(origin_sq)
+    dx, dy = square_to_coord(dest_sq)
+    tx = dx - ox
+    ty = dy - oy
+    dest_piece = piece_at(board, dest_sq)
+    if dest_piece and dest_piece[0] == get_color_prefix(color):
+        return False
+    if piece_type == 'P':
+        forward = 1 if color == 'white' else -1
+        # pawn single move
+        if tx == 0 and ty == forward and dest_piece is None:
+            return True
+        # double move
+        if tx == 0 and ty == 2*forward:
+            start_rank = 1 if color == 'white' else 6
+            if oy == start_rank:
+                mid_sq = coord_to_square(ox, oy + forward)
+                if piece_at(board, mid_sq) is None and dest_piece is None:
+                    return True
+            return False
+        # captures
+        if abs(tx) == 1 and ty == forward:
+            # regular capture
+            if dest_piece is not None and dest_piece[0] != get_color_prefix(color):
+                return True
+            # en passant approximate: if dest empty but there is an opponent pawn on same file as dest on origin rank
+            # This is a heuristic; we'll allow en-passant-like captures by checking the square behind
+            if dest_piece is None:
+                ep_sq = coord_to_square(dx, oy)
+                p = piece_at(board, ep_sq)
+                if p and p[1] == 'P' and p[0] != get_color_prefix(color):
+                    return True
+            return False
+        return False
+    if piece_type == 'N':
+        if (abs(tx), abs(ty)) in [(1,2),(2,1)]:
+            return True
+        return False
+    if piece_type == 'B':
+        if abs(tx) == abs(ty) and abs(tx) > 0:
+            return can_slide_attack(board, (ox,oy), (dx,dy), [ (1,1), (1,-1), (-1,1), (-1,-1) ])
+        return False
+    if piece_type == 'R':
+        if (tx == 0) != (ty == 0):
+            return can_slide_attack(board, (ox,oy), (dx,dy), [ (1,0), (-1,0), (0,1), (0,-1) ])
+        return False
+    if piece_type == 'Q':
+        if abs(tx) == abs(ty) and abs(tx) > 0:
+            return can_slide_attack(board, (ox,oy), (dx,dy), [ (1,1), (1,-1), (-1,1), (-1,-1) ])
+        if (tx == 0) != (ty == 0):
+            return can_slide_attack(board, (ox,oy), (dx,dy), [ (1,0), (-1,0), (0,1), (0,-1) ])
+        return False
+    if piece_type == 'K':
+        if max(abs(tx), abs(ty)) == 1:
+            return True
+        # Castling handled separately
+        return False
+    return False
+
+def find_origin(board: Dict[str,str], move_info: Dict, color: str) -> str:
+    piece = move_info['piece']
+    dest = move_info['dest']
+    if move_info['castle'] is not None:
+        # find king
+        for sq,p in board.items():
+            if p == get_color_prefix(color) + 'K':
+                return sq
+        return None
+    candidates = []
+    for sq,p in board.items():
+        if p[0] != get_color_prefix(color):
+            continue
+        if p[1] != piece:
+            continue
+        if pseudo_can_move(board, sq, dest, color, piece):
+            candidates.append(sq)
+    # apply disambiguation
+    df = move_info.get('disamb_file')
+    dr = move_info.get('disamb_rank')
+    if df:
+        candidates = [c for c in candidates if c[0] == df]
+    if dr:
+        candidates = [c for c in candidates if c[1] == dr]
+    if len(candidates) == 1:
+        return candidates[0]
+    # if ambiguous choose the one that matches SAN style priorities: try to match full string (rare)
+    # fallback: pick one that actually exists; prefer piece that results in capture if capture indicated
+    if len(candidates) > 1:
+        if move_info.get('capture'):
+            # prefer candidate where dest has opponent piece or en-passant heuristic
+            for c in candidates:
+                if piece_at(board, dest) and piece_at(board, dest)[0] != get_color_prefix(color):
+                    if pseudo_can_move(board, c, dest, color, piece):
+                        return c
+            # else just return first
+        return candidates[0]
+    return None
+
+def apply_move(board: Dict[str,str], move: str, color: str) -> Dict[str,str]:
+    # Return new board mapping after applying move (approximate, handles captures, promotions, castling, en-passant heuristics)
+    newb = dict(board)
+    mi = parse_move(move)
+    if mi['castle']:
+        # find king origin and move accordingly
+        king_sq = None
+        for sq,p in board.items():
+            if p == get_color_prefix(color) + 'K':
+                king_sq = sq
+                break
+        if not king_sq:
+            return newb
+        if mi['castle'] == 'O-O':  # king side
+            if color == 'white':
+                k_dest = 'g1'; r_src = 'h1'; r_dest = 'f1'
+            else:
+                k_dest = 'g8'; r_src = 'h8'; r_dest = 'f8'
+        else:  # O-O-O
+            if color == 'white':
+                k_dest = 'c1'; r_src = 'a1'; r_dest = 'd1'
+            else:
+                k_dest = 'c8'; r_src = 'a8'; r_dest = 'd8'
+        newb.pop(king_sq, None)
+        newb.pop(r_src, None)
+        newb[k_dest] = get_color_prefix(color) + 'K'
+        newb[r_dest] = get_color_prefix(color) + 'R'
+        return newb
+    dest = mi['dest']
+    piece = mi['piece']
+    origin = find_origin(board, mi, color)
+    if origin is None:
+        # fallback: if move is in long algebraic like e2e4, try to parse
+        m = re.findall(r'([a-h][1-8])[a-h][1-8]', move)
+        if m:
+            origin = m[0]
+        else:
+            # cannot parse - return original
+            return newb
+    # remove origin
+    moving = newb.pop(origin, None)
+    # handle capture (regular)
+    if mi['capture']:
+        if dest in newb:
+            newb.pop(dest, None)
+        else:
+            # en-passant heuristic: remove pawn behind dest
+            ox, oy = square_to_coord(origin)
+            dx, dy = square_to_coord(dest)
+            if moving and moving[1] == 'P' and ox != dx:
+                # captured pawn at (dx, oy)
+                ep_sq = coord_to_square(dx, oy)
+                if ep_sq in newb and newb[ep_sq][1] == 'P' and newb[ep_sq][0] != get_color_prefix(color):
+                    newb.pop(ep_sq, None)
+    # handle promotion
+    if mi['promo'] and moving:
+        newb[dest] = get_color_prefix(color) + mi['promo']
+    else:
+        if moving:
+            # change piece type if SAN piece letter and doesn't match? moving should be correct
+            newb[dest] = moving
+    return newb
+
+def attackers_to_square(board: Dict[str,str], sq: str, color: str) -> List[Tuple[str,str]]:
+    # returns list of (attacker_sq, attacker_piececode) of opponents attacking sq
+    opp = opponent(color)
+    attackers = []
+    tx, ty = square_to_coord(sq)
+    for osq, code in board.items():
+        if code[0] != get_color_prefix(opp):
+            continue
+        ptype = code[1]
+        if pseudo_can_move(board, osq, sq, opp, ptype):
+            attackers.append((osq, code))
+    return attackers
+
+def count_mobility(board: Dict[str,str], origin_sq: str, color: str, piece_type: str) -> int:
+    # approximate count of pseudo-legal destinations for this piece
+    cnt = 0
+    for x in range(8):
+        for y in range(8):
+            dest = coord_to_square(x,y)
+            if pseudo_can_move(board, origin_sq, dest, color, piece_type):
+                cnt += 1
+    return cnt
+
+def score_move(board: Dict[str,str], move: str, color: str) -> int:
+    # base score
+    mi = parse_move(move)
+    # big bonuses for mate/check tokens if present
+    score = 0
+    if '#' in move:
+        return 1000000
+    if '+' in move:
+        score += 80
+    if mi['castle']:
+        score += 50
+        # small king safety bonus
+        score += 10
+    dest = mi['dest']
+    promo = mi.get('promo')
+    moving_piece = mi['piece']
+    origin = None
+    if mi['castle']:
+        # find king origin square
+        for sq,p in board.items():
+            if p == get_color_prefix(color) + 'K':
+                origin = sq
+                break
+    else:
+        origin = find_origin(board, mi, color)
+    if origin is None:
+        # fallback: give small score to moves moving pieces toward center heuristically
+        if dest:
+            if dest[0] in 'de' and dest[1] in '45':
+                score += 5
+        # minimal score
+        return score + 1
+    # evaluate capture
+    captured_value = 0
+    if mi['capture'] and dest:
+        cap = piece_at(board, dest)
+        if cap:
+            captured_value = VAL.get(cap[1], 0)
+        else:
+            # en-passant heuristic: captured pawn on origin rank same file as dest
+            ox, oy = square_to_coord(origin)
+            dx, dy = square_to_coord(dest)
+            ep_sq = coord_to_square(dx, oy)
+            ep = piece_at(board, ep_sq)
+            if ep and ep[1] == 'P' and ep[0] != get_color_prefix(color):
+                captured_value = VAL['P']
+    score += int(captured_value * 1.5)
+    # promotions
+    if promo:
+        score += VAL.get(promo, VAL['Q']) * 3
+    # special reward for capturing high-value piece with low-value piece
+    mover_val = VAL.get(moving_piece, 0)
+    if mi['capture']:
+        score += captured_value * 5 - mover_val * 2
+    # mobility bonus: how many moves from dest
+    tmp_board = apply_move(board, move, color)
+    dest_sq = dest
+    if dest_sq is None and mi['castle']:
+        # dest for castling king
+        if color == 'white':
+            dest_sq = 'g1' if mi['castle'] == 'O-O' else 'c1'
+        else:
+            dest_sq = 'g8' if mi['castle'] == 'O-O' else 'c8'
+    if dest_sq:
+        mob = 0
+        pcode = tmp_board.get(dest_sq)
+        if pcode:
+            mob = count_mobility(tmp_board, dest_sq, color, pcode[1])
+        score += mob
+        # centralization bonus
+        if dest_sq[0] in 'de' and dest_sq[1] in '45':
+            score += 12
+        # penalize if moved piece is attacked
+        attackers = attackers_to_square(tmp_board, dest_sq, color)
+        if attackers:
+            # compute best attacker (lowest value)
+            attacker_values = [VAL.get(p[1], 0) for _,p in attackers]
+            min_att = min(attacker_values)
+            # if captured_value >= min_att, maybe good exchange; else penalize
+            if captured_value < min_att:
+                score -= (min_att - captured_value) * 3
+            else:
+                score += (captured_value - min_att) * 2
+            # heavy penalty if attacked by a pawn or knight or lower piece and moving piece is high value
+            if min_att < mover_val:
+                score -= 10
+    # small bias: prefer checks (already added), prefer promotions
+    # minor bias for piece development (knight/bishop moving off back rank)
+    if moving_piece in ('N','B') and origin[1] in '18':
+        score += 8
+    # avoid moving king into center (if destination not castling and king)
+    if moving_piece == 'K' and not mi['castle']:
+        # penalize moving into center if opponent pieces near
+        if dest and dest[0] in 'de' and dest[1] in '45':
+            score -= 20
+    # tiny tie-breaker based on lexical move for determinism
+    score += (sum(ord(c) for c in move) % 5) * 0.1
+    return int(score)
+
+def policy(pieces: Dict[str,str], to_play: str, legal_moves: List[str], memory: Dict) -> Tuple[str, Dict]:
+    # Defensive: if no legal moves, return any (shouldn't happen)
+    if not legal_moves:
+        return ("", memory)
+    best_move = None
+    best_score = -10**9
+    # evaluate each legal move
+    for mv in legal_moves:
+        try:
+            sc = score_move(pieces, mv, to_play)
+        except Exception:
+            sc = -10**6
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+    # safety: ensure best_move is set
+    if best_move is None:
+        best_move = legal_moves[0]
+    return (best_move, memory)
+</code>

@@ -1,0 +1,275 @@
+The strategy implemented in the policy is based on a robust graph evaluation of the Havannah board state, combined with a 1-ply search to maximize connection potential and block opponent threats.
+
+1.  **Topology Inference**: The policy dynamically deduces the board's connectivity (Neighbors, Corners, and Edges) from the `valid_mask` and 2D array coordinates. It uses a specific parity-based offset logic (Deduced from the prompt's example) to map the 2D array correctly to a hexagonal structure. Cells with degree $\le 3$ are classified as Corners, and degree $4$ as Edges.
+2.  **State Analysis**: A Union-Find (Disjoint Set Union) data structure monitors connected groups of stones. For every group, the policy tracks the set of specific Corners and Edge-IDs it touches.
+3.  **Heuristic Evaluation**:
+    *   **Win Detection**: Prioritizes moves that complete a **Bridge** (connecting 2 distinct corners) or a **Fork** (connecting 3 distinct edges).
+    *   **Blocking**: It first simulates the opponent's moves to detect immediate winning threats. If a move is found that lets the opponent win, that cell is flagged as a high-priority block.
+    *   **Connectivity Potential**: It scores moves based on how many edges/corners they add to a group, whether they merge disjoint groups, and whether they form non-trivial cycles (a heuristic for Ring potential).
+    *   **Centrality**: A tie-breaker bias prefers moves closer to the center of the board.
+
+The policy operates efficiently within the time limit by performing connectivity simulations without full tree search, making it responsive and tactically sharp.
+
+<code>
+import random
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    """
+    Havannah policy for a 15x15 board.
+    Determines the best move by analyzing connectivity for Bridge, Fork, and Ring shapes.
+    """
+    rows = len(valid_mask)
+    cols = len(valid_mask[0])
+    
+    # --- 1. Topology & Graph Construction ---
+    
+    def get_neighbors(r, c):
+        """Yields neighbor coordinates based on hexagonal-array mapping."""
+        # Vertical neighbors
+        yield (r + 1, c)
+        yield (r - 1, c)
+        
+        # Diagonal neighbors depend on column index parity
+        # Using the mapping deduced from the prompt example:
+        if c % 2 == 0:  # Even column
+            # Shift 'down' for diagonals
+            yield (r, c - 1)
+            yield (r + 1, c - 1)
+            yield (r, c + 1)
+            yield (r + 1, c + 1)
+        else:  # Odd column
+            # Shift 'up' for diagonals
+            yield (r, c - 1)
+            yield (r - 1, c - 1)
+            yield (r, c + 1)
+            yield (r - 1, c + 1)
+
+    # Identify valid cells and build adjacency graph
+    valid_cells = []
+    for r in range(rows):
+        for c in range(cols):
+            if valid_mask[r][c]:
+                valid_cells.append((r, c))
+
+    adj = {u: [] for u in valid_cells}
+    degrees = {u: 0 for u in valid_cells}
+    
+    for u in valid_cells:
+        r, c = u
+        nbrs = []
+        for nr, nc in get_neighbors(r, c):
+            if 0 <= nr < rows and 0 <= nc < cols and valid_mask[nr][nc]:
+                nbrs.append((nr, nc))
+        adj[u] = nbrs
+        degrees[u] = len(nbrs)
+
+    # Classify Corners and Edges based on connectivity degree
+    # Corners: Degree <= 3 (Tips have 2, standard corners 3)
+    # Edges: Degree == 4
+    # Inner: Degree == 6
+    corners = set(u for u in valid_cells if degrees[u] <= 3)
+    edge_candidates = list(u for u in valid_cells if degrees[u] == 4)
+    
+    # Group edge cells into distinct edge segments (0..5) using BFS
+    edge_map = {} # (r,c) -> edge_id
+    visited_edges = set()
+    edge_id_counter = 0
+    
+    for u in edge_candidates:
+        if u not in visited_edges:
+            q = [u]
+            visited_edges.add(u)
+            edge_map[u] = edge_id_counter
+            while q:
+                curr = q.pop(0)
+                for v in adj[curr]:
+                    if v in edge_candidates and v not in visited_edges: # v in edge_candidates is implied by list check? No, must check O(1)
+                        # Correction: check if neighbor has degree 4
+                        if degrees[v] == 4:
+                            visited_edges.add(v)
+                            edge_map[v] = edge_id_counter
+                            q.append(v)
+            edge_id_counter += 1
+
+    # --- 2. Connectivity Engine (Union-Find) ---
+    
+    # Global state for the DSU, reset per player simulation
+    parent = {}
+    size = {}
+    touched_corners = {} # root -> set(coords)
+    touched_edges = {}   # root -> set(edge_ids)
+    
+    def make_set(u):
+        parent[u] = u
+        size[u] = 1
+        touched_corners[u] = {u} if u in corners else set()
+        touched_edges[u] = {edge_map[u]} if u in edge_map else set()
+
+    def find(u):
+        path = []
+        while parent[u] != u:
+            path.append(u)
+            u = parent[u]
+        for node in path:
+            parent[node] = u
+        return u
+
+    def union(u, v):
+        root_u = find(u)
+        root_v = find(v)
+        if root_u != root_v:
+            if size[root_u] < size[root_v]:
+                root_u, root_v = root_v, root_u
+            parent[root_v] = root_u
+            size[root_u] += size[root_v]
+            touched_corners[root_u].update(touched_corners[root_v])
+            touched_edges[root_u].update(touched_edges[root_v])
+            return True
+        return False
+
+    def get_group_props(root):
+        return size[root], touched_corners[root], touched_edges[root]
+
+    def build_dsu(stones):
+        parent.clear()
+        size.clear()
+        touched_corners.clear()
+        touched_edges.clear()
+        stone_set = set(stones)
+        for s in stones:
+            make_set(s)
+        for s in stones:
+            for nbr in adj[s]:
+                if nbr in stone_set:
+                    union(s, nbr)
+
+    # --- 3. Move Evaluation ---
+
+    def evaluate_move(move, player_stones_set):
+        """
+        Calculates a score for a move based on:
+        1. Immediate Win (Bridge, Fork)
+        2. Progress towards Win (Edges/Corners connected)
+        3. Cycle creation (Ring potential)
+        """
+        # Identify neighbors belonging to the player
+        my_nbrs = [n for n in adj[move] if n in player_stones_set]
+        neighbor_roots = {find(n) for n in my_nbrs}
+        
+        # Properties if we place stone here
+        c_corners = set()
+        c_edges = set()
+        if move in corners: c_corners.add(move)
+        if move in edge_map: c_edges.add(edge_map[move])
+        
+        current_size = 1
+        
+        # Merge properties from all adjacent groups
+        for r in neighbor_roots:
+            s, tc, te = get_group_props(r)
+            current_size += s
+            c_corners.update(tc)
+            c_edges.update(te)
+            
+        # --- Win Checks ---
+        is_win = False
+        if len(c_corners) >= 2: is_win = True # Bridge
+        if len(c_edges) >= 3: is_win = True   # Fork
+        
+        # Heuristic Ring Check:
+        # If we connect to the same group twice via non-adjacent neighbors,
+        # we have closed a non-trivial cycle.
+        has_cycle_potential = False
+        if not is_win:
+            # Map root -> list of neighbors
+            groups_map = {}
+            for n in my_nbrs:
+                r = find(n)
+                groups_map.setdefault(r, []).append(n)
+            
+            for r, nodes in groups_map.items():
+                if len(nodes) >= 2:
+                    # Check adjacency between these neighbor nodes
+                    # If any pair is NOT adjacent, we close a loop > 3 (Potential Ring)
+                    # (A triangle is formed by adjacent neighbors, which is not a ring)
+                    ring_found = False
+                    for i in range(len(nodes)):
+                        for j in range(i+1, len(nodes)):
+                            if nodes[j] not in adj[nodes[i]]:
+                                ring_found = True
+                                break
+                        if ring_found: break
+                    if ring_found:
+                        has_cycle_potential = True
+                        break
+        
+        # --- Scoring ---
+        if is_win: return 10_000_000
+        
+        score = 0
+        
+        # Shape Potential
+        score += len(c_edges) * 100
+        score += len(c_corners) * 300
+        if has_cycle_potential: score += 500
+        
+        # Threats / Near Win
+        if len(c_edges) == 2: score += 400  # Threatening Fork
+        if len(c_corners) == 1 and len(c_edges) >= 1: score += 200 # Flexible threat
+        
+        # Connectivity Bonus (merging groups is good)
+        if len(neighbor_roots) > 1:
+            score += 50 * len(neighbor_roots)
+            
+        return score
+
+    # --- 4. Main Search ---
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Valid candidate moves
+    candidates = [u for u in valid_cells if u not in me_set and u not in opp_set]
+    if not candidates:
+        return (0, 0) # Fallback
+
+    # A. Analyze Opponent for Threats
+    build_dsu(opp)
+    opp_threats = {}
+    for m in candidates:
+        s = evaluate_move(m, opp_set)
+        if s >= 10_000_000:
+            opp_threats[m] = 2  # Immediate Loss
+        elif s > 400:
+            opp_threats[m] = 1  # Strong Threat
+    
+    # B. Analyze My Moves
+    build_dsu(me)
+    
+    best_score = -float('inf')
+    best_move = candidates[0]
+    
+    center_r, center_c = rows / 2.0, cols / 2.0
+    
+    for m in candidates:
+        my_score = evaluate_move(m, me_set)
+        
+        # Apply Blocking Logic
+        if m in opp_threats:
+            threat_level = opp_threats[m]
+            if threat_level == 2:
+                my_score += 5_000_000 # Must block winning move (unless I win)
+            elif threat_level == 1:
+                my_score += 300 # Prioritize blocking strong tactical moves
+                
+        # Positional Bias (Centrality)
+        # Prefer center early game, but not overriding tactics
+        dist = abs(m[0] - center_r) + abs(m[1] - center_c)
+        my_score -= dist * 0.1
+        
+        if my_score > best_score:
+            best_score = my_score
+            best_move = m
+            
+    return best_move
+</code>

@@ -1,0 +1,354 @@
+My strategy is to implement a Minimax algorithm with Alpha-Beta pruning to look ahead several moves. The policy will prioritize material advantage (kings are worth more than men) and positional heuristics, such as controlling the center of the board and advancing pieces to gain kings. The search depth is limited to ensure execution within the 1-second time constraint. Mandatory captures are handled by filtering for capture moves first; if captures exist, only those are considered legal moves.
+
+<code>
+import random
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Main policy function that returns the next move.
+    Uses Minimax with Alpha-Beta pruning.
+    """
+    # Convert lists to a dictionary board representation for efficient access
+    # Board: {(r, c): char}
+    board = {}
+    for r, c in my_men: board[(r, c)] = 'm'
+    for r, c in my_kings: board[(r, c)] = 'k'
+    for r, c in opp_men: board[(r, c)] = 'M'
+    for r, c in opp_kings: board[(r, c)] = 'K'
+    
+    # Determine player direction
+    # 'w' moves up (+1 row), 'b' moves down (-1 row)
+    # (0,0) is bottom-left. Row 7 is top.
+    if color == 'w':
+        my_dir = 1
+        opp_color = 'b'
+    else:
+        my_dir = -1
+        opp_color = 'w'
+
+    # Get all legal moves for the current player
+    moves = get_all_legal_moves(board, color, my_dir)
+    
+    if not moves:
+        # Should not happen in a valid game state, but return a placeholder
+        return ((0,0), (0,0))
+
+    # If only one move available, return it immediately
+    if len(moves) == 1:
+        return moves[0][:2]
+
+    # Use Minimax to find the best move
+    depth = 4  # Adjust depth based on time constraints
+    best_move = None
+    best_score = float('-inf')
+    alpha = float('-inf')
+    beta = float('inf')
+    
+    # Shuffle moves to avoid predictability when scores are equal
+    random.shuffle(moves)
+    
+    for move in moves:
+        # Simulate the move
+        new_board = simulate_move(board, move, color, my_dir)
+        # Check for chain capture
+        # In standard checkers, if a capture is possible, we must capture.
+        # simulate_move returns the board state.
+        # The Minimax turn switches to opponent unless it's a multi-turn sequence?
+        # Standard Minimax treats a full turn (including multi-jumps) as one node expansion.
+        # We handle this by checking if the move was a capture and if more captures are available.
+        # However, our `get_all_legal_moves` currently returns single-step moves.
+        # To correctly handle multi-jumps in minimax, we need to check continuity.
+        
+        # Let's simplify: `get_all_legal_moves` returns immediate moves.
+        # If a move is a capture, we recursively check for more captures within the same turn.
+        # We can integrate this into the minimax logic or handle it in simulate_move.
+        # Actually, the game engine calls `policy` repeatedly. 
+        # So `policy` only needs to return the *next immediate step*.
+        # But for evaluation, we should ideally look down the whole sequence.
+        # Given the 1s limit, we treat each step as a node. 
+        # The engine enforces turn continuity.
+        
+        # Wait, if I return a capture, and another capture is available, 
+        # the engine will call policy again. This naturally fits Minimax: 
+        # My Move -> Opponent Move -> ...
+        # Even if I jump twice, it is two calls to policy. 
+        # So we just evaluate the immediate board state resulting from ONE move.
+        
+        current_score = minimax(new_board, depth - 1, alpha, beta, False, color, opp_color, my_dir)
+        
+        if current_score > best_score:
+            best_score = current_score
+            best_move = move
+            
+        alpha = max(alpha, best_score)
+        
+    return best_move[:2]
+
+def minimax(board, depth, alpha, beta, is_maximizing, my_color, opp_color, my_dir):
+    if depth == 0:
+        return evaluate_board(board, my_color, my_dir)
+    
+    current_color = my_color if is_maximizing else opp_color
+    # Determine direction for the current player
+    # If current is opponent, direction is inverted relative to 'me'
+    # But standard dir depends on color: w -> +1, b -> -1.
+    # my_dir is the dir for 'my_color'.
+    # opp_dir is inverted.
+    current_dir = my_dir if is_maximizing else -my_dir
+    
+    moves = get_all_legal_moves(board, current_color, current_dir)
+    
+    if not moves:
+        # Game over for this player
+        return -10000 if is_maximizing else 10000
+
+    if is_maximizing:
+        max_eval = float('-inf')
+        for move in moves:
+            new_board = simulate_move(board, move, current_color, current_dir)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, False, my_color, opp_color, my_dir)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_board = simulate_move(board, move, current_color, current_dir)
+            eval_score = minimax(new_board, depth - 1, alpha, beta, True, my_color, opp_color, my_dir)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate_board(board, my_color, my_dir):
+    """
+    Heuristic evaluation of the board.
+    """
+    score = 0
+    # Material weights
+    man_weight = 10
+    king_weight = 25
+    
+    # Positional weights
+    center_bonus = 1
+    advancement_bonus = 1 # for men
+    
+    opp_color = 'b' if my_color == 'w' else 'w'
+    
+    for (r, c), piece in board.items():
+        value = 0
+        is_king = piece.lower() == 'k'
+        piece_color = 'w' if piece in ['m', 'k'] else 'b' # Logic error risk: 
+        # Let's rely on 'm','k' vs 'M','K' convention used in setup?
+        # In `policy`: my_men -> 'm', opp_men -> 'M'.
+        # So lower case is usually 'me' if I set it that way.
+        # But `evaluate_board` is called from minimax where board is flipped.
+        # In simulate, we assign char based on color arg.
+        # Let's trace: 
+        # policy sets: my='m','k', opp='M','K'.
+        # simulate_move uses color arg.
+        # If color=='w' (me), it places 'm','k'.
+        # If color=='b' (opp), it places 'M','K'.
+        # Wait, the board dictionary stores chars.
+        # We need a robust way to identify ownership in evaluation.
+        # Let's assume: 
+        #   'm', 'k' -> Player who initialized the policy (my_color)
+        #   'M', 'K' -> Opponent
+        # This mapping holds because we only copy/update the board dict passed around.
+        
+        is_mine = piece in ['m', 'k']
+        
+        # Base value
+        if is_king:
+            value = king_weight
+        else:
+            value = man_weight
+            # Advancement
+            # my_dir is direction for 'me'.
+            # If piece is mine, it advances by +my_dir row.
+            # If piece is opp, it advances by -my_dir row.
+            if is_mine:
+                # My men want to reach row 7 if my_dir is 1 (white)
+                # Or row 0 if my_dir is -1 (black)
+                # Row 0 is baseline for black.
+                # Distance to promotion?
+                if my_dir == 1: # White
+                    value += r * advancement_bonus # Higher row is better
+                else: # Black
+                    value += (7 - r) * advancement_bonus # Lower row is better
+            else:
+                # Opponent men
+                if my_dir == 1: # Opponent is Black
+                    value += (7 - r) * advancement_bonus
+                else: # Opponent is White
+                    value += r * advancement_bonus
+
+        # Center control (cols 2,3,4,5)
+        if 2 <= c <= 5:
+            value += center_bonus
+            
+        if is_mine:
+            score += value
+        else:
+            score -= value
+            
+    return score
+
+def get_all_legal_moves(board, color, direction):
+    """
+    Returns a list of legal moves.
+    Move format: ((from_r, from_c), (to_r, to_c), captured_pos or None)
+    """
+    moves = []
+    captures = []
+    
+    # Identify pieces
+    my_pieces = []
+    opp_pieces = []
+    
+    # Reconstruct ownership based on case or internal tracking
+    # To make it robust, let's pass markers?
+    # Actually, in the logic flow:
+    # policy sets my pieces as 'm','k' and opp as 'M','K'.
+    # simulate maintains this.
+    # color arg tells us which set to move.
+    
+    if color == 'w': # Assuming 'w' initialized 'm','k' in this context?
+        # This is tricky. The 'color' arg in minimax switches.
+        # We need to know: for the current board, which chars are 'current player'?
+        # Simple convention:
+        # `policy` (root) initializes:
+        # my (variable `color`) -> 'm', 'k'
+        # opp -> 'M', 'K'
+        # This mapping is preserved in `simulate_move`.
+        # So `color` arg in `get_all_legal_moves` matches the lowercase chars?
+        # Not necessarily if `minimax` switches player.
+        # If I am 'b' (black), I set my pieces to 'm','k'?
+        # In `policy`:
+        # my_men -> 'm', my_kings -> 'k'. 
+        # opp_men -> 'M', opp_kings -> 'K'.
+        # So lowercase is ALWAYS the player who called `policy`.
+        # Uppercase is ALWAYS the opponent.
+        # This is a fixed reference frame!
+        # But wait. `minimax` simulates opponent.
+        # If `is_maximizing` is False, `current_color` is opponent.
+        # `get_all_legal_moves` is called with `current_color`.
+        # It needs to return moves for the Opponent.
+        # Opponent pieces are 'M', 'K'.
+        # So logic:
+        # if `color` == `my_color` (passed from root):
+        #   move lowercase pieces.
+        # else:
+        #   move uppercase pieces.
+        # We need to pass `root_color` down? 
+        # Or simpler: just rely on `color` arg determining direction, and check board keys.
+        pass
+
+    # Let's refine `policy` and `minimax` to handle this mapping clearly.
+    # We can stick to:
+    # Lowercase ('m', 'k') = Player who started the search (Me).
+    # Uppercase ('M', 'K') = Opponent.
+    # This is fixed throughout the search tree.
+    # `color` arg in helper functions just helps with direction and identity.
+    
+    # Wait, this fixed frame breaks if I am Black.
+    # Black usually moves Down. White moves Up.
+    # If I am Black, I set 'm','k'. I move Down (-1).
+    # If I am White, I set 'm','k'. I move Up (+1).
+    # So `my_dir` passed from root is correct for lowercase pieces.
+    # For opponent, direction is `-my_dir`.
+    
+    # Inside `get_all_legal_moves`, we are passed `current_dir`.
+    # We need to know which pieces to move.
+    # If `current_dir == my_dir`: moving Lowercase.
+    # Else: moving Uppercase.
+    # This works assuming `my_dir` is passed correctly down.
+    
+    # Let's adjust logic to not rely on `my_dir` for identity inside this helper.
+    # Better: Pass `is_mine` boolean or determine from `current_dir` context.
+    # Since we pass `my_dir` from root:
+    # if `current_dir == my_dir` -> moving Lowercase.
+    # else -> moving Uppercase.
+    
+    is_lower = (direction == my_dir) # crude check if `my_dir` was passed as `direction` or `-my_dir`
+    # Actually simpler: 
+    # `minimax` passes `current_dir`.
+    # If `is_maximizing`: `current_dir` = `my_dir`. Pieces = lower.
+    # If `not is_maximizing`: `current_dir` = `-my_dir`. Pieces = upper.
+    
+    target_keys = ['m', 'k'] if (direction == my_dir) else ['M', 'K']
+    
+    # Scan board for target pieces
+    for (r, c), piece in board.items():
+        if piece not in target_keys:
+            continue
+            
+        is_king = piece.lower() == 'k'
+        
+        # Directions to check
+        # Men move in `direction`. Kings move both.
+        dirs = [direction]
+        if is_king:
+            dirs = [direction, -direction]
+            
+        for dr in dirs:
+            for dc in [-1, 1]:
+                # Simple Move
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    if (nr, nc) not in board:
+                        moves.append(((r, c), (nr, nc), None))
+                    else:
+                        # Capture?
+                        # Check if occupied by opponent
+                        occupant = board[(nr, nc)]
+                        # Opponent is whatever is NOT in target_keys
+                        is_opp = occupant not in target_keys
+                        # Valid pieces are only ever 'm','k','M','K'
+                        # So if not target, it is opponent.
+                        
+                        if is_opp:
+                            jr, jc = nr + dr, nc + dc
+                            if 0 <= jr < 8 and 0 <= jc < 8:
+                                if (jr, jc) not in board:
+                                    captures.append(((r, c), (jr, jc), (nr, nc)))
+                                    
+    # Mandatory capture
+    if captures:
+        return captures
+    return moves
+
+def simulate_move(board, move, color, direction):
+    """
+    Returns a new board state after applying the move.
+    """
+    new_board = board.copy()
+    (fr, fc), (tr, tc), captured = move
+    
+    # Identify piece
+    piece = new_board[(fr, fc)]
+    del new_board[(fr, fc)]
+    
+    # Remove captured piece if any
+    if captured:
+        del new_board[captured]
+        
+    # Check for promotion
+    # Promotion row depends on direction
+    # If moving `direction` (+1 for White), promote at row 7.
+    # If moving `direction` (-1 for Black), promote at row 0.
+    promote_row = 7 if direction == 1 else 0
+    
+    if not (piece == 'k' or piece == 'K'): # If Man
+        if tr == promote_row:
+            # Promote
+            # Preserve case ownership
+            if piece == 'm': piece = 'k'
+            elif piece == 'M': piece = 'K'
+            
+    new_board[(tr, tc)] = piece
+    return new_board
+</code>

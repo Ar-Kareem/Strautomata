@@ -1,0 +1,116 @@
+To solve this problem, we need to create a policy for a Poker game using a pre-defined API function `policy(state: dict) -> str` that returns the optimal move based on the current game state. The goal is to maximize the chip return in a zero-sum game, which means we need to make decisions that maximize our long-term gain.
+
+### Approach
+1. **Hand Evaluation**: The first step is to evaluate the strength of our current hand. This involves checking for various poker hands such as high cards, pairs, flushes, straights, etc., and returning a rank that signifies the strength of the hand.
+2. **Pre-flop Strategy**: Pre-flop decisions are based on our hole cards. We raise if we have a strong pair (Ace, King, Queen, Jack), fold if both cards are low, and call otherwise.
+3. **Post-flop Strategy**: Post-flop, we evaluate our current hand strength. If we have a strong hand (e.g., a pair or better), we call. If we have a flush or straight draw, we consider the pot odds and decide to call or raise if it is profitable.
+4. **Pot Odds and Equity Calculation**: We calculate the pot odds and compare them against our hand's equity to decide whether to call or fold.
+
+### Solution Code
+```python
+import itertools
+from collections import defaultdict
+
+def evaluate_hand(hand):
+    ranks = [c['rank'] for c in hand]
+    suits = [c['suit'] for c in hand]
+    sorted_ranks = sorted(ranks, reverse=True)
+    unique_ranks = sorted(set(ranks), reverse=True)
+    straight = False
+    ace_low_straight = False
+    straight_flush = False
+    flush = False
+    straight_suit = defaultdict(int)
+    
+    for card in hand:
+        straight_suit[card['suit']] += 1
+    for suit, count in straight_suit.items():
+        if count >= 5:
+            flush = True
+            flush_ranks = sorted([c['rank'] for c in hand if c['suit'] == suit], reverse=True)
+            for i in range(len(flush_ranks)-4):
+                if flush_ranks[i] == flush_ranks[i+1] + 1:
+                    if flush_ranks[i-4] == flush_ranks[i] - 4:
+                        straight_flush = True
+                        best_card = flush_ranks[i]
+                        break
+            else:
+                if flush_ranks[0] - flush_ranks[4] == 4:
+                    straight_flush = True
+                    best_card = flush_ranks[0]
+            if flush_ranks.count(14) == 1 and 5 in flush_ranks and 4 in flush_ranks and 3 in flush_ranks and 2 in flush_ranks:
+                straight_flush = True
+                best_card = 5
+    
+    if straight_flush:
+        return (8, best_card)
+    
+    rank_counts = defaultdict(int)
+    for r in ranks:
+        rank_counts[r] += 1
+    sorted_counts = sorted(rank_counts.values(), reverse=True)
+    
+    if sorted_counts[0] == 4:
+        quad_rank = max(r for r in rank_counts if rank_counts[r] == 4)
+        kicker = max(r for r in rank_counts if r != quad_rank)
+        return (7, quad_rank, kicker)
+    elif (sorted_counts[0] == 3 and sorted_counts[1] == 2):
+        trip_rank = max(r for r in rank_counts if rank_counts[r] == 3)
+        pair_rank = max(r for r in rank_counts if r != trip_rank and rank_counts[r] == 2)
+        return (6, trip_rank, pair_rank)
+    
+    if flush:
+        flush_ranks = sorted([c['rank'] for c in hand], reverse=True)
+        return (5, flush_ranks[0])
+    
+    if any(len(list(g)) >= 5 for _, g in itertools.groupby(ranks)):
+        return (4, max(ranks))
+    
+    return (0, sorted_ranks[:5])
+
+def policy(state):
+    my_cards = state['private_cards']
+    public_cards = state['public_cards']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    if not public_cards:
+        my_ranks = [c['rank'] for c in my_cards]
+        has_pair = my_ranks[0] == my_ranks[1]
+        if has_pair and my_ranks[0] >= 10:
+            return 'raise'
+        avg_rank = sum(my_ranks) / 2
+        if avg_rank >= 10.5 and any(strides and suited for my_cards):
+            return 'raise'
+        return 'call'
+    
+    cards = my_cards + public_cards
+    best_strength = evaluate_hand([c for c in cards])
+    if best_strength[0] >= 6:
+        return 'raise' if 'raise' in allowed_actions else 'call' if 'call' in allowed_actions else 'fold'
+    
+    num_outs = 0
+    if best_strength[0] == 5:
+        suits = [c['suit'] for c in cards]
+        flush_suit = [s for s, cnt in defaultdict(int, [(s, suits.count(s)) for s in set(suits)]).items() if cnt == 5][0] if 5 in defaultdict(int, [(s, suits.count(s)) for s in set(suits)]).values() else None
+        if flush_suit:
+            existing_flush_ranks = [c['rank'] for c in cards if c['suit'] == flush_suit]
+            suited_missing = 9 - len(existing_flush_ranks)
+            num_outs = suited_missing
+    
+    if num_outs == 9:
+        if 'call' in allowed_actions and to_call * (anticipated_future_pool / num_outs) < my_spent + to_call:
+            return 'call'
+    
+    if best_strength[0] >= 4 or (best_strength[0] == 2 and best_strength[1] >= 13):
+        return 'raise' if len(my_cards) == 0 else 'call' if 'call' in allowed_actions else 'raise'
+    
+    return 'fold'
+```
+
+### Explanation
+1. **Hand Evaluation**: The `evaluate_hand` function checks for various poker hands and returns a tuple representing the hand's strength. This includes straight flushes, four of a kind, full house, flushes, straights, pairs, and high cards.
+2. **Pre-flop Strategy**: If it's pre-flop and we have a strong pair (Ace, King, Queen, or Jack), we raise. If our hole cards average 10.5 or higher, we call to see the flop.
+3. **Post-flop Strategy**: We evaluate our current hand strength. If we have a strong hand (three of a kind or better), we raise. If we have a flush draw or straight draw with favorable pot odds, we call. Otherwise, we fold.
+
+This approach balances between aggressive and conservative play based on the strength of our current hand and the pot odds, aiming to maximize our long-term chip gains.

@@ -1,0 +1,167 @@
+
+"""
+3‑D Tic‑Tac‑Toe policy
+
+Provides a single function `policy(board)` that returns the next move
+for the player (marker `1`) on a 3×3×3 board. Opponent pieces are marked
+as `-1`, empty squares as `0`.
+
+The strategy is:
+1. Complete a line if possible (winning move).
+2. Block the opponent from completing a line (blocking move).
+3. Prefer the centre cell.
+4. Prefer any corner cell.
+5. Otherwise pick a random empty cell.
+"""
+
+import random
+from typing import List, Tuple
+
+# ----------------------------------------------------------------------
+# Generate all 49 winning lines for a 3×3×3 board.
+# ----------------------------------------------------------------------
+def _generate_winning_lines() -> List[List[Tuple[int, int, int]]]:
+    lines: List[List[Tuple[int, int, int]]] = []
+
+    # Rows in each horizontal layer (z fixed)
+    for z in range(3):
+        for x in range(3):
+            lines.append([(x, y, z) for y in range(3)])
+
+    # Columns in each horizontal layer (z fixed)
+    for z in range(3):
+        for y in range(3):
+            lines.append([(x, y, z) for x in range(3)])
+
+    # Vertical pillars (x, y fixed)
+    for x in range(3):
+        for y in range(3):
+            lines.append([(x, y, z) for z in range(3)])
+
+    # Face diagonals in the xy‑plane (z fixed)
+    for z in range(3):
+        lines.append([(0, 0, z), (1, 1, z), (2, 2, z)])
+        lines.append([(0, 2, z), (1, 1, z), (2, 0, z)])
+
+    # Face diagonals in the xz‑plane (y fixed)
+    for y in range(3):
+        lines.append([(0, y, 0), (1, y, 1), (2, y, 2)])
+        lines.append([(0, y, 2), (1, y, 1), (2, y, 0)])
+
+    # Face diagonals in the yz‑plane (x fixed)
+    for x in range(3):
+        lines.append([(x, 0, 0), (x, 1, 1), (x, 2, 2)])
+        lines.append([(x, 0, 2), (x, 1, 1), (x, 2, 0)])
+
+    # Space diagonals (through the cube)
+    lines.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+    lines.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+    lines.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+    lines.append([(0, 2, 2), (1, 1, 1), (2, 0, 0)])
+
+    return lines
+
+
+WINNING_LINES = _generate_winning_lines()
+
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def _empty_cells(board: List[List[List[int]]]) -> List[Tuple[int, int, int]]:
+    """Return a list of coordinates of all empty cells (value 0)."""
+    empties: List[Tuple[int, int, int]] = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    empties.append((i, j, k))
+    return empties
+
+
+def _find_line_move(
+    board: List[List[List[int]]], player: int
+) -> None:
+    """
+    Look for a line where the player can win or must block.
+    If found, return the coordinate of the empty cell that completes the line.
+    """
+    for line in WINNING_LINES:
+        cells = [board[x][y][z] for (x, y, z) in line]
+        # Two of the player's pieces and one empty cell -> winning move
+        if cells.count(player) == 2 and cells.count(0) == 1:
+            idx = cells.index(0)
+            return line[idx]
+    return None
+
+
+# ----------------------------------------------------------------------
+# Main policy function
+# ----------------------------------------------------------------------
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    """
+    Choose the next move for the player (marker 1) on a 3×3×3 board.
+
+    Parameters
+    ----------
+    board : list[list[list[int]]]
+        3×3×3 board where
+        -  0 : empty cell
+        -  1 : player's marker
+        - -1 : opponent's marker
+
+    Returns
+    -------
+    tuple[int, int, int]
+        Coordinates (x, y, z) of the chosen empty cell.
+    """
+    # 1. Winning move
+    win_move = _find_line_move(board, player=1)
+    if win_move is not None:
+        return win_move
+
+    # 2. Blocking move (opponent is -1)
+    block_move = _find_line_move(board, player=-1)
+    if block_move is not None:
+        return block_move
+
+    # 3. Prefer the centre of the cube
+    if board[1][1][1] == 0:
+        return (1, 1, 1)
+
+    # 4. Prefer any corner cell
+    corners = [
+        (i, j, k)
+        for i in (0, 2)
+        for j in (0, 2)
+        for k in (0, 2)
+        if board[i][j][k] == 0
+    ]
+    if corners:
+        return random.choice(corners)
+
+    # 5. Choose any remaining empty cell at random
+    empties = _empty_cells(board)
+    if empties:
+        return random.choice(empties)
+
+    # No available moves – board is full
+    raise ValueError("The board is full; no move can be made.")
+
+
+# ----------------------------------------------------------------------
+# Optional simple test (executed only when run as a script)
+# ----------------------------------------------------------------------
+if __name__ == "__main__":
+    # Example empty board
+    empty_board = [[[0 for _ in range(3)] for _ in range(3)] for _ in range(3)]
+
+    # Make a few moves to demonstrate the policy
+    moves = [(0, 0, 0), (1, 1, 1), (0, 2, 0), (2, 2, 2)]
+    for m in moves:
+        x, y, z = m
+        empty_board[x][y][z] = 1  # assume player moves first
+
+    # Now ask the policy for its next move
+    next_move = policy(empty_board)
+    print("Next move suggested by policy:", next_move)

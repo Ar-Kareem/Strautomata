@@ -1,0 +1,488 @@
+The strategy for this policy is:
+- **Learn the board geometry from `valid_mask`** (it is a hex board embedded in a 15×15 array). The code tries several standard hex-neighbor conventions and selects the one that best matches a Havannah board (many interior cells with 6 neighbors, exactly 6 corners with 3 neighbors).
+- **Tactical priority**:
+  1. Play an **immediate winning move** if available (detects **bridge**, **fork**, and **ring**).
+  2. Otherwise **block any opponent immediate winning move** (including ring completions).
+- **Positional play (heuristic)** when no tactics apply:
+  - Prefer moves that **increase connectivity** (adjacent to own stones),
+  - **touch more distinct edges** (fork potential) and/or **approach corners** (bridge potential),
+  - **contest opponent influence** (adjacent to opponent stones),
+  - keep a mild preference for **central** cells,
+  - avoid moves that allow an **immediate opponent win** next turn (simple 1-ply safety check over likely threat cells).
+
+<code>
+from __future__ import annotations
+
+from collections import deque
+from typing import Dict, List, Tuple, Set, Iterable, Optional
+
+import numpy as np
+
+
+# --------- Global cache (prepared once per valid_mask shape/content) ---------
+
+_CACHE = {
+    "prepared": False,
+    "valid_coords": None,          # List[(r,c)]
+    "valid_set": None,             # Set[(r,c)]
+    "adj": None,                   # Dict[(r,c)] -> List[(r,c)]
+    "missing_sides": None,         # Dict[(r,c)] -> Tuple[int,...] side-ids where neighbor is outside
+    "boundary_cells": None,        # List[(r,c)] cells that touch outside
+    "corners": None,               # List[(r,c)] (len=6)
+    "corner_set": None,            # Set[(r,c)]
+    "center": None,                # (r,c) chosen central cell
+    "dist2_center": None,          # Dict[(r,c)] -> float
+    "n_valid": 0,
+}
+
+
+# --------- Hex neighbor schemes (try multiple; pick the one that fits mask) ---------
+
+def _in_bounds(r: int, c: int, n: int) -> bool:
+    return 0 <= r < n and 0 <= c < n
+
+
+def _make_scheme_even_r():
+    # pointy-top, row-offset; directions fixed across parity.
+    # Direction indices: 0 NW, 1 NE, 2 W, 3 E, 4 SW, 5 SE
+    even = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)]
+    odd = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
+    return ("even_r", even, odd)
+
+
+def _make_scheme_odd_r():
+    # pointy-top, row-offset swapped
+    even = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, 0), (1, 1)]
+    odd = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, -1), (1, 0)]
+    return ("odd_r", even, odd)
+
+
+def _make_scheme_even_q():
+    # flat-top, col-offset
+    # Direction indices: 0 N, 1 S, 2 NW, 3 NE, 4 SW, 5 SE
+    even = [(-1, 0), (1, 0), (-1, -1), (-1, 0), (0, -1), (0, 0)]  # placeholder (not used)
+    # We'll implement as standard even-q below in function; keep for naming consistency.
+    return ("even_q", None, None)
+
+
+def _make_scheme_odd_q():
+    return ("odd_q", None, None)
+
+
+def _neighbors_for_scheme(name: str, r: int, c: int) -> List[Tuple[int, int]]:
+    """
+    Returns 6 neighbor coordinates in a fixed direction index order per scheme.
+    For even_r / odd_r: uses the explicit (even, odd) offset tables (0..5).
+    For even_q / odd_q: uses standard col-parity tables.
+    """
+    if name in ("even_r", "odd_r"):
+        # Offsets stored in cache during preparation; this function not used then.
+        raise RuntimeError("Internal: should not call _neighbors_for_scheme for r-schemes")
+    if name == "even_q":
+        # Standard even-q (flat top) offsets:
+        # if col even: N, S, NW, NE, SW, SE
+        # if col odd:  N, S, NW, NE, SW, SE but shifted
+        if (c % 2) == 0:
+            return [(r - 1, c), (r + 1, c), (r - 1, c - 1), (r - 1, c + 1), (r, c - 1), (r, c + 1)]
+        else:
+            return [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1), (r + 1, c - 1), (r + 1, c + 1)]
+    if name == "odd_q":
+        if (c % 2) == 1:
+            return [(r - 1, c), (r + 1, c), (r - 1, c - 1), (r - 1, c + 1), (r, c - 1), (r, c + 1)]
+        else:
+            return [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1), (r + 1, c - 1), (r + 1, c + 1)]
+    raise ValueError(f"Unknown scheme {name}")
+
+
+def _build_graph_for_scheme(valid_mask: np.ndarray, scheme_name: str,
+                            even_offsets: Optional[List[Tuple[int, int]]] = None,
+                            odd_offsets: Optional[List[Tuple[int, int]]] = None):
+    n = valid_mask.shape[0]
+    valid_coords = [(int(r), int(c)) for r, c in np.argwhere(valid_mask)]
+    valid_set = set(valid_coords)
+
+    adj: Dict[Tuple[int, int], List[Tuple[int, int]]] = {cell: [] for cell in valid_coords}
+    missing: Dict[Tuple[int, int], List[int]] = {cell: [] for cell in valid_coords}
+
+    for (r, c) in valid_coords:
+        if scheme_name in ("even_r", "odd_r"):
+            offs = even_offsets if (r % 2 == 0) else odd_offsets
+            neighs = [(r + dr, c + dc) for (dr, dc) in offs]
+        else:
+            neighs = _neighbors_for_scheme(scheme_name, r, c)
+
+        for di, (rr, cc) in enumerate(neighs):
+            if _in_bounds(rr, cc, n) and valid_mask[rr, cc]:
+                adj[(r, c)].append((rr, cc))
+            else:
+                missing[(r, c)].append(di)
+
+    # Force symmetry (if a scheme produces asymmetric adjacency due to mask quirks)
+    for u, lst in list(adj.items()):
+        for v in lst:
+            if u not in adj[v]:
+                adj[v].append(u)
+
+    degs = [len(adj[cell]) for cell in valid_coords]
+    deg6 = sum(1 for d in degs if d == 6)
+    deg4 = sum(1 for d in degs if d == 4)
+    deg3 = sum(1 for d in degs if d == 3)
+
+    return adj, missing, (deg6, deg3, deg4), valid_coords, valid_set
+
+
+def _prepare(valid_mask):
+    vm = np.asarray(valid_mask, dtype=bool)
+    n = vm.shape[0]
+
+    schemes = []
+    # r-offset schemes
+    name, even, odd = _make_scheme_even_r()
+    schemes.append((name, even, odd))
+    name, even, odd = _make_scheme_odd_r()
+    schemes.append((name, even, odd))
+    # q-offset schemes
+    schemes.append(("even_q", None, None))
+    schemes.append(("odd_q", None, None))
+
+    best = None
+    best_tuple = None
+
+    for (sname, even, odd) in schemes:
+        adj, missing, stats, valid_coords, valid_set = _build_graph_for_scheme(vm, sname, even, odd)
+        deg6, deg3, deg4 = stats
+        # Prefer: many degree-6 interiors, exactly 6 corners (degree-3) if possible, then edges.
+        # Use a lexicographic score.
+        score = (deg6, -abs(deg3 - 6), deg4)
+        if best is None or score > best_tuple:
+            best = (sname, even, odd, adj, missing, valid_coords, valid_set, stats)
+            best_tuple = score
+
+    sname, even, odd, adj, missing, valid_coords, valid_set, stats = best
+
+    # Corners: degree 3 nodes; if too many/few, pick 6 smallest degree then farthest-spread by geometry.
+    deg_map = {cell: len(adj[cell]) for cell in valid_coords}
+    corner_cands = [cell for cell in valid_coords if deg_map[cell] == 3]
+    if len(corner_cands) != 6:
+        # fallback: pick 6 with minimal degree (likely corners/near-corners)
+        corner_cands = sorted(valid_coords, key=lambda x: (deg_map[x], x[0], x[1]))[:12]
+        # Spread them by extreme projections
+        # choose extremes in (r, c, r+c)
+        picks = set()
+        for key in [
+            lambda t: t[0], lambda t: -t[0], lambda t: t[1], lambda t: -t[1],
+            lambda t: t[0] + t[1], lambda t: -(t[0] + t[1])
+        ]:
+            picks.add(min(corner_cands, key=key))
+        corners = list(picks)
+        if len(corners) < 6:
+            # fill with remaining minimal degree
+            for cell in corner_cands:
+                if cell not in picks:
+                    corners.append(cell)
+                if len(corners) == 6:
+                    break
+        corners = corners[:6]
+    else:
+        corners = corner_cands
+
+    corner_set = set(corners)
+
+    boundary_cells = [cell for cell in valid_coords if len(missing[cell]) > 0]
+
+    # Center: valid cell closest to centroid of valid coords
+    rr = np.array([r for r, _ in valid_coords], dtype=float)
+    cc = np.array([c for _, c in valid_coords], dtype=float)
+    cr = float(rr.mean())
+    ccnt = float(cc.mean())
+
+    def d2(cell):
+        r, c = cell
+        return (r - cr) ** 2 + (c - ccnt) ** 2
+
+    center = min(valid_coords, key=d2)
+    dist2_center = {cell: d2(cell) for cell in valid_coords}
+
+    _CACHE["prepared"] = True
+    _CACHE["valid_coords"] = valid_coords
+    _CACHE["valid_set"] = valid_set
+    _CACHE["adj"] = adj
+    _CACHE["missing_sides"] = {k: tuple(v) for k, v in missing.items()}
+    _CACHE["boundary_cells"] = boundary_cells
+    _CACHE["corners"] = corners
+    _CACHE["corner_set"] = corner_set
+    _CACHE["center"] = center
+    _CACHE["dist2_center"] = dist2_center
+    _CACHE["n_valid"] = len(valid_coords)
+
+
+# --------- Win detection (bridge, fork, ring) ---------
+
+def _component_contacts(stones: Set[Tuple[int, int]], start: Tuple[int, int]) -> Tuple[int, int]:
+    """
+    Returns (num_corners_in_component, num_distinct_edges_touched_excluding_corners).
+    Edge identity uses the direction index of missing neighbors (0..5 in the chosen scheme).
+    """
+    adj = _CACHE["adj"]
+    missing = _CACHE["missing_sides"]
+    corner_set = _CACHE["corner_set"]
+
+    stack = [start]
+    seen = {start}
+
+    corner_count = 0
+    edges: Set[int] = set()
+
+    while stack:
+        u = stack.pop()
+        if u in corner_set:
+            corner_count += 1
+        else:
+            for s in missing[u]:
+                edges.add(s)
+
+        for v in adj[u]:
+            if v in stones and v not in seen:
+                seen.add(v)
+                stack.append(v)
+
+    return corner_count, len(edges)
+
+
+def _has_ring(stones: Set[Tuple[int, int]]) -> bool:
+    """
+    Ring detection via enclosure: consider cells that are NOT 'stones' as open.
+    Flood-fill open cells starting from boundary; if any open cell is unreachable => enclosed => ring.
+    """
+    n_valid = _CACHE["n_valid"]
+    if len(stones) >= n_valid:
+        return False  # degenerate, but game would already be decided.
+
+    adj = _CACHE["adj"]
+    boundary = _CACHE["boundary_cells"]
+
+    visited: Set[Tuple[int, int]] = set()
+    q = deque()
+
+    # Initialize with all boundary open cells
+    for cell in boundary:
+        if cell not in stones:
+            visited.add(cell)
+            q.append(cell)
+
+    # Flood fill
+    while q:
+        u = q.popleft()
+        for v in adj[u]:
+            if v not in stones and v not in visited:
+                visited.add(v)
+                q.append(v)
+
+    total_open = n_valid - len(stones)
+    open_reached = len(visited)
+    return open_reached < total_open
+
+
+def _is_winning_move(player_stones: Set[Tuple[int, int]], move: Tuple[int, int]) -> bool:
+    new_stones = set(player_stones)
+    new_stones.add(move)
+
+    # Bridge / fork based on the component containing the new move
+    ccount, ecount = _component_contacts(new_stones, move)
+    if ccount >= 2:
+        return True  # bridge
+    if ecount >= 3:
+        return True  # fork
+
+    # Ring
+    if _has_ring(new_stones):
+        return True
+
+    return False
+
+
+# --------- Move generation helpers ---------
+
+def _frontier_moves(occupied: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    adj = _CACHE["adj"]
+    valid_set = _CACHE["valid_set"]
+    out: Set[Tuple[int, int]] = set()
+    for s in occupied:
+        for nb in adj.get(s, ()):
+            if nb in valid_set and nb not in occupied:
+                out.add(nb)
+    return out
+
+
+def _likely_threat_cells(opp_stones: Set[Tuple[int, int]], extra: Iterable[Tuple[int, int]], occupied: Set[Tuple[int, int]]) -> Set[Tuple[int, int]]:
+    """
+    Cells where opponent is most likely to have an immediate win: neighbors of opponent stones,
+    plus neighbors of 'extra' (typically our candidate move).
+    """
+    adj = _CACHE["adj"]
+    valid_set = _CACHE["valid_set"]
+    cand: Set[Tuple[int, int]] = set()
+
+    for s in opp_stones:
+        for nb in adj[s]:
+            if nb in valid_set and nb not in occupied:
+                cand.add(nb)
+
+    for x in extra:
+        if x in adj:
+            for nb in adj[x]:
+                if nb in valid_set and nb not in occupied:
+                    cand.add(nb)
+
+    return cand
+
+
+# --------- Policy ---------
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    if not _CACHE["prepared"]:
+        _prepare(valid_mask)
+
+    valid_coords: List[Tuple[int, int]] = _CACHE["valid_coords"]
+    valid_set: Set[Tuple[int, int]] = _CACHE["valid_set"]
+    adj = _CACHE["adj"]
+    corners = _CACHE["corners"]
+    center = _CACHE["center"]
+    dist2_center = _CACHE["dist2_center"]
+
+    me_set = set((int(r), int(c)) for r, c in me)
+    opp_set = set((int(r), int(c)) for r, c in opp)
+    occupied = me_set | opp_set
+
+    # All empty valid cells
+    empties = [cell for cell in valid_coords if cell not in occupied]
+    if not empties:
+        # Should never happen; but ensure legality by returning something valid.
+        return center
+
+    # Opening: if no stones on board, take center (or nearest-to-center empty)
+    if not occupied:
+        return center if center in valid_set else empties[0]
+
+    # Candidate set: frontier around any stones; if empty, fall back to all empties.
+    frontier = _frontier_moves(occupied)
+    if not frontier:
+        frontier = set(empties)
+
+    # Always include corners (bridge potential) if empty
+    for c in corners:
+        if c in valid_set and c not in occupied:
+            frontier.add(c)
+
+    frontier_list = list(frontier)
+
+    # 1) Immediate win
+    # Prefer trying moves that connect to our stones first (faster + more plausible).
+    frontier_list.sort(key=lambda m: (-sum((nb in me_set) for nb in adj[m]), dist2_center[m]))
+    for mv in frontier_list:
+        if mv in occupied:
+            continue
+        if _is_winning_move(me_set, mv):
+            return mv
+
+    # 2) Immediate block: if opponent has any winning move, play it.
+    opp_frontier = _frontier_moves(opp_set) if opp_set else set(empties)
+    # also include empty corners as opponent may bridge
+    for c in corners:
+        if c not in occupied:
+            opp_frontier.add(c)
+
+    # To keep this fast, test a prioritized subset first
+    opp_frontier_list = list(opp_frontier)
+    opp_frontier_list.sort(key=lambda m: (-sum((nb in opp_set) for nb in adj[m]), dist2_center[m]))
+
+    for mv in opp_frontier_list:
+        if mv in occupied:
+            continue
+        if _is_winning_move(opp_set, mv):
+            # Block by occupying that cell (if legal, which it is since mv not occupied).
+            return mv
+
+    # 3) Heuristic scoring for positional play.
+    # If frontier is huge, keep best-looking subset.
+    if len(frontier_list) > 60:
+        # Keep moves with adjacency to stones and/or near center
+        frontier_list.sort(key=lambda m: (
+            -sum((nb in me_set) for nb in adj[m]) - 0.5 * sum((nb in opp_set) for nb in adj[m]),
+            dist2_center[m]
+        ))
+        frontier_list = frontier_list[:60]
+
+    best_move = None
+    best_score = -1e18
+
+    # Precompute opponent local candidate win checks base
+    # (used in 1-ply "don't blunder" test).
+    for mv in frontier_list:
+        if mv in occupied:
+            continue
+
+        # Local features
+        adj_my = 0
+        adj_opp = 0
+        for nb in adj[mv]:
+            if nb in me_set:
+                adj_my += 1
+            elif nb in opp_set:
+                adj_opp += 1
+
+        # Component contact counts after playing mv (no ring check here for speed)
+        new_me = set(me_set)
+        new_me.add(mv)
+        ccount, ecount = _component_contacts(new_me, mv)
+
+        # Base heuristic score
+        # - corners are very valuable for bridges
+        # - distinct edges touched helps forks
+        # - adjacency builds strength and reduces fragmentation
+        # - mild central preference
+        score = (
+            120.0 * ccount +
+            35.0 * ecount +
+            9.0 * adj_my +
+            4.0 * adj_opp -
+            0.25 * dist2_center[mv]
+        )
+
+        # Small bonus for playing an empty corner early if it doesn't harm
+        if mv in _CACHE["corner_set"]:
+            score += 8.0
+
+        # 1-ply safety: avoid allowing immediate opponent win next turn from likely threat cells.
+        occupied_after = occupied | {mv}
+        threat_cells = _likely_threat_cells(opp_set, extra=[mv], occupied=occupied_after)
+
+        # Limit checks for speed
+        if len(threat_cells) > 28:
+            # prioritize those adjacent to opponent stones
+            threat_cells = set(sorted(
+                threat_cells,
+                key=lambda x: -sum((nb in opp_set) for nb in adj[x])
+            )[:28])
+
+        blunder = False
+        for omv in threat_cells:
+            if omv in occupied_after:
+                continue
+            if _is_winning_move(opp_set, omv):
+                blunder = True
+                break
+        if blunder:
+            score -= 1e9
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    if best_move is not None and best_move in valid_set and best_move not in occupied:
+        return best_move
+
+    # Fallback: return the most central legal move
+    empties.sort(key=lambda m: dist2_center[m])
+    return empties[0]
+</code>

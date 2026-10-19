@@ -1,0 +1,217 @@
+
+import random
+
+# ------------------------------------------------------------
+# Global pre‑computed list of all length‑5 lines on a 6×6 board
+# ------------------------------------------------------------
+LINES = []
+for i in range(6):
+    for j in range(2):               # horizontal lines
+        LINES.append([(i, j + k) for k in range(5)])
+for i in range(2):                    # vertical lines
+    for j in range(6):
+        LINES.append([(i + k, j) for k in range(5)])
+for i in range(2):                    # diagonal down‑right
+    for j in range(2):
+        LINES.append([(i + k, j + k) for k in range(5)])
+for i in range(2):                    # diagonal down‑left
+    for j in range(4, 6):
+        LINES.append([(i + k, j - k) for k in range(5)])
+
+# ------------------------------------------------------------
+# Helper functions
+# ------------------------------------------------------------
+def opponent(player: str) -> str:
+    return "black" if player == "red" else "red"
+
+
+def global_coords(q: int, r: int, c: int):
+    """Convert quadrant (1‑4) and local row/col (1‑3) to global 0‑based coordinates."""
+    start_r = ((q - 1) // 2) * 3
+    start_c = ((q - 1) % 2) * 3
+    return start_r + (r - 1), start_c + (c - 1)
+
+
+def copy_board(board):
+    """Create a deep copy of the 6×6 board."""
+    return [row[:] for row in board]
+
+
+def place_piece(board, q: int, r: int, c: int, player: str):
+    """Return a new board after placing `player` at (q,r,c)."""
+    new = copy_board(board)
+    gr, gc = global_coords(q, r, c)
+    new[gr][gc] = player
+    return new
+
+
+def rotate_quadrant(board, q: int, direction: str):
+    """Rotate quadrant `q` clockwise or counter‑clockwise and return a new board."""
+    new = copy_board(board)
+    start_r = ((q - 1) // 2) * 3
+    start_c = ((q - 1) % 2) * 3
+    sub = [[board[start_r + i][start_c + j] for j in range(3)] for i in range(3)]
+    if direction == "clockwise":
+        # 90° clockwise: new[i][j] = sub[2‑j][i]
+        rotated = [[sub[2 - j][i] for j in range(3)] for i in range(3)]
+    else:  # counter‑clockwise
+        # new[i][j] = sub[j][2‑i]
+        rotated = [[sub[j][2 - i] for j in range(3)] for i in range(3)]
+    for i in range(3):
+        for j in range(3):
+            new[start_r + i][start_c + j] = rotated[i][j]
+    return new
+
+
+def check_win(board, player: str) -> bool:
+    """Return True if `player` has a five‑in‑a‑row on the board."""
+    for line in LINES:
+        if all(board[i][j] == player for i, j in line):
+            return True
+    return False
+
+
+def evaluate(board, player: str) -> int:
+    """
+    Heuristic score for `player` based on length‑5 lines.
+    5 in a row = 10000, 4 = 500, 3 = 50, 2 = 10, 1 = 1.
+    Lines containing opponent pieces are ignored.
+    """
+    opp = opponent(player)
+    score = 0
+    for line in LINES:
+        cnt_own = cnt_opp = 0
+        for i, j in line:
+            cell = board[i][j]
+            if cell == player:
+                cnt_own += 1
+            elif cell == opp:
+                cnt_opp += 1
+        if cnt_opp:
+            continue  # blocked by opponent
+        if cnt_own == 5:
+            score += 10000
+        elif cnt_own == 4:
+            score += 500
+        elif cnt_own == 3:
+            score += 50
+        elif cnt_own == 2:
+            score += 10
+        else:
+            score += cnt_own  # 1 or 0
+    return score
+
+
+def board_score(board, player: str) -> int:
+    """Difference between player’s score and opponent’s score."""
+    return evaluate(board, player) - evaluate(board, opponent(player))
+
+
+# ------------------------------------------------------------
+# Main policy function
+# ------------------------------------------------------------
+def policy(state, role):
+    # --------------------------------------------------------
+    # Parse the state
+    # --------------------------------------------------------
+    board = [[None] * 6 for _ in range(6)]
+    phase = None
+    control = None
+    for fact in state:
+        if fact[0] == "phase":
+            phase = fact[1]
+        elif fact[0] == "control":
+            control = fact[1]
+        elif fact[0] == "cellholds":
+            q = int(fact[1])
+            r = int(fact[2])
+            c = int(fact[3])
+            colour = fact[4]
+            gr, gc = global_coords(q, r, c)
+            board[gr][gc] = colour
+
+    # The role passed to the policy is always the player to move
+    player = role
+
+    # --------------------------------------------------------
+    # Helper to generate empty cells (q,r,c) in quadrant order
+    # --------------------------------------------------------
+    def empty_cells():
+        for q in range(1, 5):
+            for r in range(1, 4):
+                for c in range(1, 4):
+                    gr, gc = global_coords(q, r, c)
+                    if board[gr][gc] is None:
+                        yield q, r, c
+
+    # --------------------------------------------------------
+    # PHASE: place a marble
+    # --------------------------------------------------------
+    if phase == "place":
+        # 1) Immediate win?
+        for q, r, c in empty_cells():
+            new_board = place_piece(board, q, r, c, player)
+            if check_win(new_board, player):
+                return f"place({q},{r},{c})"
+
+        # 2) Otherwise consider every placement + best rotation
+        best_move = None
+        best_score = -float('inf')
+        for q, r, c in empty_cells():
+            placed_board = place_piece(board, q, r, c, player)
+            # Evaluate best rotation after this placement
+            rot_best = -float('inf')
+            for rot_q in range(1, 5):
+                for direction in ("clockwise", "counterclockwise"):
+                    rot_board = rotate_quadrant(placed_board, rot_q, direction)
+                    # Heavily penalise giving the opponent a win
+                    if check_win(rot_board, opponent(player)):
+                        rot_score = -1_000_000
+                    else:
+                        rot_score = board_score(rot_board, player)
+                    if rot_score > rot_best:
+                        rot_best = rot_score
+            # Choose placement with highest rotated score
+            if rot_best > best_score:
+                best_score = rot_best
+                best_move = f"place({q},{r},{c})"
+
+        # Fallback (should never be needed)
+        if best_move is None:
+            best_move = "place(1,1,1)"
+        return best_move
+
+    # --------------------------------------------------------
+    # PHASE: rotate a quadrant
+    # --------------------------------------------------------
+    if phase == "rotate":
+        # 1) Immediate win?
+        for rot_q in range(1, 5):
+            for direction in ("clockwise", "counterclockwise"):
+                rot_board = rotate_quadrant(board, rot_q, direction)
+                if check_win(rot_board, player):
+                    return f"rotate({rot_q},{direction})"
+
+        # 2) Choose best rotation (avoid giving opponent a win if possible)
+        best_move = None
+        best_score = -float('inf')
+        for rot_q in range(1, 5):
+            for direction in ("clockwise", "counterclockwise"):
+                rot_board = rotate_quadrant(board, rot_q, direction)
+                if check_win(rot_board, opponent(player)):
+                    rot_score = -1_000_000
+                else:
+                    rot_score = board_score(rot_board, player)
+                if rot_score > best_score:
+                    best_score = rot_score
+                    best_move = f"rotate({rot_q},{direction})"
+
+        # If everything gives opponent a win we still must return a legal move
+        if best_move is None:
+            best_move = "rotate(1,clockwise)"
+        return best_move
+
+    # ------------------------------------------------------------
+    # Unexpected phase – fallback (should never occur)
+    # ------------------------------------------------------------
+    return "place(1,1,1)"

@@ -1,0 +1,108 @@
+
+import numpy as np
+
+def policy(board):
+    """
+    Chooses a move for the given Lines of Action board state.
+
+    Args:
+        board (np.ndarray): An 8x8 numpy array representing the board.
+                           1 for your pieces, -1 for opponent pieces, 0 for empty cells.
+
+    Returns:
+        str: A move string in the format "from_row,from_col:to_row,to_col".
+    """
+
+    def find_legal_moves(board, player):
+        """
+        Finds all legal moves for the given player on the given board.
+        """
+        moves = []
+        pieces = np.where(board == player)
+        piece_coords = list(zip(pieces[0], pieces[1]))
+
+        for from_row, from_col in piece_coords:
+            # Calculate move distance
+            total_pieces = np.count_nonzero(board)
+
+            # Check all possible directions
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+
+                    to_row = from_row + dr * total_pieces
+                    to_col = from_col + dc * total_pieces
+
+                    # Check board boundaries
+                    if 0 <= to_row < 8 and 0 <= to_col < 8:
+                        # Check for jumps over opponent pieces
+                        valid_move = True
+                        for i in range(1, total_pieces + 1):
+                            r = from_row + dr * i
+                            c = from_col + dc * i
+                            if r != to_row or c != to_col:
+                                if board[r, c] == -1:
+                                    valid_move = False
+                                    break
+
+                        if valid_move:
+                            # Check if the destination is empty or an opponent piece
+                            if board[to_row, to_col] == 0 or board[to_row, to_col] == -1:
+                                moves.append(f"{from_row},{from_col}:{to_row},{to_col}")
+
+        return moves
+
+    def evaluate_board(board, player):
+        """
+        Evaluates the board state for the given player.
+        A lower score is better (fewer connected components).
+        """
+
+        def get_connected_components(board, player):
+            visited = np.zeros_like(board, dtype=bool)
+            count = 0
+
+            def dfs(row, col):
+                if row < 0 or row >= 8 or col < 0 or col >= 8 or visited[row, col] or board[row, col] != player:
+                    return
+                visited[row, col] = True
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        if dr == 0 and dc == 0:
+                            continue
+                        dfs(row + dr, col + dc)
+
+            for row in range(8):
+                for col in range(8):
+                    if board[row, col] == player and not visited[row, col]:
+                        dfs(row, col)
+                        count += 1
+            return count
+
+        return get_connected_components(board, player)
+
+    # Find all legal moves
+    legal_moves = find_legal_moves(board, 1)
+
+    # If no legal moves, return a dummy move (this should not happen in a valid game state)
+    if not legal_moves:
+        return "0,0:0,0"
+
+    # Evaluate each move and choose the best one
+    best_move = None
+    best_score = float('inf')
+
+    for move in legal_moves:
+        from_row, from_col, to_row, to_col = map(int, move.replace(":", ",").split(","))
+        new_board = board.copy()
+        new_board[to_row, to_col] = 1  # Move the piece
+        new_board[from_row, from_col] = 0  # Remove the piece from the original location
+
+        score = evaluate_board(new_board, 1)
+
+        if score < best_score:
+            best_score = score
+            best_move = move
+
+    return best_move

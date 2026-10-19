@@ -1,0 +1,130 @@
+
+import itertools
+
+def evaluate_five_card_hand(hand):
+    """Evaluate a 5-card poker hand and return its strength (0-9)."""
+    ranks = [card['rank'] for card in hand]
+    suits = [card['suit'] for card in hand]
+    rank_counts = {}
+    for r in ranks:
+        rank_counts[r] = rank_counts.get(r, 0) + 1
+    counts_desc = sorted(rank_counts.values(), reverse=True)
+    distinct_ranks = sorted(set(ranks))
+    
+    # Check for flush
+    is_flush = all(s == suits[0] for s in suits)
+    
+    # Check for straight
+    consecutive = False
+    if len(distinct_ranks) == 5:
+        for i in range(1, 5):
+            if distinct_ranks[i] != distinct_ranks[i-1] + 1:
+                break
+        else:
+            consecutive = True
+        if not consecutive and distinct_ranks == [2, 3, 4, 5, 14]:
+            consecutive = True
+    
+    # Assign hand strength
+    if consecutive and is_flush:
+        if distinct_ranks == [10, 11, 12, 13, 14]:
+            return 9  # Royal Flush
+        else:
+            return 8  # Straight Flush
+    elif counts_desc == [4, 1]:
+        return 7  # Four of a Kind
+    elif counts_desc == [3, 2]:
+        return 6  # Full House
+    elif is_flush:
+        return 5  # Flush
+    elif consecutive:
+        return 4  # Straight
+    elif counts_desc == [3, 1, 1]:
+        return 3  # Three of a Kind
+    elif counts_desc == [2, 2, 1]:
+        return 2  # Two Pair
+    elif counts_desc == [2, 1, 1, 1]:
+        return 1  # One Pair
+    else:
+        return 0  # High Card
+
+def policy(state):
+    """Decide the next move based on game state and hand strength."""
+    private_cards = state['private_cards']
+    public_cards = state['public_cards']
+    pot = state['pot']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    total_cards = len(private_cards) + len(public_cards)
+    strength = 0
+    
+    # Evaluate hand strength based on stage
+    if total_cards < 5:
+        if total_cards == 1:  # Pre-flop
+            rank = private_cards[0]['rank']
+            if rank >= 11:  # Ace, King, Queen
+                strength = 2
+            elif rank >= 9:  # Ten, Nine
+                strength = 1
+            else:
+                strength = 0
+        else:  # Flop (4 cards)
+            hole_rank = private_cards[0]['rank']
+            matched = any(card['rank'] == hole_rank for card in public_cards)
+            if matched:
+                strength = 2
+            else:
+                max_rank = max([hole_rank] + [card['rank'] for card in public_cards])
+                if max_rank >= 10:
+                    strength = 1
+                else:
+                    strength = 0
+    else:  # Turn/River (5+ cards)
+        max_strength = 0
+        for combo in itertools.combinations(private_cards + public_cards, 5):
+            hand_strength = evaluate_five_card_hand(combo)
+            if hand_strength > max_strength:
+                max_strength = hand_strength
+        strength = max_strength
+    
+    # Special case: Initial pre-flop state (cannot fold)
+    if total_cards == 1 and pot == 0 and strength == 0:
+        return 'call'  # Forced to check
+    
+    # Decide action based on strength
+    if strength >= 2:  # Strong hand
+        if 'all-in' in allowed_actions and to_call > 0:
+            return 'all-in'
+        elif 'raise' in allowed_actions:
+            return 'raise'
+        elif 'call' in allowed_actions:
+            return 'call'
+        else:
+            return allowed_actions[0]  # Fallback
+    elif strength == 1:  # Medium hand
+        if to_call == 0:
+            if 'raise' in allowed_actions:
+                return 'raise'
+            elif 'call' in allowed_actions:
+                return 'call'
+            else:
+                return allowed_actions[0]  # Fallback
+        else:
+            if 'call' in allowed_actions:
+                return 'call'
+            elif 'fold' in allowed_actions:
+                return 'fold'
+            else:
+                return allowed_actions[0]  # Fallback
+    else:  # Weak hand
+        if to_call == 0:
+            if 'fold' in allowed_actions and not (total_cards == 1 and pot == 0):
+                return 'fold'
+            else:
+                return 'call'
+        else:
+            if 'fold' in allowed_actions:
+                return 'fold'
+            else:
+                return 'call'

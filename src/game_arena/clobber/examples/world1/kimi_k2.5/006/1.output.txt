@@ -1,0 +1,116 @@
+ The strategy is to use an alpha-beta search with iterative deepening to explore the game tree up to a depth of 4 plies (or more if time permits). The evaluation function uses mobility (number of legal moves available) difference between players, with terminal positions (win/loss) scored as large positive/negative values. Moves are ordered by previous iteration scores to improve alpha-beta pruning efficiency. Bitboard representation is used for fast move generation.
+
+<code>
+ROWS = 5
+COLS = 6
+
+# Precompute orthogonal neighbors and directions for each board index (0-29)
+NEIGHBORS = []
+for r in range(ROWS):
+    for c in range(COLS):
+        idx = r * COLS + c
+        nbrs = []
+        if r > 0:
+            nbrs.append((idx - COLS, 'U'))
+        if r < ROWS - 1:
+            nbrs.append((idx + COLS, 'D'))
+        if c > 0:
+            nbrs.append((idx - 1, 'L'))
+        if c < COLS - 1:
+            nbrs.append((idx + 1, 'R'))
+        NEIGHBORS.append(nbrs)
+
+def _to_mask(board):
+    """Convert 2D board to bit mask."""
+    mask = 0
+    for r in range(ROWS):
+        row = board[r]
+        for c in range(COLS):
+            if row[c]:
+                mask |= 1 << (r * COLS + c)
+    return mask
+
+def _gen_moves(me_mask, opp_mask):
+    """Generate all capture moves for player with me_mask capturing opp_mask."""
+    moves = []
+    m = me_mask
+    while m:
+        lsb = m & -m
+        idx = lsb.bit_length() - 1
+        for nidx, dchar in NEIGHBORS[idx]:
+            if opp_mask & (1 << nidx):
+                moves.append((idx, nidx, dchar))
+        m ^= lsb
+    return moves
+
+def _apply_move(me_mask, opp_mask, move):
+    """Return new masks after move (from_idx, to_idx, dir)."""
+    from_idx, to_idx, _ = move
+    new_me = (me_mask & ~(1 << from_idx)) | (1 << to_idx)
+    new_opp = opp_mask & ~(1 << to_idx)
+    return new_me, new_opp
+
+def _evaluate(me_mask, opp_mask):
+    """Evaluate position from perspective of player to move."""
+    my_moves = _gen_moves(me_mask, opp_mask)
+    if not my_moves:
+        return -1000  # Loss
+    opp_moves = _gen_moves(opp_mask, me_mask)
+    if not opp_moves:
+        return 1000   # Win
+    return len(my_moves) - len(opp_moves)
+
+def _negamax(me_mask, opp_mask, depth, alpha, beta):
+    """Negamax alpha-beta search."""
+    moves = _gen_moves(me_mask, opp_mask)
+    if not moves:
+        return -1000
+    if depth == 0:
+        return _evaluate(me_mask, opp_mask)
+    
+    for move in moves:
+        new_me, new_opp = _apply_move(me_mask, opp_mask, move)
+        score = -_negamax(new_opp, new_me, depth - 1, -beta, -alpha)
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+    return alpha
+
+def policy(you, opponent):
+    """
+    Select best move using iterative deepening alpha-beta search.
+    Returns string 'row,col,dir'.
+    """
+    me_mask = _to_mask(you)
+    opp_mask = _to_mask(opponent)
+    
+    moves = _gen_moves(me_mask, opp_mask)
+    if not moves:
+        return "0,0,U"  # Should not occur in valid game state
+    
+    # Iterative deepening with move ordering
+    ordered_moves = moves[:]
+    best_move = ordered_moves[0]
+    
+    # Search depths: 0 (eval), 1, 2, 3  (total 1 to 4 plies)
+    for sdepth in [0, 1, 2, 3]:
+        scored = []
+        for move in ordered_moves:
+            new_me, new_opp = _apply_move(me_mask, opp_mask, move)
+            # Opponent becomes player to move with sdepth lookahead
+            val = -_negamax(new_opp, new_me, sdepth, -10000, 10000)
+            scored.append((val, move))
+        # Sort descending by score for next iteration's move ordering
+        scored.sort(key=lambda x: x[0], reverse=True)
+        ordered_moves = [m for _, m in scored]
+        best_move = ordered_moves[0]
+        # If found forced win, stop searching
+        if scored[0][0] >= 900:
+            break
+    
+    from_idx, to_idx, d = best_move
+    r = from_idx // COLS
+    c = from_idx % COLS
+    return f"{r},{c},{d}"
+</code>

@@ -1,0 +1,92 @@
+The strategy for this policy is to evaluate all legal moves and select the one with the highest score based on a heuristic that prioritizes capturing opponent stones, maximizing liberties, and favoring central positions. The code precomputes the board state for efficiency and checks each move's legality and potential capture count, liberty count, and positional value before deciding the best next move.
+
+<code>
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    me_set = set(me)
+    opponent_set = set(opponent)
+
+    # Precompute the current board state
+    board = [[0]*20 for _ in range(20)]
+    for x, y in me_set:
+        board[x][y] = 1
+    for x, y in opponent_set:
+        board[x][y] = 2
+
+    def get_group(b, r, c, player):
+        visited = set()
+        queue = [(r, c)]
+        while queue:
+            x, y = queue.pop(0)
+            if (x, y) in visited:
+                continue
+            if b[x][y] != player:
+                continue
+            visited.add((x, y))
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx <= 19 and 1 <= ny <= 19:
+                    queue.append((nx, ny))
+        return visited
+
+    def get_liberties(b, group):
+        liberties = set()
+        for x, y in group:
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nx, ny = x + dx, y + dy
+                if 1 <= nx <= 19 and 1 <= ny <= 19 and b[nx][ny] == 0:
+                    liberties.add((nx, ny))
+        return liberties
+
+    def is_legal(r, c):
+        if (r, c) in me_set or (r, c) in opponent_set:
+            return False
+        temp_board = [row[:] for row in board]
+        temp_board[r][c] = 1
+        group = get_group(temp_board, r, c, 1)
+        liberties = get_liberties(temp_board, group)
+        if liberties:
+            return True
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and temp_board[nr][nc] == 2:
+                opp_group = get_group(temp_board, nr, nc, 2)
+                if not get_liberties(temp_board, opp_group):
+                    return True
+        return False
+
+    def calculate_score(r, c):
+        temp_board = [row[:] for row in board]
+        temp_board[r][c] = 1
+        captured = 0
+        checked = set()
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and temp_board[nr][nc] == 2:
+                if (nr, nc) not in checked:
+                    opp_group = get_group(temp_board, nr, nc, 2)
+                    for pos in opp_group:
+                        checked.add(pos)
+                    if not get_liberties(temp_board, opp_group):
+                        captured += len(opp_group)
+        new_group = get_group(temp_board, r, c, 1)
+        liberty_count = len(get_liberties(temp_board, new_group))
+        center_r, center_c = 10, 10
+        distance = abs(r - center_r) + abs(c - center_c)
+        positional_score = 20 - distance
+        return captured * 10 + liberty_count + positional_score
+
+    best_score = -float('inf')
+    best_move = (0, 0)
+
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if (r, c) in me_set or (r, c) in opponent_set:
+                continue
+            if is_legal(r, c):
+                score = calculate_score(r, c)
+                if score > best_score:
+                    best_score = score
+                    best_move = (r, c)
+
+    return best_move
+</code>

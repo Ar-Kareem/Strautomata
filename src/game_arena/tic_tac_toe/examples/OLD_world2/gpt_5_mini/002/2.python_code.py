@@ -1,0 +1,204 @@
+
+from typing import List, Tuple, Dict
+
+# 4x4 Tic Tac Toe policy. The function policy(board) returns a move (r, c) for player '1'.
+# Board is a list of 4 lists, each with 4 integers: 0 empty, 1 our marks, -1 opponent.
+
+# Precompute all winning lines (4 rows, 4 cols, 2 diagonals)
+LINES = []
+for r in range(4):
+    LINES.append([(r, c) for c in range(4)])
+for c in range(4):
+    LINES.append([(r, c) for r in range(4)])
+LINES.append([(i, i) for i in range(4)])
+LINES.append([(i, 3 - i) for i in range(4)])
+
+INF = 10**9
+
+def board_to_tuple(board: List[List[int]]) -> Tuple[int, ...]:
+    return tuple(board[r][c] for r in range(4) for c in range(4))
+
+def winner_of(board: List[List[int]]) -> int:
+    # return 1 if we win, -1 if opponent wins, 0 otherwise
+    for line in LINES:
+        s = sum(board[r][c] for (r, c) in line)
+        if s == 4:
+            return 1
+        if s == -4:
+            return -1
+    return 0
+
+def heuristic(board: List[List[int]]) -> int:
+    # Evaluate board from our perspective (1).
+    # For each line: if it contains only one player's marks (and empties), contribute score.
+    score = 0
+    weights = {0:0, 1:1, 2:10, 3:100, 4:100000}
+    for line in LINES:
+        cnt1 = 0
+        cntm1 = 0
+        for (r, c) in line:
+            v = board[r][c]
+            if v == 1:
+                cnt1 += 1
+            elif v == -1:
+                cntm1 += 1
+        if cnt1 > 0 and cntm1 > 0:
+            continue
+        if cnt1 > 0:
+            score += weights[cnt1]
+        if cntm1 > 0:
+            score -= weights[cntm1]
+    return score
+
+def empty_cells(board: List[List[int]]):
+    for r in range(4):
+        for c in range(4):
+            if board[r][c] == 0:
+                yield (r, c)
+
+def ordering_score_for_move(board: List[List[int]], move: Tuple[int,int], player: int) -> int:
+    # heuristic ordering: moves that extend player's lines or block opponent get higher score
+    r, c = move
+    s = 0
+    for line in LINES:
+        if (r, c) in line:
+            cntp = 0
+            cnto = 0
+            for (rr, cc) in line:
+                v = board[rr][cc]
+                if v == player:
+                    cntp += 1
+                elif v == -player:
+                    cnto += 1
+            if cnto == 0:
+                s += 10 ** cntp
+            if cntp == 0:
+                s += 5 * (10 ** cnto)
+    return s
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # We'll assume it's our turn (player 1) and return a move (row, col).
+    # Quick checks: immediate win, immediate block.
+    # Then run negamax with alpha-beta and iterative depth depending on empties.
+    # Use memoization.
+    # Copy board for safety (we won't mutate original structure externally).
+    b = [row[:] for row in board]
+
+    # immediate win
+    for (r, c) in empty_cells(b):
+        b[r][c] = 1
+        if winner_of(b) == 1:
+            return (r, c)
+        b[r][c] = 0
+
+    # immediate block opponent winning move
+    for (r, c) in empty_cells(b):
+        b[r][c] = -1
+        if winner_of(b) == -1:
+            return (r, c)
+        b[r][c] = 0
+
+    empties = sum(1 for _ in empty_cells(b))
+    if empties == 0:
+        # no moves
+        return (0, 0)
+
+    # If board is nearly empty, prefer center-ish moves: list of preferred order
+    preferred_order = [(1,1),(1,2),(2,1),(2,2),(0,0),(0,3),(3,0),(3,3),(0,1),(0,2),(1,0),(2,0),(1,3),(2,3),(3,1),(3,2)]
+
+    # Depth strategy: search fully if small branching, else limit depth
+    if empties <= 8:
+        depth_limit = empties  # full search
+    else:
+        depth_limit = 6
+
+    memo: Dict[Tuple[Tuple[int, ...], int, int], int] = {}
+
+    def negamax(board_t: Tuple[int, ...], player: int, depth: int, alpha: int, beta: int) -> int:
+        key = (board_t, player, depth)
+        if key in memo:
+            return memo[key]
+
+        # reconstruct 4x4 board view
+        board2 = [list(board_t[i*4:(i+1)*4]) for i in range(4)]
+
+        w = winner_of(board2)
+        if w != 0:
+            val = INF if w == 1 else -INF
+            # from perspective of 'player' in negamax: if winner==player => +INF else -INF
+            res = val if w == player else -val
+            memo[key] = res
+            return res
+
+        # no moves left -> draw
+        moves = [(r,c) for r in range(4) for c in range(4) if board2[r][c] == 0]
+        if not moves:
+            memo[key] = 0
+            return 0
+
+        if depth == 0:
+            # heuristic evaluation from '1' perspective, but convert to perspective of 'player'
+            h = heuristic(board2)
+            res = h if player == 1 else -h
+            memo[key] = res
+            return res
+
+        # order moves: prefer promising ones
+        scored_moves = []
+        for mv in moves:
+            scored_moves.append(( -ordering_score_for_move(board2, mv, player), mv))
+        scored_moves.sort()
+        best = -INF
+        for _, (r, c) in scored_moves:
+            # apply move
+            idx = r*4 + c
+            new_board_list = list(board_t)
+            new_board_list[idx] = player
+            new_board_t = tuple(new_board_list)
+            val = -negamax(new_board_t, -player, depth-1, -beta, -alpha)
+            if val > best:
+                best = val
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+        memo[key] = best
+        return best
+
+    # Determine best move
+    board_t_initial = board_to_tuple(b)
+    best_move = None
+    best_score = -INF
+    alpha = -INF
+    beta = INF
+
+    # Generate candidate moves and try ordering with preference and heuristics
+    candidates = [( -ordering_score_for_move(b, mv, 1), mv) for mv in empty_cells(b)]
+    # add preferred front ordering
+    pref_set = {p for p in preferred_order}
+    # sort by candidate key and preferred order position
+    def pref_key(item):
+        mv = item[1]
+        pref_pos = preferred_order.index(mv) if mv in pref_set else 100
+        return (item[0], pref_pos)
+    candidates.sort(key=pref_key)
+
+    for _, (r, c) in candidates:
+        idx = r*4 + c
+        new_board_list = list(board_t_initial)
+        new_board_list[idx] = 1
+        new_board_t = tuple(new_board_list)
+        val = -negamax(new_board_t, -1, depth_limit-1, -beta, -alpha)
+        if val > best_score:
+            best_score = val
+            best_move = (r, c)
+        if val > alpha:
+            alpha = val
+
+    if best_move is None:
+        # fallback: first empty (shouldn't happen)
+        for r in range(4):
+            for c in range(4):
+                if b[r][c] == 0:
+                    return (r, c)
+    return best_move

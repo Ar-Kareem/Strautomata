@@ -1,0 +1,245 @@
+I'll create a competitive Checkers AI policy. Let me outline my strategy first:
+
+## Strategy
+
+My policy will use the following approach:
+
+1. **Mandatory Capture Detection**: Always identify and execute captures first (required by rules)
+2. **Multi-Jump Detection**: Recursively find all possible multi-jump sequences and prefer longer captures
+3. **Position Evaluation**: Use a heuristic evaluation function that considers:
+   - Material advantage (pieces and kings with different weights)
+   - Positional value (advancement toward promotion, control of center)
+   - King safety and mobility
+4. **Minimax with Alpha-Beta Pruning**: Look ahead several moves to choose the best move
+5. **Move Ordering**: Prioritize captures and king moves for better pruning efficiency
+
+The evaluation function weighs:
+- Men: 100 points each
+- Kings: 300 points each (more valuable due to mobility)
+- Positional bonuses for advancement and central control
+- Mobility (number of available moves)
+
+<code>
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Returns the best move for the current player using minimax with alpha-beta pruning.
+    """
+    
+    def get_all_pieces(men, kings):
+        """Combine men and kings into a dictionary"""
+        pieces = {}
+        for pos in men:
+            pieces[pos] = 'man'
+        for pos in kings:
+            pieces[pos] = 'king'
+        return pieces
+    
+    def is_valid_square(row, col):
+        """Check if square is on board"""
+        return 0 <= row <= 7 and 0 <= col <= 7
+    
+    def get_captures(pos, piece_type, my_pieces, opp_pieces, player_color, visited=None):
+        """Get all capture moves from a position (including multi-jumps)"""
+        if visited is None:
+            visited = set()
+        
+        row, col = pos
+        captures = []
+        
+        # Determine which directions this piece can move
+        if piece_type == 'king':
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        elif player_color == 'b':
+            directions = [(-1, -1), (-1, 1)]  # Black moves down (decreasing rows)
+        else:
+            directions = [(1, -1), (1, 1)]  # White moves up (increasing rows)
+        
+        for dr, dc in directions:
+            capture_row, capture_col = row + dr, col + dc
+            land_row, land_col = row + 2*dr, col + 2*dc
+            
+            if ((capture_row, capture_col) in opp_pieces and 
+                is_valid_square(land_row, land_col) and 
+                (land_row, land_col) not in my_pieces and
+                (land_row, land_col) not in opp_pieces and
+                (land_row, land_col) not in visited):
+                
+                # Found a capture
+                new_visited = visited | {(land_row, land_col)}
+                
+                # Check for additional jumps from landing position
+                new_piece_type = piece_type
+                if piece_type == 'man':
+                    if (player_color == 'b' and land_row == 0) or (player_color == 'w' and land_row == 7):
+                        new_piece_type = 'king'
+                
+                # Create new board state after this capture
+                new_my_pieces = {p: t for p, t in my_pieces.items() if p != pos}
+                new_my_pieces[(land_row, land_col)] = new_piece_type
+                new_opp_pieces = {p: t for p, t in opp_pieces.items() if p != (capture_row, capture_col)}
+                
+                # Recursively find additional captures
+                further_captures = get_captures((land_row, land_col), new_piece_type, 
+                                               new_my_pieces, new_opp_pieces, 
+                                               player_color, new_visited)
+                
+                if further_captures:
+                    for path in further_captures:
+                        captures.append([pos, (land_row, land_col)] + path[1:])
+                else:
+                    captures.append([pos, (land_row, land_col)])
+        
+        return captures
+    
+    def get_simple_moves(pos, piece_type, my_pieces, opp_pieces, player_color):
+        """Get all non-capture moves from a position"""
+        row, col = pos
+        moves = []
+        
+        if piece_type == 'king':
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        elif player_color == 'b':
+            directions = [(-1, -1), (-1, 1)]
+        else:
+            directions = [(1, -1), (1, 1)]
+        
+        for dr, dc in directions:
+            new_row, new_col = row + dr, col + dc
+            if (is_valid_square(new_row, new_col) and 
+                (new_row, new_col) not in my_pieces and 
+                (new_row, new_col) not in opp_pieces):
+                moves.append((pos, (new_row, new_col)))
+        
+        return moves
+    
+    def get_all_moves(my_pieces, opp_pieces, player_color):
+        """Get all legal moves, prioritizing captures"""
+        all_captures = []
+        
+        # First check for captures
+        for pos, piece_type in my_pieces.items():
+            captures = get_captures(pos, piece_type, my_pieces, opp_pieces, player_color)
+            for capture_path in captures:
+                all_captures.append((capture_path[0], capture_path[-1]))
+        
+        if all_captures:
+            return all_captures
+        
+        # If no captures, return simple moves
+        all_simple_moves = []
+        for pos, piece_type in my_pieces.items():
+            all_simple_moves.extend(get_simple_moves(pos, piece_type, my_pieces, opp_pieces, player_color))
+        
+        return all_simple_moves
+    
+    def apply_move(move, my_pieces, opp_pieces, player_color):
+        """Apply a move and return new board state"""
+        from_pos, to_pos = move
+        new_my_pieces = {p: t for p, t in my_pieces.items() if p != from_pos}
+        new_opp_pieces = dict(opp_pieces)
+        
+        piece_type = my_pieces[from_pos]
+        
+        # Check if it's a capture
+        from_row, from_col = from_pos
+        to_row, to_col = to_pos
+        
+        if abs(to_row - from_row) == 2:
+            # Capture
+            cap_row = (from_row + to_row) // 2
+            cap_col = (from_col + to_col) // 2
+            new_opp_pieces = {p: t for p, t in opp_pieces.items() if p != (cap_row, cap_col)}
+        
+        # Check for promotion
+        if piece_type == 'man':
+            if (player_color == 'b' and to_row == 0) or (player_color == 'w' and to_row == 7):
+                piece_type = 'king'
+        
+        new_my_pieces[to_pos] = piece_type
+        
+        return new_my_pieces, new_opp_pieces
+    
+    def evaluate(my_pieces, opp_pieces, player_color):
+        """Evaluate board position"""
+        score = 0
+        
+        for pos, piece_type in my_pieces.items():
+            row, col = pos
+            if piece_type == 'king':
+                score += 300
+            else:
+                score += 100
+                # Bonus for advancement
+                if player_color == 'b':
+                    score += (7 - row) * 2
+                else:
+                    score += row * 2
+            # Center control bonus
+            score += (3 - abs(3.5 - col)) * 2
+        
+        for pos, piece_type in opp_pieces.items():
+            row, col = pos
+            if piece_type == 'king':
+                score -= 300
+            else:
+                score -= 100
+                if player_color == 'b':
+                    score -= row * 2
+                else:
+                    score -= (7 - row) * 2
+            score -= (3 - abs(3.5 - col)) * 2
+        
+        return score
+    
+    def minimax(my_pieces, opp_pieces, player_color, depth, alpha, beta, maximizing):
+        """Minimax with alpha-beta pruning"""
+        if depth == 0:
+            return evaluate(my_pieces, opp_pieces, player_color), None
+        
+        current_color = player_color if maximizing else ('w' if player_color == 'b' else 'b')
+        current_my = my_pieces if maximizing else opp_pieces
+        current_opp = opp_pieces if maximizing else my_pieces
+        
+        moves = get_all_moves(current_my, current_opp, current_color)
+        
+        if not moves:
+            return (-100000 if maximizing else 100000), None
+        
+        best_move = moves[0]
+        
+        if maximizing:
+            max_eval = float('-inf')
+            for move in moves:
+                new_my, new_opp = apply_move(move, current_my, current_opp, current_color)
+                eval_score, _ = minimax(new_my, new_opp, player_color, depth - 1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                new_my, new_opp = apply_move(move, current_my, current_opp, current_color)
+                eval_score, _ = minimax(new_opp, new_my, player_color, depth - 1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    # Main logic
+    my_pieces = get_all_pieces(my_men, my_kings)
+    opp_pieces = get_all_pieces(opp_men, opp_kings)
+    
+    # Use depth based on game complexity
+    depth = 4 if len(my_pieces) + len(opp_pieces) <= 12 else 3
+    
+    _, best_move = minimax(my_pieces, opp_pieces, color, depth, float('-inf'), float('inf'), True)
+    
+    return best_move
+</code>

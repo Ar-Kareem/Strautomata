@@ -1,0 +1,150 @@
+<thinking>
+To maximize the chances of sinking opponent ships quickly, I need a targeting policy that balances exploration (hunting for ships) and exploitation (targeting adjacent cells after a hit). The strategy involves:
+
+1. **Hit Detection and Expansion**: When a hit (`1`) is found, I should probe neighboring cells (up, down, left, right) to determine the orientation (horizontal or vertical) of the ship.
+
+2. **Tracking Potential Directions**: After multiple hits in a line, continue along that line. Also, avoid shooting adjacent to known misses or outside the grid.
+
+3. **Weight-Based Probability (Improved Hunting)**: Use a heatmap approach where each unshot cell is assigned a score based on how likely it is to contain a ship. The score considers:
+   - How many ways a ship of each size could be placed horizontally and vertically through that cell.
+   - Reduce score near misses or outside valid ship placements.
+4. **Efficient Search**:
+   - First check if there are unresolved hits (i.e., hits without sunk confirmation), and try to extend along those.
+   - If no recent hits, fall back to probabilistic targeting.
+
+I’ll use a ship lengths list `[5, 4, 3, 3, 2]` and calculate for each unshot cell how many valid placements of remaining ships pass through it. This is a standard approach in competitive Battleship AIs.
+
+We'll implement the following logic:
+- Check for any hits (`1`) without surrounding follow-ups.
+- Use a "streak" expansion when two hits are aligned.
+- Otherwise, compute a weight map based on possible ship placements.
+
+Since we don’t track sunk ship sizes explicitly from the board, we assume all ships are still alive.
+
+We use a full probabilistic model over all ship lengths, ignoring sunk ship information due to partial observability.
+
+The algorithm:
+1. Find all `1`s.
+2. If there are hits:
+   - Collect connected hits (same row or col within distance).
+   - Try to continue in direction or try perpendicular if two hits.
+   - Prioritize unshot neighbors in consistent direction.
+3. Else:
+   - Compute how many ship placements (of each size) can cover each cell, avoiding known misses and shots.
+   - Return highest-weight unshot cell.
+
+We'll use a simplified version of the "Heatmap" strategy.
+</thinking>
+<code>
+import numpy as np
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    board = np.array(board)
+    hits = np.where(board == 1)
+    hits_list = list(zip(hits[0], hits[1]))
+    
+    # Directions: up, down, left, right
+    directions = [(-1,0), (1,0), (0,-1), (0,1)]
+    
+    # First: Check for any unexpanded hit
+    if hits_list:
+        # Group hits by potential ship (connected in line)
+        unexpanded_moves = []
+        for r, c in hits_list:
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dr != 0 and dc or 0  # correct
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr, nc] == 0:
+                    unexpanded_moves.append((nr, nc))
+        
+        # If we have hits, try to expand along likely directions
+        # Look for two hits in a row to guess orientation
+        for i in range(len(hits_list)):
+            for j in range(i+1, len(hits_list)):
+                r1, c1 = hits_list[i]
+                r2, c2 = hits_list[j]
+                # Same row (horizontal ship)
+                if r1 == r2 and abs(c1 - c2) > 0:
+                    # Sort by column
+                    cr1, cr2 = min(c1, c2), max(c1, c2)
+                    # Check if cells in between are hit
+                    in_line = True
+                    for c_mid in range(cr1+1, cr2):
+                        if board[r1, c_mid] not in [1, -1]:
+                            in_line = False
+                    if in_line:
+                        # Try extending in both directions
+                        c_left, c_right = cr1 - 1, cr2 + 1
+                        if c_left >= 0 and board[r1, c_left] == 0:
+                            return (r1, c_left)
+                        if c_right < 10 and board[r1, c_right] == 0:
+                            return (r1, c_right)
+                # Same column (vertical ship)
+                if c1 == c2 and abs(r1 - r2) > 0:
+                    rr1, rr2 = min(r1, r2), max(r1, r2)
+                    in_line = True
+                    for r_mid in range(rr1+1, rr2):
+                        if board[r_mid, c1] not in [1, -1]:
+                            in_line = False
+                    if in_line:
+                        r_up, r_down = rr1 - 1, rr2 + 1
+                        if r_up >= 0 and board[r_up, c1] == 0:
+                            return (r_up, c1)
+                        if r_down < 10 and board[r_down, c1] == 0:
+                            return (r_down, c1)
+        
+        # Try expanding from any hit in orthogonal directions
+        for r, c in hits_list:
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr, nc] == 0:
+                    # Prefer this shot
+                    return (nr, nc)
+    
+    # No hits or no expansion: use probability heatmap
+    ship_lengths = [5, 4, 3, 3, 2]
+    heatmap = np.zeros((10, 10), dtype=float)
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r, c] != 0:
+                continue
+            total = 0
+            for length in ship_lengths:
+                count = 0
+                # Horizontal placements
+                c1, c2 = c - length + 1, c + 1
+                for start_c in range(c1, c2):
+                    if start_c < 0 or start_c + length > 10:
+                        continue
+                    valid = True
+                    for dc in range(length):
+                        if board[r, start_c + dc] == -1:
+                            valid = False
+                            break
+                    if valid:
+                        count += 1
+                # Vertical placements
+                r1, r2 = r - length + 1, r + 1
+                for start_r in range(r1, r2):
+                    if start_r < 0 or start_r + length > 10:
+                        continue
+                    valid = True
+                    for dr in range(length):
+                        if board[start_r + dr, c] == -1:
+                            valid = False
+                            break
+                    if valid:
+                        count += 1
+                total += count
+            heatmap[r, c] = total
+    
+    # Find the best unshot cell with maximum weight
+    possible = [(r, c) for r in range(10) for c in range(10) if board[r, c] == 0]
+    if not possible:
+        return (0, 0)
+    
+    # Sort by heatmap score descending
+    possible.sort(key=lambda x: heatmap[x], reverse=True)
+    return possible[0]
+</code>

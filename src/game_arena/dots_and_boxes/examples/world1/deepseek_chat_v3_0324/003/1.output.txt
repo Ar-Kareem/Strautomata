@@ -1,0 +1,123 @@
+Let me outline a strategy for a competitive Dots and Boxes AI for a 4x4 grid:
+
+1. First Priority: Complete any boxes that can give us immediate points
+2. Second Priority: Avoid creating obvious double-cross opportunities for the opponent
+3. Third Priority: Play edge moves that can lead to chain reactions that we could control
+4. Default Strategy: Choose the safest edge move that doesn't immediately give the opponent boxes
+5. Edge Case: If multiple safe moves exist, prefer edges that could potentially lead to our future box captures
+
+The strategy focuses on maintaining control of the game while minimizing opponent opportunities, with special attention to avoiding giving away points through forced moves.
+
+Here's the implementation:
+
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # First, check for any moves that would complete a box for us
+    for row in range(4):
+        for col in range(4):
+            # Check horizontal edges for this box
+            top, bottom = horizontal[row, col], horizontal[row+1, col]
+            left, right = vertical[row, col], vertical[row, col+1]
+            
+            sides = [top, bottom, left, right]
+            empty_count = sides.count(0)
+            
+            # If we can complete this box (exactly 3 sides filled, none are ours)
+            if empty_count == 1 and all(x <= 0 for x in sides if x != 0):
+                if top == 0:
+                    if horizontal[row, col] == 0:
+                        return f"{row},{col},H"
+                if bottom == 0:
+                    if horizontal[row+1, col] == 0:
+                        return f"{row+1},{col},H"
+                if left == 0:
+                    if vertical[row, col] == 0:
+                        return f"{row},{col},V"
+                if right == 0:
+                    if vertical[row, col+1] == 0:
+                        return f"{row},{col+1},V"
+    
+    # Next, avoid moves that would give opponent a box in their next turn
+    safe_moves = []
+    
+    # Collect all possible moves first
+    possible_moves = []
+    for row in range(5):
+        for col in range(4):
+            if horizontal[row, col] == 0:
+                possible_moves.append(f"{row},{col},H")
+    for row in range(4):
+        for col in range(5):
+            if vertical[row, col] == 0:
+                possible_moves.append(f"{row},{col},V")
+    
+    # For each possible move, simulate if it would create a dangerous situation
+    for move in possible_moves:
+        row, col, dir = move.split(',')
+        row, col = int(row), int(col)
+        dangerous = False
+        
+        if dir == 'H':
+            # Check boxes above and below this edge
+            if row > 0:  # Box above
+                above_count = (
+                    (horizontal[row-1, col] != 0) + 
+                    (horizontal[row, col] != 0) +
+                    (vertical[row-1, col] != 0) + 
+                    (vertical[row-1, col+1] != 0)
+                )
+                if above_count == 3 and capture[row-1, col] == 0:
+                    dangerous = True
+            
+            if row < 4:  # Box below
+                below_count = (
+                    (horizontal[row+1, col] != 0) + 
+                    (horizontal[row, col] != 0) +
+                    (vertical[row, col] != 0) + 
+                    (vertical[row, col+1] != 0)
+                )
+                if below_count == 3 and capture[row, col] == 0:
+                    dangerous = True
+        
+        else:  # dir == 'V'
+            # Check boxes left and right of this edge
+            if col > 0:  # Box left
+                left_count = (
+                    (vertical[row, col-1] != 0) + 
+                    (vertical[row, col] != 0) +
+                    (horizontal[row, col-1] != 0) + 
+                    (horizontal[row+1, col-1] != 0)
+                )
+                if left_count == 3 and capture[row, col-1] == 0:
+                    dangerous = True
+            
+            if col < 4:  # Box right
+                right_count = (
+                    (vertical[row, col+1] != 0) + 
+                    (vertical[row, col] != 0) +
+                    (horizontal[row, col] != 0) + 
+                    (horizontal[row+1, col] != 0)
+                )
+                if right_count == 3 and capture[row, col] == 0:
+                    dangerous = True
+        
+        if not dangerous:
+            safe_moves.append(move)
+    
+    # Prefer moves that could contribute to future chains
+    if safe_moves:
+        # Simple heuristic: prefer moves that might lead to isolated edges
+        # Here we just pick the first safe move for simplicity
+        # In a more advanced strategy, we could rank moves
+        return safe_moves[0]
+    
+    # If no safe moves (late game), just pick any legal move
+    if possible_moves:
+        return possible_moves[0]
+    
+    # Shouldn't reach here in a legal game
+    raise Exception("No legal moves available")
+</code>

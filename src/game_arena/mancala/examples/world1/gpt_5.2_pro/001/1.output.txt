@@ -1,0 +1,326 @@
+The strategy for this policy is an alpha–beta negamax search with iterative deepening (time-bounded to stay under 1s), using a transposition table and strong move ordering (prioritizing extra turns, captures, and immediate store gains). It simulates Kalah precisely (including captures, extra moves, and end-of-game sweeping) and evaluates non-terminal positions by store advantage plus positional seed weights; terminal states are scored exactly by final store difference.
+
+<code>
+# Kalah / Mancala (6 houses + store) policy
+# Implements time-bounded iterative-deepening alpha-beta negamax with TT and move ordering.
+
+from __future__ import annotations
+
+import time
+from typing import List, Tuple, Dict, Optional
+
+HOUSES = 6
+STORE = 6
+
+# Search controls (tuned for Python under ~1s)
+TIME_BUDGET_SEC = 0.95
+MAX_DEPTH = 24  # iterative deepening upper bound; usually time stops earlier
+
+INF = 10**18
+
+# Transposition table entry flags
+EXACT, LOWER, UPPER = 0, 1, 2
+
+
+class _TimeUp(Exception):
+    pass
+
+
+def _is_terminal(you: List[int], opp: List[int]) -> bool:
+    return (sum(you[:HOUSES]) == 0) or (sum(opp[:HOUSES]) == 0)
+
+
+def _sweep_if_terminal(you: List[int], opp: List[int]) -> None:
+    """If terminal, sweep remaining seeds into the appropriate store and zero houses."""
+    you_side = sum(you[:HOUSES])
+    opp_side = sum(opp[:HOUSES])
+    if you_side == 0 and opp_side == 0:
+        return
+    if you_side == 0:
+        # opponent sweeps
+        opp[STORE] += opp_side
+        for i in range(HOUSES):
+            opp[i] = 0
+    elif opp_side == 0:
+        you[STORE] += you_side
+        for i in range(HOUSES):
+            you[i] = 0
+
+
+def _next_pos(side: int, idx: int) -> Tuple[int, int]:
+    """
+    side: 0 = you, 1 = opponent
+    idx for side 0: 0..6 (6 is store)
+    idx for side 1: 0..5 (opponent store is skipped entirely)
+    """
+    if side == 0:
+        if idx < 5:
+            return 0, idx + 1
+        if idx == 5:
+            return 0, STORE
+        # idx == STORE
+        return 1, 0
+    else:
+        # side == 1, idx in 0..5
+        if idx < 5:
+            return 1, idx + 1
+        # idx == 5 goes back to you[0]
+        return 0, 0
+
+
+def _apply_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+    """
+    Apply 'move' for current player (you). Returns (new_you, new_opp, same_turn).
+    If same_turn is False, the perspective is swapped so that returned new_you is the next player to move.
+    """
+    ny = you[:]  # copy
+    no = opp[:]
+
+    seeds = ny[move]
+    ny[move] = 0
+
+    side, idx = 0, move
+    last_side, last_idx = 0, 0
+
+    # Sow seeds
+    for _ in range(seeds):
+        side, idx = _next_pos(side, idx)
+        last_side, last_idx = side, idx
+        if side == 0:
+            ny[idx] += 1
+        else:
+            no[idx] += 1
+
+    # Capture
+    if last_side == 0 and last_idx < HOUSES and ny[last_idx] == 1:
+        opp_idx = 5 - last_idx
+        if no[opp_idx] > 0:
+            captured = no[opp_idx] + 1
+            no[opp_idx] = 0
+            ny[last_idx] = 0
+            ny[STORE] += captured
+
+    # Determine extra move
+    same_turn = (last_side == 0 and last_idx == STORE)
+
+    # End-of-game sweeping
+    _sweep_if_terminal(ny, no)
+
+    if same_turn:
+        return ny, no, True
+    else:
+        # Swap perspective: next player to move becomes "you"
+        return no, ny, False
+
+
+def _heuristic(you: List[int], opp: List[int]) -> int:
+    """
+    Static evaluation from perspective of player to move (you).
+    Positive is good for you.
+    """
+    # If terminal, exact by store diff after sweep state is already swept by apply_move,
+    # but policy() could call heuristic on an unswept terminal in some edge cases.
+    if _is_terminal(you, opp):
+        ty, to = you[:], opp[:]
+        _sweep_if_terminal(ty, to)
+        return (ty[STORE] - to[STORE]) * 1000000
+
+    store_diff = you[STORE] - opp[STORE]
+    house_diff = sum(you[:HOUSES]) - sum(opp[:HOUSES])
+
+    # Positional weights: seeds nearer your store are slightly more valuable (tempo/convertibility).
+    # Opponent nearer their store is slightly more dangerous.
+    you_pos = 0
+    opp_pos = 0
+    for i in range(HOUSES):
+        you_pos += you[i] * (i + 1)
+        opp_pos += opp[i] * (HOUSES - i)  # from your view, opp[5] is near their store
+
+    # Mild preference to have options and avoid emptying your side too early
+    mobility = sum(1 for i in range(HOUSES) if you[i] > 0) - sum(1 for i in range(HOUSES) if opp[i] > 0)
+
+    # Combine
+    return (
+        store_diff * 5000
+        + house_diff * 60
+        + (you_pos - opp_pos) * 10
+        + mobility * 25
+    )
+
+
+def _move_order_key(you: List[int], opp: List[int], m: int) -> Tuple[int, int, int, int]:
+    """
+    Higher is better. We sort by this key descending.
+    Factors: extra turn, immediate capture gain, immediate store gain, and a small positional bonus.
+    """
+    before_store = you[STORE]
+    ny, no, same = _apply_move(you, opp, m)
+
+    # immediate store gain from current player's perspective:
+    # If same_turn: still same player. If not: perspective swapped, so store gain for mover is now in "opponent store".
+    if same:
+        mover_store_after = ny[STORE]
+        opp_store_after = no[STORE]
+    else:
+        # We swapped. The mover is now "opponent" in returned state.
+        mover_store_after = no[STORE]
+        opp_store_after = ny[STORE]
+
+    store_gain = mover_store_after - before_store
+
+    # Capture is roughly indicated by large store gain relative to seeds moved;
+    # still, we can detect a capture by checking if store_gain >= 2 and some opponent pit decreased.
+    # (This isn't perfect but combined with store_gain works well.)
+    extra = 1 if same else 0
+
+    # Positional preference: play from higher index (closer to store) if otherwise equal.
+    pos = m
+
+    # Also prefer moves that don't feed opponent too much: approximate by resulting opponent mobility if turn passes.
+    # If same_turn, less relevant.
+    if same:
+        opp_mob = sum(1 for i in range(HOUSES) if no[i] > 0)
+    else:
+        # After swap, opponent-to-mover relation flipped; the *new opponent* is the original mover.
+        # We want the next player (new "you") to have fewer options, i.e., ny mobility low.
+        opp_mob = sum(1 for i in range(HOUSES) if ny[i] > 0)
+    opp_mob_penalty = -opp_mob
+
+    return (extra, store_gain, opp_mob_penalty, pos)
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Return a legal move index 0..5 where you[i] > 0.
+    """
+    legal = [i for i in range(HOUSES) if you[i] > 0]
+    # Per prompt, policy is never called with no legal move, but be safe:
+    if not legal:
+        return 0
+
+    start = time.perf_counter()
+    deadline = start + TIME_BUDGET_SEC
+
+    # Transposition table: key -> (depth, value, flag)
+    # key is (tuple(you), tuple(opp))
+    tt: Dict[Tuple[Tuple[int, ...], Tuple[int, ...]], Tuple[int, int, int]] = {}
+
+    node_counter = 0
+
+    def negamax(yy: List[int], oo: List[int], depth: int, alpha: int, beta: int) -> int:
+        nonlocal node_counter
+        node_counter += 1
+        if (node_counter & 2047) == 0:
+            if time.perf_counter() >= deadline:
+                raise _TimeUp
+
+        if depth <= 0 or _is_terminal(yy, oo):
+            return _heuristic(yy, oo)
+
+        key = (tuple(yy), tuple(oo))
+        entry = tt.get(key)
+        if entry is not None:
+            edepth, evalv, flag = entry
+            if edepth >= depth:
+                if flag == EXACT:
+                    return evalv
+                elif flag == LOWER:
+                    alpha = max(alpha, evalv)
+                elif flag == UPPER:
+                    beta = min(beta, evalv)
+                if alpha >= beta:
+                    return evalv
+
+        moves = [i for i in range(HOUSES) if yy[i] > 0]
+        # Order moves
+        moves.sort(key=lambda m: _move_order_key(yy, oo, m), reverse=True)
+
+        best = -INF
+        a0 = alpha
+
+        for m in moves:
+            ny, no, same = _apply_move(yy, oo, m)
+            if same:
+                score = negamax(ny, no, depth - 1, alpha, beta)
+            else:
+                score = -negamax(ny, no, depth - 1, -beta, -alpha)
+
+            if score > best:
+                best = score
+            if best > alpha:
+                alpha = best
+            if alpha >= beta:
+                break
+
+        # Store in TT
+        flag = EXACT
+        if best <= a0:
+            flag = UPPER
+        elif best >= beta:
+            flag = LOWER
+        tt[key] = (depth, best, flag)
+
+        return best
+
+    # Root iterative deepening
+    best_move = legal[0]
+    best_val = -INF
+
+    # Root move ordering upfront helps even at low depths
+    root_moves = legal[:]
+    root_moves.sort(key=lambda m: _move_order_key(you, opponent, m), reverse=True)
+
+    try:
+        for depth in range(1, MAX_DEPTH + 1):
+            if time.perf_counter() >= deadline:
+                break
+
+            alpha, beta = -INF, INF
+            local_best_move: Optional[int] = None
+            local_best_val = -INF
+
+            for m in root_moves:
+                if time.perf_counter() >= deadline:
+                    raise _TimeUp
+
+                ny, no, same = _apply_move(you, opponent, m)
+                if same:
+                    val = negamax(ny, no, depth - 1, alpha, beta)
+                else:
+                    val = -negamax(ny, no, depth - 1, -beta, -alpha)
+
+                if val > local_best_val or local_best_move is None:
+                    local_best_val = val
+                    local_best_move = m
+
+                if val > alpha:
+                    alpha = val
+
+            if local_best_move is not None:
+                best_move = local_best_move
+                best_val = local_best_val
+
+            # Reorder root moves based on what looks best at this depth (principal variation first)
+            # Keep stable ordering otherwise
+            if local_best_move is not None:
+                root_moves.remove(local_best_move)
+                root_moves.insert(0, local_best_move)
+
+            # If we found a forced win/loss in terminal magnitude, can stop early.
+            if abs(best_val) >= 900000000:
+                break
+
+    except _TimeUp:
+        pass
+    except Exception:
+        # Must always return a legal move; fall back safely
+        for m in range(HOUSES):
+            if you[m] > 0:
+                return m
+        return legal[0]
+
+    # Ensure legality
+    if 0 <= best_move < HOUSES and you[best_move] > 0:
+        return best_move
+    return legal[0]
+</code>

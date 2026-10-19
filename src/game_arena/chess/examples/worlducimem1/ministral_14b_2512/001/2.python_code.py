@@ -1,0 +1,371 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if color == 'w' else 'w'
+
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'position_hash': None,
+            'move_scores': {},
+            'legal_moves': None,
+        }
+
+    # --- Helper Functions ---
+    def get_piece_value(piece):
+        if not piece: return 0
+        piece_type = piece[1]
+        if piece_type == 'P': return 1
+        elif piece_type == 'N': return 3
+        elif piece_type == 'B': return 3
+        elif piece_type == 'R': return 5
+        elif piece_type == 'Q': return 9
+        elif piece_type == 'K': return 100
+        return 0
+
+    def get_piece_mobility(piece, board):
+        if not piece: return 0
+        piece_type = piece[1]
+        pos = None
+        for sq, p in board.items():
+            if p == piece:
+                pos = sq
+                break
+        if not pos: return 0
+
+        file, rank = ord(pos[0]) - ord('a'), int(pos[1]) - 1
+        mobility = 0
+
+        if piece_type == 'P':
+            direction = 1 if color == 'w' else -1
+            # Forward moves
+            if 0 <= rank + direction < 8:
+                if board.get(pos[0] + str(rank + direction + direction), None) is None:
+                    mobility += 1
+                if board.get(pos[0] + str(rank + direction), None) is None:
+                    mobility += 1
+            # Captures
+            for df in [-1, 1]:
+                if 0 <= file + df < 8:
+                    target = chr(ord('a') + file + df) + str(rank + direction)
+                    if target in board and board[target][0] == opponent_color:
+                        mobility += 1
+        elif piece_type == 'N':
+            deltas = [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                      (1, -2), (1, 2), (2, -1), (2, 1)]
+            for df, dr in deltas:
+                nf, nr = file + df, rank + dr
+                if 0 <= nf < 8 and 0 <= nr < 8:
+                    target = chr(ord('a') + nf) + str(nr + 1)
+                    if target not in board or board[target][0] != color:
+                        mobility += 1
+        elif piece_type == 'B':
+            for df, dr in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                step = 1
+                while True:
+                    nf, nr = file + df * step, rank + dr * step
+                    if not (0 <= nf < 8 and 0 <= nr < 8):
+                        break
+                    target = chr(ord('a') + nf) + str(nr + 1)
+                    if target not in board:
+                        mobility += 1
+                    else:
+                        if board[target][0] != color:
+                            mobility += 1
+                        break
+                    step += 1
+        elif piece_type == 'R':
+            for df, dr in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                step = 1
+                while True:
+                    nf, nr = file + df * step, rank + dr * step
+                    if not (0 <= nf < 8 and 0 <= nr < 8):
+                        break
+                    target = chr(ord('a') + nf) + str(nr + 1)
+                    if target not in board:
+                        mobility += 1
+                    else:
+                        if board[target][0] != color:
+                            mobility += 1
+                        break
+                    step += 1
+        elif piece_type == 'Q':
+            for df, dr in [(-1, -1), (-1, 0), (-1, 1),
+                           (0, -1),          (0, 1),
+                           (1, -1),  (1, 0), (1, 1)]:
+                step = 1
+                while True:
+                    nf, nr = file + df * step, rank + dr * step
+                    if not (0 <= nf < 8 and 0 <= nr < 8):
+                        break
+                    target = chr(ord('a') + nf) + str(nr + 1)
+                    if target not in board:
+                        mobility += 1
+                    else:
+                        if board[target][0] != color:
+                            mobility += 1
+                        break
+                    step += 1
+        elif piece_type == 'K':
+            for df in [-1, 0, 1]:
+                for dr in [-1, 0, 1]:
+                    if df == 0 and dr == 0:
+                        continue
+                    nf, nr = file + df, rank + dr
+                    if 0 <= nf < 8 and 0 <= nr < 8:
+                        target = chr(ord('a') + nf) + str(nr + 1)
+                        if target not in board or board[target][0] != color:
+                            mobility += 1
+        return mobility
+
+    def evaluate_position(board):
+        score = 0
+        king_pos = None
+        for sq, piece in board.items():
+            if piece[1] == 'K' and piece[0] == color:
+                king_pos = sq
+                break
+        if not king_pos:
+            return 0
+
+        # Material
+        for piece in board.values():
+            score += get_piece_value(piece) if piece[0] == color else -get_piece_value(piece)
+
+        # Mobility (bonus for active pieces)
+        for piece in board.values():
+            if piece[0] == color:
+                score += 0.1 * get_piece_mobility(piece, board)
+            else:
+                score -= 0.1 * get_piece_mobility(piece, board)
+
+        # King safety (penalize king in center or exposed)
+        king_file, king_rank = ord(king_pos[0]) - ord('a'), int(king_pos[1]) - 1
+        center_distance = abs(king_file - 3.5) + abs(king_rank - 3.5)
+        score += 0.5 * (8 - center_distance)  # Prefer king on edge
+
+        # Pawn structure (simplified)
+        pawns = [sq for sq, piece in board.items() if piece[1] == 'P' and piece[0] == color]
+        for pawn in pawns:
+            file, rank = ord(pawn[0]) - ord('a'), int(pawn[1]) - 1
+            # Bonus for passed pawns (simplified)
+            if rank == 6 and color == 'w':
+                score += 0.3
+            elif rank == 1 and color == 'b':
+                score += 0.3
+
+        return score
+
+    def is_check(board, color):
+        king_pos = None
+        for sq, piece in board.items():
+            if piece[1] == 'K' and piece[0] == color:
+                king_pos = sq
+                break
+        if not king_pos:
+            return False
+
+        # Check if any opponent piece attacks the king
+        opponent_color = 'b' if color == 'w' else 'w'
+        for sq, piece in board.items():
+            if piece[0] == opponent_color:
+                if is_square_attacked(sq, king_pos, piece, board):
+                    return True
+        return False
+
+    def is_square_attacked(attacker_pos, target_pos, attacker_piece, board):
+        if not attacker_piece:
+            return False
+        attacker_type = attacker_piece[1]
+        file_diff = ord(target_pos[0]) - ord(attacker_pos[0])
+        rank_diff = int(target_pos[1]) - int(attacker_pos[1])
+
+        if attacker_type == 'P':
+            direction = 1 if attacker_piece[0] == 'w' else -1
+            return (file_diff == -1 or file_diff == 1) and rank_diff == direction
+        elif attacker_type == 'N':
+            return abs(file_diff) in [1, 2] and abs(rank_diff) in [1, 2]
+        elif attacker_type == 'B':
+            return abs(file_diff) == abs(rank_diff)
+        elif attacker_type == 'R':
+            return file_diff == 0 or rank_diff == 0
+        elif attacker_type == 'Q':
+            return file_diff == 0 or rank_diff == 0 or abs(file_diff) == abs(rank_diff)
+        elif attacker_type == 'K':
+            return abs(file_diff) <= 1 and abs(rank_diff) <= 1
+        return False
+
+    def generate_legal_moves(board, color):
+        legal_moves = []
+        for from_sq, piece in board.items():
+            if piece[0] != color:
+                continue
+            piece_type = piece[1]
+            file, rank = ord(from_sq[0]) - ord('a'), int(from_sq[1]) - 1
+
+            if piece_type == 'P':
+                direction = 1 if color == 'w' else -1
+                # Forward moves
+                for step in [1, 2]:
+                    if step == 2 and (rank + direction * 2 < 1 or rank + direction * 2 > 6):
+                        continue
+                    target_rank = rank + direction * step
+                    if 0 <= target_rank < 8:
+                        target_sq = chr(ord('a') + file) + str(target_rank + 1)
+                        if target_sq not in board:
+                            # Check for promotion
+                            if target_rank == 0 or target_rank == 7:
+                                for promo in ['q', 'r', 'b', 'n']:
+                                    legal_moves.append(f"{from_sq}{target_sq}{promo}")
+                            else:
+                                legal_moves.append(f"{from_sq}{target_sq}")
+                # Captures
+                for df in [-1, 1]:
+                    target_file = file + df
+                    if 0 <= target_file < 8:
+                        target_rank = rank + direction
+                        if 0 <= target_rank < 8:
+                            target_sq = chr(ord('a') + target_file) + str(target_rank + 1)
+                            if target_sq in board and board[target_sq][0] == opponent_color:
+                                # Check for promotion
+                                if target_rank == 0 or target_rank == 7:
+                                    for promo in ['q', 'r', 'b', 'n']:
+                                        legal_moves.append(f"{from_sq}{target_sq}{promo}")
+                                else:
+                                    legal_moves.append(f"{from_sq}{target_sq}")
+            elif piece_type == 'N':
+                deltas = [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                          (1, -2), (1, 2), (2, -1), (2, 1)]
+                for df, dr in deltas:
+                    nf, nr = file + df, rank + dr
+                    if 0 <= nf < 8 and 0 <= nr < 8:
+                        target_sq = chr(ord('a') + nf) + str(nr + 1)
+                        if target_sq not in board or board[target_sq][0] != color:
+                            legal_moves.append(f"{from_sq}{target_sq}")
+            elif piece_type == 'B':
+                for df, dr in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                    step = 1
+                    while True:
+                        nf, nr = file + df * step, rank + dr * step
+                        if not (0 <= nf < 8 and 0 <= nr < 8):
+                            break
+                        target_sq = chr(ord('a') + nf) + str(nr + 1)
+                        if target_sq not in board:
+                            legal_moves.append(f"{from_sq}{target_sq}")
+                        else:
+                            if board[target_sq][0] != color:
+                                legal_moves.append(f"{from_sq}{target_sq}")
+                            break
+                        step += 1
+            elif piece_type == 'R':
+                for df, dr in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    step = 1
+                    while True:
+                        nf, nr = file + df * step, rank + dr * step
+                        if not (0 <= nf < 8 and 0 <= nr < 8):
+                            break
+                        target_sq = chr(ord('a') + nf) + str(nr + 1)
+                        if target_sq not in board:
+                            legal_moves.append(f"{from_sq}{target_sq}")
+                        else:
+                            if board[target_sq][0] != color:
+                                legal_moves.append(f"{from_sq}{target_sq}")
+                            break
+                        step += 1
+            elif piece_type == 'Q':
+                for df, dr in [(-1, -1), (-1, 0), (-1, 1),
+                               (0, -1),          (0, 1),
+                               (1, -1),  (1, 0), (1, 1)]:
+                    step = 1
+                    while True:
+                        nf, nr = file + df * step, rank + dr * step
+                        if not (0 <= nf < 8 and 0 <= nr < 8):
+                            break
+                        target_sq = chr(ord('a') + nf) + str(nr + 1)
+                        if target_sq not in board:
+                            legal_moves.append(f"{from_sq}{target_sq}")
+                        else:
+                            if board[target_sq][0] != color:
+                                legal_moves.append(f"{from_sq}{target_sq}")
+                            break
+                        step += 1
+            elif piece_type == 'K':
+                for df in [-1, 0, 1]:
+                    for dr in [-1, 0, 1]:
+                        if df == 0 and dr == 0:
+                            continue
+                        nf, nr = file + df, rank + dr
+                        if 0 <= nf < 8 and 0 <= nr < 8:
+                            target_sq = chr(ord('a') + nf) + str(nr + 1)
+                            if target_sq not in board or board[target_sq][0] != color:
+                                legal_moves.append(f"{from_sq}{target_sq}")
+                # Castling (simplified)
+                if piece == 'wK' and color == 'w':
+                    if 'h1' in board and board['h1'] == 'wR' and 'g1' not in board:
+                        legal_moves.append('e1g1')
+                    if 'a1' in board and board['a1'] == 'wR' and 'd1' not in board and 'e1' not in board:
+                        legal_moves.append('e1c1')
+                elif piece == 'bK' and color == 'b':
+                    if 'h8' in board and board['h8'] == 'bR' and 'g8' not in board:
+                        legal_moves.append('e8g8')
+                    if 'a8' in board and board['a8'] == 'bR' and 'd8' not in board and 'e8' not in board:
+                        legal_moves.append('e8c8')
+        return legal_moves
+
+    # --- Main Policy Logic ---
+    legal_moves = memory.get('legal_moves', None)
+    if legal_moves is None:
+        legal_moves = generate_legal_moves(pieces, color)
+        memory['legal_moves'] = legal_moves
+
+    # Score moves based on:
+    # 1. Captures (higher value = better)
+    # 2. Checkmate (infinite score)
+    # 3. Material gain
+    # 4. Mobility improvement
+    scored_moves = []
+    for move in legal_moves:
+        if len(move) == 5:  # Promotion
+            from_sq = move[:2]
+            to_sq = move[2:4]
+            promo = move[4]
+            # Simulate move
+            new_board = pieces.copy()
+            piece = new_board[from_sq]
+            del new_board[from_sq]
+            if to_sq in new_board and new_board[to_sq][0] == opponent_color:
+                del new_board[to_sq]
+            new_board[to_sq] = piece[0] + promo
+            # Score
+            score = evaluate_position(new_board) - evaluate_position(pieces)
+            scored_moves.append((move, score))
+        else:
+            from_sq = move[:2]
+            to_sq = move[2:]
+            # Simulate move
+            new_board = pieces.copy()
+            piece = new_board[from_sq]
+            del new_board[from_sq]
+            if to_sq in new_board and new_board[to_sq][0] == opponent_color:
+                del new_board[to_sq]
+            new_board[to_sq] = piece
+            # Check for checkmate (simplified)
+            if is_check(new_board, opponent_color):
+                score = 10000  # High score for checkmate
+            else:
+                score = evaluate_position(new_board) - evaluate_position(pieces)
+            scored_moves.append((move, score))
+
+    # Sort moves by score (descending)
+    scored_moves.sort(key=lambda x: -x[1])
+
+    # Select the best move
+    best_move = scored_moves[0][0] if scored_moves else legal_moves[0]
+
+    # Update memory (optional)
+    memory['position_hash'] = hash(frozenset(pieces.items()))
+
+    return (best_move, memory)

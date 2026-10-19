@@ -1,0 +1,141 @@
+### Strategy
+
+This Go-playing AI policy combines an opening book with tactical mid-game moves. The strategy focuses on:
+
+1. **Opening Moves**: Start with standard corner enclosures (4-4 and 3-4 points) to establish territory efficiently.
+2. **Capture Priority**: Always prioritize capturing opponent stones whenever possible.
+3. **Save Weak Groups**: Defend any of our groups that are in immediate danger (one liberty left).
+4. **Influence Expansion**: Expand into open areas by playing moves closer to our stones and farther from opponents, leveraging Manhattan distance for quick evaluation.
+5. **Fallback**: Pass only if no legal moves are found (unlikely due to handling).
+
+The code ensures moves are legal by checking liberties and captures, avoiding suicides, and respecting the board state.
+
+<code>
+import numpy as np
+from collections import deque
+import copy
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Initialize memory if empty
+    if not memory:
+        memory = {
+            'phase': 'opening',
+            'opening_moves': [(4, 4), (4, 16), (16, 4), (16, 16), (3, 4), (4, 3), (3, 16), (16, 3), (16, 16), (4, 16)],
+            'next_opening_idx': 0
+        }
+    
+    me_set = set(me)
+    opponent_set = set(opponent)
+    all_stones = me_set | opponent_set
+
+    # Helper functions
+    def adjacent(r, c):
+        adj = []
+        if r > 1: adj.append((r-1, c))
+        if r < 19: adj.append((r+1, c))
+        if c > 1: adj.append((r, c-1))
+        if c < 19: adj.append((r, c+1))
+        return adj
+
+    def find_group_and_liberties(board, r, c, player):
+        visited = set()
+        queue = deque([(r, c)])
+        group = set()
+        liberties = set()
+        while queue:
+            row, col = queue.popleft()
+            if (row, col) in visited:
+                continue
+            visited.add((row, col))
+            group.add((row, col))
+            for nr, nc in adjacent(row, col):
+                if board[nr][nc] == 0:
+                    liberties.add((nr, nc))
+                elif board[nr][nc] == player and (nr, nc) not in visited:
+                    queue.append((nr, nc))
+        return group, liberties
+
+    def closest_distance(stones, point):
+        if not stones:
+            return float('inf')
+        r, c = point
+        min_dist = min(abs(sr - r) + abs(sc - c) for (sr, sc) in stones)
+        return min_dist
+
+    # Build board (1-based indices, 0=empty, 1=me, 2=opponent)
+    board = [[0]*20 for _ in range(20)]
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opponent:
+        board[r][c] = 2
+
+    # Phase 1: Opening book moves
+    if memory['phase'] == 'opening':
+        idx = memory['next_opening_idx']
+        opening_moves = memory['opening_moves']
+        while idx < len(opening_moves):
+            move = opening_moves[idx]
+            if move not in all_stones:
+                # Check adjacent liberties for legality
+                for adj in adjacent(*move):
+                    if board[adj[0]][adj[1]] == 0:
+                        memory['next_opening_idx'] = idx + 1
+                        return move, memory
+            idx += 1
+        # Switch to midgame if opening exhausted
+        memory['phase'] = 'midgame'
+    
+    # Collect all empty points
+    empty_points = [(r, c) for r in range(1, 20) for c in range(1, 20) if board[r][c] == 0]
+    if not empty_points:
+        return (0, 0), memory  # Pass if no moves left
+
+    # Check for immediate captures and group saves
+    candidate_moves = []
+    for (r, c) in empty_points:
+        temp_board = copy.deepcopy(board)
+        temp_board[r][c] = 1  # Place my stone
+        
+        # Check captures
+        captured = False
+        for nr, nc in adjacent(r, c):
+            if temp_board[nr][nc] == 2:
+                group, lib = find_group_and_liberties(temp_board, nr, nc, 2)
+                if len(lib) == 0:
+                    captured = True
+                    break
+        
+        # Check liberties of the placed stone
+        group, lib = find_group_and_liberties(temp_board, r, c, 1)
+        legal_move = captured or (len(lib) > 0)
+        
+        if not legal_move:
+            continue
+        
+        if captured:
+            candidate_moves.append((r, c, 1000))  # Highest priority
+        else:
+            # Check if saving own group in atari
+            saving = False
+            for nr, nc in adjacent(r, c):
+                if board[nr][nc] == 1:
+                    group, lib = find_group_and_liberties(board, nr, nc, 1)
+                    if len(lib) == 1 and (r, c) in lib:
+                        candidate_moves.append((r, c, 500))
+                        saving = True
+                        break
+            if not saving:
+                # Midgame expansion score
+                dist_me = closest_distance(me, (r, c))
+                dist_opp = closest_distance(opponent, (r, c))
+                score = dist_opp - dist_me
+                candidate_moves.append((r, c, score))
+    
+    # Sort candidates and return best move
+    if candidate_moves:
+        candidate_moves.sort(key=lambda x: -x[2])
+        return (candidate_moves[0][0], candidate_moves[0][1]), memory
+    
+    # Fallback: pass if no legal moves (shouldn't happen)
+    return (0, 0), memory
+</code>

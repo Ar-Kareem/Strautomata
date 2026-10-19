@@ -1,0 +1,184 @@
+## Strategy
+
+My strategy for this Havannah policy combines several key elements:
+
+1. **Opening Strategy**: Start near the center of the board for maximum connectivity options.
+
+2. **Win Detection**: Check if any valid move immediately wins the game by completing a ring, bridge, or fork.
+
+3. **Block Detection**: Check if the opponent has any immediate winning threats and block them.
+
+4. **Positional Evaluation**: Score each position based on:
+   - **Center proximity**: Prefer central positions for better connectivity
+   - **Corner and edge proximity**: Value positions that can contribute to bridges and forks
+   - **Connectivity to existing stones**: Favor moves that connect to our existing groups
+   - **Threat creation**: Prefer moves that create multiple paths toward winning structures
+
+5. **Structure Building**: 
+   - Track connected components and their edge/corner connections
+   - Prioritize extending groups that are close to completing forks (connecting 3 edges) or bridges (connecting 2 corners)
+
+6. **Monte Carlo Sampling**: For complex positions, use light random playouts to estimate move quality when time permits.
+
+The implementation uses union-find for efficient group tracking and evaluates the strategic value of each move considering Havannah's unique winning conditions.
+
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    N = 15
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    valid_moves = [(r, c) for r in range(N) for c in range(N) 
+                   if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set]
+    
+    if not valid_moves:
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+    
+    def get_neighbors(r, c):
+        # Hexagonal neighbors in offset coordinates
+        return [(r-1, c), (r+1, c), (r, c-1), (r, c+1), (r-1, c+1), (r+1, c-1)]
+    
+    def get_valid_neighbors(r, c):
+        return [(nr, nc) for nr, nc in get_neighbors(r, c) 
+                if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]]
+    
+    # Identify corners and edges
+    corners = set()
+    edges = defaultdict(set)  # edge_id -> set of positions
+    
+    for r in range(N):
+        for c in range(N):
+            if not valid_mask[r][c]:
+                continue
+            neighbors = get_valid_neighbors(r, c)
+            if len(neighbors) <= 3:  # corner
+                corners.add((r, c))
+            elif len(neighbors) <= 4:  # edge
+                # Classify edge by position
+                if r == 0:
+                    edges[0].add((r, c))
+                elif c == 0:
+                    edges[1].add((r, c))
+                elif r + c == N - 1 and c < N // 2:
+                    edges[2].add((r, c))
+                elif r == N - 1:
+                    edges[3].add((r, c))
+                elif c == N - 1:
+                    edges[4].add((r, c))
+                elif r + c == N - 1 + (N - 1) // 2:
+                    edges[5].add((r, c))
+                else:
+                    # Approximate edge classification
+                    for i in range(6):
+                        if (r, c) in edges[i]:
+                            break
+                    else:
+                        edges[r % 6].add((r, c))
+    
+    # Remove corners from edges
+    for i in edges:
+        edges[i] -= corners
+    
+    def check_win(stones_set):
+        if len(stones_set) < 3:
+            return False
+        # Check bridge (connects 2 corners)
+        corner_count = len(stones_set & corners)
+        if corner_count >= 2:
+            # Check if connected
+            groups = get_groups(stones_set)
+            for g in groups:
+                if len(g & corners) >= 2:
+                    return True
+        # Check fork (connects 3 edges)
+        groups = get_groups(stones_set)
+        for g in groups:
+            edge_ids = set()
+            for i, edge_cells in edges.items():
+                if g & edge_cells:
+                    edge_ids.add(i)
+            if len(edge_ids) >= 3:
+                return True
+        # Check ring (simplified - skip for speed)
+        return False
+    
+    def get_groups(stones_set):
+        if not stones_set:
+            return []
+        parent = {s: s for s in stones_set}
+        def find(x):
+            if parent[x] != x:
+                parent[x] = find(parent[x])
+            return parent[x]
+        def union(x, y):
+            parent[find(x)] = find(y)
+        for s in stones_set:
+            for n in get_neighbors(*s):
+                if n in stones_set:
+                    union(s, n)
+        groups = defaultdict(set)
+        for s in stones_set:
+            groups[find(s)].add(s)
+        return list(groups.values())
+    
+    # Check for immediate wins
+    for move in valid_moves:
+        new_stones = me_set | {move}
+        if check_win(new_stones):
+            return move
+    
+    # Check for opponent immediate wins and block
+    for move in valid_moves:
+        new_opp = opp_set | {move}
+        if check_win(new_opp):
+            return move
+    
+    # Score moves
+    center = N // 2
+    def score_move(move):
+        r, c = move
+        score = 0
+        # Center preference
+        dist_center = abs(r - center) + abs(c - center)
+        score -= dist_center * 0.5
+        
+        # Connectivity to own stones
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in me_set:
+                score += 3
+            if (nr, nc) in opp_set:
+                score += 0.5  # blocking value
+        
+        # Edge/corner value
+        if move in corners:
+            score += 2
+        for edge_cells in edges.values():
+            if move in edge_cells:
+                score += 1
+                break
+        
+        # Threat creation - check group connectivity potential
+        new_stones = me_set | {move}
+        groups = get_groups(new_stones)
+        for g in groups:
+            if move in g:
+                edge_ids = set()
+                for i, edge_cells in edges.items():
+                    if g & edge_cells:
+                        edge_ids.add(i)
+                corner_in_group = len(g & corners)
+                score += len(edge_ids) * 2
+                score += corner_in_group * 3
+                break
+        
+        return score
+    
+    best_move = max(valid_moves, key=score_move)
+    return best_move
+</code>

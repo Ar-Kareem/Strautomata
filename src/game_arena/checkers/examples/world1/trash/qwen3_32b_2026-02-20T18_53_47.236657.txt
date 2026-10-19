@@ -1,0 +1,86 @@
+The strategy for this policy is to prioritize mandatory capture moves by maximizing the number of opponent pieces captured in a single turn. If multiple capture sequences are available with the same number of captures, the one that leads to kinging the piece is preferred. When no capture is available, the policy selects the non-capturing move that advances the piece most towards the opponent's territory or results in kinging.
+
+<code>
+```python
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    def find_captures(initial_r, initial_c, current_r, current_c, current_is_king, original_is_king, opp_men_set, opp_kings_set, my_men_set, my_kings_set, captured_enemies, path):
+        results = []
+        if current_is_king:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            if color == 'w':
+                directions = [(1, -1), (1, 1)]
+            else:
+                directions = [(-1, -1), (-1, 1)]
+        for dr, dc in directions:
+            mid_r = current_r + dr
+            mid_c = current_c + dc
+            to_r = current_r + 2 * dr
+            to_c = current_c + 2 * dc
+            if not (0 <= to_r < 8 and 0 <= to_c < 8):
+                continue
+            mid_pos = (mid_r, mid_c)
+            if mid_pos in captured_enemies:
+                continue
+            is_mid_opp = mid_pos in opp_men_set or mid_pos in opp_kings_set
+            if not is_mid_opp:
+                continue
+            to_pos = (to_r, to_c)
+            if to_pos in my_men_set or to_pos in my_kings_set:
+                continue
+            if (to_r, to_c) in path:
+                continue
+            if (to_pos in opp_men_set or to_pos in opp_kings_set) and to_pos not in captured_enemies:
+                continue
+            new_captured = captured_enemies.copy()
+            new_captured.add(mid_pos)
+            new_path = path + [(to_r, to_c)]
+            new_current_is_king = current_is_king
+            if not original_is_king and not current_is_king:
+                if color == 'w' and to_r == 7:
+                    new_current_is_king = True
+                elif color == 'b' and to_r == 0:
+                    new_current_is_king = True
+            sub_results = find_captures(initial_r, initial_c, to_r, to_c, new_current_is_king, original_is_king, opp_men_set, opp_kings_set, my_men_set, my_kings_set, new_captured, new_path)
+            results.extend(sub_results)
+            results.append(((initial_r, initial_c), (to_r, to_c), len(new_captured)))
+        return results
+
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    
+    all_captures = []
+    for r, c in my_men:
+        captures = find_captures(r, c, r, c, False, False, opp_men_set, opp_kings_set, my_men_set, my_kings_set, set(), [(r, c)])
+        all_captures.extend(captures)
+    for r, c in my_kings:
+        captures = find_captures(r, c, r, c, True, True, opp_men_set, opp_kings_set, my_men_set, my_kings_set, set(), [(r, c)])
+        all_captures.extend(captures)
+    
+    if all_captures:
+        max_count = max(cp[2] for cp in all_captures)
+        best_captures = [cp for cp in all_captures if cp[2] == max_count]
+        return best_captures[0][:2]
+    
+    all_moves = []
+    for r, c in my_men:
+        if color == 'w':
+            directions = [(1, -1), (1, 1)]
+        else:
+            directions = [(-1, -1), (-1, 1)]
+        for dr, dc in directions:
+            to_r, to_c = r + dr, c + dc
+            if 0 <= to_r < 8 and 0 <= to_c < 8:
+                to_pos = (to_r, to_c)
+                if (to_pos not in my_men_set and to_pos not in my_kings_set and
+                    to_pos not in opp_men_set and to_pos not in opp_kings_set):
+                    all_moves.append(((r, c), (to_r, to_c), False))
+    for r, c in my_kings:
+        for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            to_r, to_c = r + dr, c + dc
+            if 0 <= to_r < 8 and 0 <= to_c < 8:
+                to_pos = (to_r, to_c)
+                if (to_pos not in my_men_set and to_pos not in my_kings_set and
+                    to_pos not in opp_men_set

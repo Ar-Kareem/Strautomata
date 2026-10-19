@@ -1,0 +1,86 @@
+
+import numpy as np
+import random
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    """
+    Chooses the next move for a Clobber game on a 5x6 grid.
+
+    Args:
+        you: A 5x6 array representing your pieces (1) and empty cells (0).
+        opponent: A 5x6 array representing the opponent's pieces (1) and empty cells (0).
+
+    Returns:
+        A string move in the format 'row,col,dir'.
+    """
+
+    you = np.array(you)
+    opponent = np.array(opponent)
+
+    def get_legal_moves(board_you, board_opponent):
+        moves = []
+        rows, cols = board_you.shape
+        for r in range(rows):
+            for c in range(cols):
+                if board_you[r, c] == 1:
+                    # Check up
+                    if r > 0 and board_opponent[r - 1, c] == 1:
+                        moves.append((r, c, 'U'))
+                    # Check down
+                    if r < rows - 1 and board_opponent[r + 1, c] == 1:
+                        moves.append((r, c, 'D'))
+                    # Check left
+                    if c > 0 and board_opponent[r, c - 1] == 1:
+                        moves.append((r, c, 'L'))
+                    # Check right
+                    if c < cols - 1 and board_opponent[r, c + 1] == 1:
+                        moves.append((r, c, 'R'))
+        return moves
+
+    def apply_move(board_you, board_opponent, move):
+        r, c, direction = move
+        new_board_you = board_you.copy()
+        new_board_opponent = board_opponent.copy()
+
+        new_board_you[r, c] = 0
+
+        if direction == 'U':
+            new_board_you[r - 1, c] = 1
+            new_board_opponent[r - 1, c] = 0
+        elif direction == 'D':
+            new_board_you[r + 1, c] = 1
+            new_board_opponent[r + 1, c] = 0
+        elif direction == 'L':
+            new_board_you[r, c - 1] = 1
+            new_board_opponent[r, c - 1] = 0
+        elif direction == 'R':
+            new_board_you[r, c + 1] = 1
+            new_board_opponent[r, c + 1] = 0
+        
+        return new_board_you, new_board_opponent
+
+    legal_moves = get_legal_moves(you, opponent)
+
+    if not legal_moves:
+        return "0,0,U"  # Should never happen, but let's return a default illegal move to avoid crashing
+
+    best_moves = []
+    max_future_moves = -1
+
+    for move in legal_moves:
+        new_you, new_opponent = apply_move(you, opponent, move)
+        future_moves = len(get_legal_moves(new_you, new_opponent))
+        
+        if future_moves > max_future_moves:
+            max_future_moves = future_moves
+            best_moves = [move]
+        elif future_moves == max_future_moves:
+            best_moves.append(move)
+
+    if best_moves:
+        move = random.choice(best_moves)
+        return f"{move[0]},{move[1]},{move[2]}"
+    
+    # Fallback to random move
+    random_move = random.choice(legal_moves)
+    return f"{random_move[0]},{random_move[1]},{random_move[2]}"

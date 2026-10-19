@@ -1,0 +1,172 @@
+
+import numpy as np
+from collections import deque
+
+# Board size
+SIZE = 6
+
+# Eight queen directions
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        ( 0, -1),          ( 0, 1),
+        ( 1, -1), ( 1, 0), ( 1, 1)]
+
+# Heuristic constants
+CAPTURE_BONUS = 1000      # high priority for captures
+BLOCK_BONUS   = 200       # lower priority for blocking opponent squares
+DEFAULT_BONUS = 20        # harmless default moves
+
+def is_legal_queen(board, start, end, allow_capture=False):
+    """Check queen‑like movement from start to end.
+    allow_capture=True permits landing on opponent (value 2)."""
+    if start == end:
+        return False
+    if not (0 <= end[0] < SIZE and 0 <= end[1] < SIZE):
+        return False
+
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    if dx == 0 and dy == 0:
+        return False
+
+    steps = max(abs(dx), abs(dy))
+    # Path (intermediate squares) must be empty
+    for s in range(1, steps):
+        mid = (start[0] + dx * s, start[1] + dy * s)
+        if not (0 <= mid[0] < SIZE and 0 <= mid[1] < SIZE):
+            return False
+        if board[mid] != 0:
+            return False
+
+    # Destination cell
+    dest = (end[0], end[1])
+    if board[dest] == -1:          # arrow cannot be landed on
+        return False
+    if board[dest] == 1:           # cannot land on own amazon
+        return False
+    if not allow_capture and board[dest] == 2:   # capture not allowed
+        return False
+    # Destination must be either empty or opponent (capture)
+    return True
+
+def legal_queen_move(board, start, allow_capture=False):
+    """Generate all queen‑legal squares reachable from start."""
+    out = []
+    for ddx, ddy in DIRS:
+        step = 1
+        while True:
+            end = (start[0] + ddx * step, start[1] + ddy * step)
+            if not (0 <= end[0] < SIZE and 0 <= end[1] < SIZE):
+                break
+            if is_legal_queen(board, start, end, allow_capture):
+                out.append(end)
+            step += 1
+    return out
+
+def legal_arrow(board, landing, allow_capture=False):
+    """Generate all legal arrow targets from landing (target must be empty)."""
+    out = []
+    for adx, ady in DIRS:
+        dist = max(abs(adx), abs(ady))
+        if dist == 0:
+            continue
+        # we must travel at least one square
+        step = 1
+        while True:
+            target = (landing[0] + adx * step, landing[1] + ady * step)
+            if not (0 <= target[0] < SIZE and 0 <= target[1] < SIZE):
+                break
+            # path (intermediate squares) must be empty
+            for s in range(1, dist):
+                mid = (landing[0] + adx * s, landing[1] + ady * s)
+                if board[mid] != 0:
+                    break
+            else:
+                # all interior squares empty
+                if board[target] == -1:            # arrow cannot land on arrow
+                    continue
+                if board[target] == 1:             # arrow cannot land on own amazon
+                    continue
+                # target must be empty (0)
+                if board[target] == 0:
+                    out.append(target)
+            step += 1
+    return out
+
+def opponent_reachable_squares(board):
+    """Set of squares opponent can move to (empty queen‑reachable)."""
+    reachable = set()
+    opp = [(i, j) for i in range(SIZE) for j in range(SIZE) if board[i, j] == 2]
+    for ox, oy in opp:
+        for target in legal_arrow(board, (ox, oy), allow_capture=False):
+            reachable.add(target)
+    return reachable
+
+def policy(board):
+    """
+    Return a legal move string.
+    Format: \"from_row,from_col:to_row,to_col:arrow_row,arrow_col\".
+    """
+    if not isinstance(board, np.ndarray):
+        # Convert list/tuple to array if needed
+        board = np.array(board)
+
+    # Find our and opponent positions
+    my_pos = [(i, j) for i in range(SIZE) for j in range(SIZE) if board[i, j] == 1]
+    opp_pos = [(i, j) for i in range(SIZE) for j in range(SIZE) if board[i, j] == 2]
+
+    # Pre‑compute opponent reachable squares for blocking decisions
+    blocked_by_me = opponent_reachable_squares(board)
+
+    # Evaluate every legal move
+    best_move = None
+    best_score = -1
+
+    for fx, fy in my_pos:            # from
+        for landing in legal_queen_move(board, (fx, fy), allow_capture=True):
+            tx, ty = landing
+            # Optional capture flag
+            is_capture = board[tx, ty] == 2
+
+            # List of legal arrow targets from landing
+            arrows = legal_arrow(board, (tx, ty), allow_capture=False)
+
+            for ax, ay in arrows:    # arrow target
+                ar_dist = max(abs(ax - tx), abs(ay - ty))
+
+                # Heuristic evaluation
+                score = DEFAULT_BONUS
+                if is_capture:
+                    score = CAPTURE_BONUS - ar_dist
+                elif (ax, ay) in blocked_by_me:
+                    # opponent could move there next turn → block it
+                    # reward is higher the farther from us
+                    opp_dist = float('inf')
+                    if opp_pos:
+                        opp_dist = min(abs(ax - oi) + abs(ay - oj) for oi, oj in opp_pos)
+                    score = BLOCK_BONUS + opp_dist
+                # otherwise just a harmless move
+
+                # Break ties by preferring smaller arrow distance
+                tie_breaker = ar_dist
+
+                # Choose a deterministic ordering for same score/tie:
+                move_tuple = (score, -tie_breaker,
+                              fx, fy, tx, ty, ax, ay)
+
+                if best_move is None or move_tuple > best_move:
+                    best_move = move_tuple
+
+    # Safety fallback – should never happen on a valid board
+    if best_move is None:
+        # Find any legal arrow for the first amazon (non‑capture)
+        fx, fy = my_pos[0]
+        for landing in legal_queen_move(board, (fx, fy), allow_capture=True):
+            tx, ty = landing
+            for ax, ay in legal_arrow(board, (tx, ty), allow_capture=False):
+                best_move = (DEFAULT_BONUS - max(abs(ax - tx), abs(ay - ty)),
+                             -max(abs(ax - tx), abs(ay - ty)),
+                             fx, fy, tx, ty, ax, ay)
+
+    # Format the best move
+    fx, fy, tx, ty, ax, ay = best_move[2:8]
+    return f"{fx},{fy}:{tx},{ty}:{ax},{ay}"

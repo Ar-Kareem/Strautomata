@@ -1,0 +1,415 @@
+<thinking>
+The goal is to implement a winning strategy for a 3D Tic Tac Toe game. I need to find the best move, which means prioritizing winning, then blocking the opponent from winning, and finally choosing a good strategic move.
+
+Here's my plan:
+
+1.  **Define Helper Functions:**
+    *   `check_win(board, player)`: This function will check if a given player has won the game. It needs to check all possible win conditions:
+        *   3 lines in each of the 3 planes (XY, XZ, YZ) - 9 * 3 = 27 lines
+        *   4 main diagonals within each plane (2 per plane) - 4 * 3 = 12 diagonals
+        *   4 3D main diagonals (across all 3 dimensions) - 4 diagonals
+        *   Total lines to check: 27 + 12 + 4 = 43 winning lines. This is a lot, so I need to be careful with the implementation.
+    *   `find_empty_cells(board)`: Returns a list of all available empty cells.
+    *   `is_valid_move(board, move)`: Checks if a move is within bounds and on an empty cell.
+
+2.  **`policy(board)` Function Logic:**
+    *   **Winning Move:** Iterate through all empty cells. For each empty cell, place my marker (`1`), then check if I win. If so, return that move immediately.
+    *   **Blocking Move:** If no winning move for me, iterate through all empty cells. For each empty cell, place the opponent's marker (`-1`), then check if the opponent wins. If so, return that move to block them.
+    *   **Strategic Move (Center, Corners, Edges):**
+        *   **Center:** The most strategic move is the very center of the 3D board: `(1, 1, 1)`. If it's empty, take it.
+        *   **2D Centers:** If no center, consider the centers of each face: `(0, 1, 1)`, `(2, 1, 1)`, `(1, 0, 1)`, `(1, 2, 1)`, `(1, 1, 0)`, `(1, 1, 2)`.
+        *   **Corners:** After centers, corners are usually good: `(0, 0, 0)`, `(0, 0, 2)`, `(0, 2, 0)`, etc. There are 8 corners.
+        *   **Edges:** Finally, other edge positions.
+    *   **Default Move:** If no strategic move is found (shouldn't happen with the center/corners/edges approach unless the board is completely full of those), just return the first available empty cell.
+
+3.  **Detailed Win Condition Checking (`check_win`):**
+
+    A 3D Tic Tac Toe board is a 3x3x3 cube. We need to check all lines of 3 cells.
+    Let the coordinates be `(x, y, z)` where `x` is depth, `y` is row, `z` is column.
+
+    *   **Lines parallel to axes:**
+        *   **X-axis (depth):** For each `y`, `z`: `[(0, y, z), (1, y, z), (2, y, z)]` (3 * 3 = 9 lines)
+        *   **Y-axis (row):** For each `x`, `z`: `[(x, 0, z), (x, 1, z), (x, 2, z)]` (3 * 3 = 9 lines)
+        *   **Z-axis (column):** For each `x`, `y`: `[(x, y, 0), (x, y, 1), (x, y, 2)]` (3 * 3 = 9 lines)
+        *   Total parallel lines: 27
+
+    *   **2D Diagonals within each plane:**
+        *   **XY-planes (constant Z):** For each `z_val`: `[(0, 0, z_val), (1, 1, z_val), (2, 2, z_val)]` and `[(0, 2, z_val), (1, 1, z_val), (2, 0, z_val)]` (2 diagonals * 3 planes = 6 lines)
+        *   **XZ-planes (constant Y):** For each `y_val`: `[(0, y_val, 0), (1, y_val, 1), (2, y_val, 2)]` and `[(0, y_val, 2), (1, y_val, 1), (2, y_val, 0)]` (2 diagonals * 3 planes = 6 lines)
+        *   **YZ-planes (constant X):** For each `x_val`: `[(x_val, 0, 0), (x_val, 1, 1), (x_val, 2, 2)]` and `[(x_val, 0, 2), (x_val, 1, 1), (x_val, 2, 0)]` (2 diagonals * 3 planes = 6 lines)
+        *   Total 2D diagonals: 18 (My original count was 12, I missed 6 of them, this is better)
+
+    *   **3D Diagonals (Space Diagonals):**
+        *   `[(0, 0, 0), (1, 1, 1), (2, 2, 2)]`
+        *   `[(0, 0, 2), (1, 1, 1), (2, 2, 0)]`
+        *   `[(0, 2, 0), (1, 1, 1), (2, 0, 2)]`
+        *   `[(2, 0, 0), (1, 1, 1), (0, 2, 2)]`
+        *   Total 3D diagonals: 4
+
+    *   **Total winning lines:** 27 + 18 + 4 = 49 lines. This seems correct.
+
+    I will store all these winning lines as a list of lists of coordinates.
+
+4.  **Refined `policy` Flow:**
+
+    *   Precompute `WIN_LINES` once (global constant or private helper).
+    *   Find all `empty_cells`.
+    *   **My Winning Move:**
+        For `move` in `empty_cells`:
+            Temporarily place `1` at `move`.
+            If `check_win(board, 1)`:
+                Undo move (set back to `0`).
+                Return `move`.
+            Undo move.
+    *   **Opponent Blocking Move:**
+        For `move` in `empty_cells`:
+            Temporarily place `-1` at `move`.
+            If `check_win(board, -1)`:
+                Undo move.
+                Return `move`.
+            Undo move.
+    *   **Strategic Moves:**
+        Order potential strategic moves:
+        1.  `center = (1, 1, 1)`
+        2.  `face_centers = [(0,1,1), (2,1,1), (1,0,1), (1,2,1), (1,1,0), (1,1,2)]`
+        3.  `corners = [(0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]`
+        4.  `edges = all other cells`
+        Iterate through `[center] + face_centers + corners + edges`. If a strategic cell is empty, return it.
+
+    *   **Fall-back:** If for some reason none of the above (e.g., if strategic positions are already taken by me or opponent), return the first available empty cell.
+
+Let's implement the `WIN_LINES`. I will use a class-level variable for this to avoid recomputing it. Or just a global constant in the module. A global constant is fine.
+
+```python
+# WIN_LINES definition
+WIN_LINES = []
+
+# Lines parallel to X-axis (varying x, fixed y, z)
+for y in range(3):
+    for z in range(3):
+        WIN_LINES.append([(x, y, z) for x in range(3)])
+
+# Lines parallel to Y-axis (fixed x, varying y, fixed z)
+for x in range(3):
+    for z in range(3):
+        WIN_LINES.append([(x, y, z) for y in range(3)])
+
+# Lines parallel to Z-axis (fixed x, fixed y, varying z)
+for x in range(3):
+    for y in range(3):
+        WIN_LINES.append([(x, y, z) for z in range(3)])
+
+# 2D Diagonals within each plane
+# XY-planes (fixed Z)
+for z in range(3):
+    WIN_LINES.append([(0, 0, z), (1, 1, z), (2, 2, z)])
+    WIN_LINES.append([(0, 2, z), (1, 1, z), (2, 0, z)])
+
+# XZ-planes (fixed Y)
+for y in range(3):
+    WIN_LINES.append([(0, y, 0), (1, y, 1), (2, y, 2)])
+    WIN_LINES.append([(0, y, 2), (1, y, 1), (2, y, 0)])
+
+# YZ-planes (fixed X)
+for x in range(3):
+    WIN_LINES.append([(x, 0, 0), (x, 1, 1), (x, 2, 2)])
+    WIN_LINES.append([(x, 0, 2), (x, 1, 1), (x, 2, 0)])
+
+# 3D Diagonals
+WIN_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+WIN_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+WIN_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+WIN_LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+```
+This looks correct and covers all 49 lines.
+
+Now, let's include the `find_empty_cells` and `check_win` helper functions. And then the main `policy` function.
+
+Consider edge cases:
+*   What if the board is full? The problem statement implies there will always be an empty cell to choose. If not, this code would find no empty cells and not pick a move. But a game only ends if there are no empty cells left OR a player wins. If there's no winner and no empty cells, it's a draw, so no move is required. I'm assuming the game state guarantees a valid move is possible when `policy` is called.
+
+**Refinement for Strategic Moves:**
+To make the strategic moves more robust, I'll define lists for different types of cells (center, face_centers, corners, edges) and iterate through them in order of priority.
+
+```python
+CENTER = (1, 1, 1)
+
+FACE_CENTERS = [
+    (0, 1, 1), (2, 1, 1), # Opposite faces along X
+    (1, 0, 1), (1, 2, 1), # Opposite faces along Y
+    (1, 1, 0), (1, 1, 2)  # Opposite faces along Z
+]
+
+CORNERS = [
+    (0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+    (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)
+]
+
+# All cells:
+ALL_CELLS = [(x, y, z) for x in range(3) for y in range(3) for z in range(3)]
+
+# Sort the remaining cells into "edges" (non-corner, non-center, non-face-center)
+# This isn't strictly necessary as we can just iterate empty cells,
+# but it's good for clarity of priority.
+# Let's just combine them for simplicity: [CENTER] + FACE_CENTERS + CORNERS + other_empty_cells
+```
+
+The approach of checking empty cells for winning/blocking, then moving to pre-defined strategic spots, should be solid.
+
+I don't need `is_valid_move` because `find_empty_cells` already gives only valid (empty) moves. `check_win` will implicitly handle validity by accessing board positions and checking their values.
+
+```python
+import numpy as np # Although I don't "need" numpy for this, it's a standard library and good practice if I were to expand the logic later. For now, basic list slicing and iteration is sufficient.
+
+# Global constant for all winning lines
+WIN_LINES = []
+
+# Lines parallel to X-axis (Varying x, fixed y, z)
+for y in range(3):
+    for z in range(3):
+        WIN_LINES.append([(x, y, z) for x in range(3)])
+
+# Lines parallel to Y-axis (Fixed x, varying y, fixed z)
+for x in range(3):
+    for z in range(3):
+        WIN_LINES.append([(x, y, z) for y in range(3)])
+
+# Lines parallel to Z-axis (Fixed x, fixed y, varying z)
+for x in range(3):
+    for y in range(3):
+        WIN_LINES.append([(x, y, z) for z in range(3)])
+
+# 2D Diagonals within each plane
+
+# XY-planes (fixed Z)
+for z in range(3):
+    WIN_LINES.append([(0, 0, z), (1, 1, z), (2, 2, z)]) # Main diagonal
+    WIN_LINES.append([(0, 2, z), (1, 1, z), (2, 0, z)]) # Anti-diagonal
+
+# XZ-planes (fixed Y)
+for y in range(3):
+    WIN_LINES.append([(0, y, 0), (1, y, 1), (2, y, 2)]) # Main diagonal
+    WIN_LINES.append([(0, y, 2), (1, y, 1), (2, y, 0)]) # Anti-diagonal
+
+# YZ-planes (fixed X)
+for x in range(3):
+    WIN_LINES.append([(x, 0, 0), (x, 1, 1), (x, 2, 2)]) # Main diagonal
+    WIN_LINES.append([(x, 0, 2), (x, 1, 1), (x, 2, 0)]) # Anti-diagonal
+
+# 3D Diagonals
+WIN_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+WIN_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+WIN_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+WIN_LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+
+# Strategic cell priorities
+CENTER = (1, 1, 1)
+FACE_CENTERS = [
+    (0, 1, 1), (2, 1, 1), # Opposite faces along X
+    (1, 0, 1), (1, 2, 1), # Opposite faces along Y
+    (1, 1, 0), (1, 1, 2)  # Opposite faces along Z
+]
+CORNERS = [
+    (0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+    (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)
+]
+
+# This list defines the order of strategic moves
+STRATEGIC_MOVES_PRIORITY = [CENTER] + FACE_CENTERS + CORNERS
+
+def find_empty_cells(board: list[list[list[int]]]) -> list[tuple[int, int, int]]:
+    """
+    Finds all empty cells on the board.
+    """
+    empty_cells = []
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                if board[x][y][z] == 0:
+                    empty_cells.append((x, y, z))
+    return empty_cells
+
+def check_win(board: list[list[list[int]]], player: int) -> bool:
+    """
+    Checks if the given player has won the game.
+    """
+    for line in WIN_LINES:
+        if all(board[x][y][z] == player for x, y, z in line):
+            return True
+    return False
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next optimal move for a 3x3x3 3D Tic Tac Toe game.
+    Priorities: Win -> Block -> Strategic (Center -> Face Centers -> Corners) -> Any Empty
+    """
+    empty_cells = find_empty_cells(board)
+
+    # 1. Check for a winning move
+    for x, y, z in empty_cells:
+        board[x][y][z] = 1  # Temporarily make the move
+        if check_win(board, 1):
+            board[x][y][z] = 0  # Undo the move
+            return (x, y, z)
+        board[x][y][z] = 0  # Undo the move
+
+    # 2. Check for a blocking move
+    for x, y, z in empty_cells:
+        board[x][y][z] = -1  # Temporarily place opponent's mark
+        if check_win(board, -1):
+            board[x][y][z] = 0  # Undo the move
+            return (x, y, z)
+        board[x][y][z] = 0  # Undo the move
+
+    # 3. Check for strategic moves (center, face centers, corners)
+    for sx, sy, sz in STRATEGIC_MOVES_PRIORITY:
+        if board[sx][sy][sz] == 0:
+            return (sx, sy, sz)
+
+    # 4. If no strategic moves are available, pick the first empty cell
+    # This acts as a fallback for edges or if somehow all strategic positions are filled,
+    # but not leading to a win/block immediately.
+    if empty_cells:
+        return empty_cells[0]
+
+    # This case should ideally not be reached if the game is still active
+    # and a move is required.
+    raise Exception("No available moves found. Board might be full or game over.")
+
+```
+
+Test with a couple of scenarios mentally:
+*   **Empty board:**
+    *   No win for me.
+    *   No win for opponent.
+    *   Center (1,1,1) is empty. Returns (1,1,1). Correct.
+*   **Board where I can win in one move:**
+    *   Suppose `board[1][1][1] = 1`, `board[0][0][0] = 1`, and `(2,2,2)` is empty.
+    *   `find_empty_cells` includes `(2,2,2)`.
+    *   First loop: tries (2,2,2). `board[2][2][2] = 1`. `check_win(board, 1)` will be true for the `[(0,0,0), (1,1,1), (2,2,2)]` diagonal. Returns `(2,2,2)`. Correct.
+*   **Board where opponent can win in one move:**
+    *   Suppose `board[1][1][1] = -1`, `board[0][0][0] = -1`, and `(2,2,2)` is empty.
+    *   My winning check fails.
+    *   Opponent blocking loop: tries `(2,2,2)`. `board[2][2][2] = -1`. `check_win(board, -1)` will be true. Returns `(2,2,2)`. Correct.
+
+The solution seems robust for the specified requirements. Using a global constant for `WIN_LINES` ensures it's only calculated once, which is efficient. The temporary move placement and undoing is crucial for determining win/block conditions without modifying the actual board state.
+The use of `numpy` was allowed but I didn't actually use it explicitly in the code. It makes no difference for this problem. I'll remove `import numpy as np` if it's not strictly needed for any operations, to keep the code clear about what modules it actually uses. I am not using any numpy array operations here, so I will remove it.
+</thinking>
+<code>
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next optimal move for a 3x3x3 3D Tic Tac Toe game.
+    Priorities: Win -> Block -> Strategic (Center -> Face Centers -> Corners) -> Any Empty
+    """
+
+    # Global constant for all winning lines, computed once.
+    # A winning line consists of 3 coordinates (x, y, z) that form a straight line.
+    global WIN_LINES
+    if 'WIN_LINES' not in globals() or not WIN_LINES:
+        WIN_LINES = []
+
+        # Lines parallel to X-axis (Varying x, fixed y, z)
+        for y in range(3):
+            for z in range(3):
+                WIN_LINES.append([(x, y, z) for x in range(3)])
+
+        # Lines parallel to Y-axis (Fixed x, varying y, fixed z)
+        for x in range(3):
+            for z in range(3):
+                WIN_LINES.append([(x, y, z) for y in range(3)])
+
+        # Lines parallel to Z-axis (Fixed x, fixed y, varying z)
+        for x in range(3):
+            for y in range(3):
+                WIN_LINES.append([(x, y, z) for z in range(3)])
+
+        # 2D Diagonals within each plane
+
+        # XY-planes (fixed Z)
+        for z in range(3):
+            WIN_LINES.append([(0, 0, z), (1, 1, z), (2, 2, z)]) # Main diagonal
+            WIN_LINES.append([(0, 2, z), (1, 1, z), (2, 0, z)]) # Anti-diagonal
+
+        # XZ-planes (fixed Y)
+        for y in range(3):
+            WIN_LINES.append([(0, y, 0), (1, y, 1), (2, y, 2)]) # Main diagonal
+            WIN_LINES.append([(0, y, 2), (1, y, 1), (2, y, 0)]) # Anti-diagonal
+
+        # YZ-planes (fixed X)
+        for x in range(3):
+            WIN_LINES.append([(x, 0, 0), (x, 1, 1), (x, 2, 2)]) # Main diagonal
+            WIN_LINES.append([(x, 0, 2), (x, 1, 1), (x, 2, 0)]) # Anti-diagonal
+
+        # 3D Diagonals
+        WIN_LINES.append([(0, 0, 0), (1, 1, 1), (2, 2, 2)])
+        WIN_LINES.append([(0, 0, 2), (1, 1, 1), (2, 2, 0)])
+        WIN_LINES.append([(0, 2, 0), (1, 1, 1), (2, 0, 2)])
+        WIN_LINES.append([(2, 0, 0), (1, 1, 1), (0, 2, 2)])
+
+    # Strategic cell priorities
+    CENTER = (1, 1, 1)
+    FACE_CENTERS = [
+        (0, 1, 1), (2, 1, 1),
+        (1, 0, 1), (1, 2, 1),
+        (1, 1, 0), (1, 1, 2)
+    ]
+    CORNERS = [
+        (0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+        (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2)
+    ]
+    STRATEGIC_MOVES_PRIORITY = [CENTER] + FACE_CENTERS + CORNERS
+
+    def find_empty_cells(current_board: list[list[list[int]]]) -> list[tuple[int, int, int]]:
+        """
+        Finds all empty cells on the board.
+        """
+        empty_cells = []
+        for x in range(3):
+            for y in range(3):
+                for z in range(3):
+                    if current_board[x][y][z] == 0:
+                        empty_cells.append((x, y, z))
+        return empty_cells
+
+    def check_win(current_board: list[list[list[int]]], player: int) -> bool:
+        """
+        Checks if the given player has won the game.
+        """
+        for line in WIN_LINES:
+            if all(current_board[x][y][z] == player for x, y, z in line):
+                return True
+        return False
+
+    empty_cells = find_empty_cells(board)
+
+    # 1. Check for a winning move for me (player 1)
+    for x, y, z in empty_cells:
+        board[x][y][z] = 1  # Temporarily make the move
+        if check_win(board, 1):
+            board[x][y][z] = 0  # Undo the move
+            return (x, y, z)
+        board[x][y][z] = 0  # Undo the move
+
+    # 2. Check for a blocking move for the opponent (player -1)
+    for x, y, z in empty_cells:
+        board[x][y][z] = -1  # Temporarily place opponent's mark
+        if check_win(board, -1):
+            board[x][y][z] = 0  # Undo the move
+            return (x, y, z)
+        board[x][y][z] = 0  # Undo the move
+
+    # 3. Check for strategic moves (center, then face centers, then corners)
+    for sx, sy, sz in STRATEGIC_MOVES_PRIORITY:
+        if board[sx][sy][sz] == 0:
+            return (sx, sy, sz)
+
+    # 4. If no strategic moves are available, pick the first available empty cell.
+    # This acts as a fallback for edge positions or if strategic spots are already filled.
+    if empty_cells:
+        return empty_cells[0]
+
+    # This case should ideally not be reached if the game is still active
+    # and a move is required (i.e., board is not full and no winner yet).
+    raise Exception("No available moves found. Board might be full or game over.")
+
+</code>

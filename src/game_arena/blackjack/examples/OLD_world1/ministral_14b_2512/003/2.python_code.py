@@ -1,0 +1,99 @@
+
+import numpy as np
+from functools import lru_cache
+
+def card_value(card: str, hand_value: int, target: int) -> int:
+    """Calculate the value of a card based on current hand value and target."""
+    if card == "A":
+        return 11 if hand_value + 11 <= target else 1
+    elif card in ["J", "Q", "K"]:
+        return 10
+    else:
+        return int(card)
+
+def calculate_hand_value(hand: list[str], target: int) -> int:
+    """Calculate the current hand value considering Ace flexibility."""
+    total = 0
+    aces = 0
+    for card in hand:
+        if card == "A":
+            aces += 1
+            total += 11
+        elif card in ["J", "Q", "K"]:
+            total += 10
+        else:
+            total += int(card)
+
+    # Adjust for Aces if needed
+    while total > target and aces > 0:
+        total -= 10
+        aces -= 1
+
+    return total
+
+def policy(hand: list[str], target: int) -> str:
+    """
+    Policy function that decides whether to HIT or STAY based on:
+    1. Current hand value
+    2. Remaining cards in deck
+    3. Target proximity
+    4. Probability of reaching target without busting
+    """
+    current_value = calculate_hand_value(hand, target)
+
+    # If we're already over target, we've busted (but this shouldn't happen in policy call)
+    if current_value > target:
+        return "STAY"  # though we'd already lost
+
+    # If we have no cards, we must hit (initial state)
+    if not hand:
+        return "HIT"
+
+    # Count remaining cards in our deck
+    all_cards = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"}
+    remaining_cards = all_cards - set(hand)
+    remaining_count = len(remaining_cards)
+
+    # If we have very few cards left, we might want to be more conservative
+    if remaining_count <= 2:
+        return "STAY" if current_value >= target - 5 else "HIT"
+
+    # If we're already at or above target, stay
+    if current_value >= target:
+        return "STAY"
+
+    # If we're very close to target, stay to avoid busting
+    if target - current_value <= 2:
+        return "STAY"
+
+    # If we have a high probability of busting, stay
+    # Calculate worst case scenario (drawing all 10-value cards)
+    max_possible = current_value
+    for card in remaining_cards:
+        if card in ["10", "J", "Q", "K"]:
+            max_possible += 10
+        elif card == "A":
+            max_possible += 11
+        else:
+            max_possible += int(card)
+
+    # If even the best case can't reach target, stay
+    if max_possible < target:
+        return "STAY"
+
+    # If we're far from target and have good cards left, hit
+    if target - current_value > 5 and remaining_count > 5:
+        return "HIT"
+
+    # If we have a lot of low cards left, hit more aggressively
+    low_cards = sum(1 for card in remaining_cards if card in ["2", "3", "4", "5", "6"])
+    if low_cards > 8 and target - current_value > 3:
+        return "HIT"
+
+    # If we have few high cards left, be more conservative
+    high_cards = sum(1 for card in remaining_cards if card in ["10", "J", "Q", "K"])
+    if high_cards <= 2 and target - current_value <= 5:
+        return "STAY"
+
+    # Default strategy: hit if we're not close to target
+    return "HIT" if target - current_value > 3 else "STAY"

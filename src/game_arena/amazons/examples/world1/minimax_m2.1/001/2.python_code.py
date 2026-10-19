@@ -1,0 +1,153 @@
+
+import numpy as np
+
+def policy(board) -> str:
+    """
+    Strategic policy for Amazons on 6x6 board.
+    Focuses on maintaining mobility while limiting opponent options.
+    """
+    
+    def get_all_legal_moves(board):
+        """Generate all legal moves for player 1 (current player)."""
+        moves = []
+        
+        # Find all player amazons
+        amazon_positions = np.argwhere(board == 1)
+        
+        for from_pos in amazon_positions:
+            from_r, from_c = from_pos
+            
+            # Generate all possible moves (queen-like movement)
+            directions = [(-1, 0), (1, 0), (0, -1), (0, 1), 
+                         (-1, -1), (-1, 1), (1, -1), (1, 1)]
+            
+            for dr, dc in directions:
+                r, c = from_r + dr, from_c + dc
+                
+                while 0 <= r < 6 and 0 <= c < 6:
+                    if board[r, c] == 0:  # Empty square
+                        # Generate all arrow shots from landing position
+                        arrow_moves = get_arrow_moves(board, (r, c))
+                        for arrow_r, arrow_c in arrow_moves:
+                            moves.append((from_r, from_c, r, c, arrow_r, arrow_c))
+                    else:  # Blocked
+                        break
+                    r += dr
+                    c += dc
+        
+        return moves
+    
+    def get_arrow_moves(board, from_pos):
+        """Generate all valid arrow shot positions from a given amazon position."""
+        moves = []
+        from_r, from_c = from_pos
+        
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1), 
+                     (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        
+        for dr, dc in directions:
+            r, c = from_r + dr, from_c + dc
+            
+            while 0 <= r < 6 and 0 <= c < 6:
+                if board[r, c] == 0:  # Empty square
+                    moves.append((r, c))
+                else:  # Blocked
+                    break
+                r += dr
+                c += dc
+        
+        return moves
+    
+    def count_mobility(board, player):
+        """Count total legal moves available to a player."""
+        total_moves = 0
+        amazon_positions = np.argwhere(board == player)
+        
+        for from_pos in amazon_positions:
+            from_r, from_c = from_pos
+            
+            directions = [(-1, 0), (1, 0), (0, -1), (0, 1), 
+                         (-1, -1), (-1, 1), (1, -1), (1, 1)]
+            
+            for dr, dc in directions:
+                r, c = from_r + dr, from_c + dc
+                
+                while 0 <= r < 6 and 0 <= c < 6:
+                    if board[r, c] == 0:
+                        total_moves += 1
+                    else:
+                        break
+                    r += dr
+                    c += dc
+        
+        return total_moves
+    
+    def evaluate_move(board, move):
+        """Evaluate the quality of a move."""
+        from_r, from_c, to_r, to_c, arrow_r, arrow_c = move
+        
+        # Create new board state
+        new_board = board.copy()
+        new_board[from_r, from_c] = 0  # Move amazon away
+        new_board[to_r, to_c] = 1      # Place amazon at new position
+        new_board[arrow_r, arrow_c] = -1  # Shoot arrow
+        
+        # Count my mobility after move
+        my_mobility = count_mobility(new_board, 1)
+        
+        # Count opponent mobility after move
+        opp_mobility = count_mobility(new_board, 2)
+        
+        # Strategic factors
+        blocking_score = 0
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1), 
+                     (-1, -1), (-1, 1), (1, -1), (1, 1)]
+        
+        # Check if arrow blocks opponent movement lines
+        for dr, dc in directions:
+            r, c = arrow_r + dr, arrow_c + dc
+            while 0 <= r < 6 and 0 <= c < 6:
+                if new_board[r, c] == 2:  # Opponent amazon
+                    # Arrow is blocking line of sight
+                    blocking_score += 2
+                    break
+                elif new_board[r, c] != 0:
+                    break
+                r += dr
+                c += dc
+        
+        # Edge/corner penalty for amazon position
+        edge_penalty = 0
+        if to_r == 0 or to_r == 5 or to_c == 0 or to_c == 5:
+            edge_penalty = 1  # Edge position is worse
+        if (to_r == 0 or to_r == 5) and (to_c == 0 or to_c == 5):
+            edge_penalty = 3  # Corner is very bad
+        
+        # Calculate score: prioritize mobility, blocking, and avoid edges
+        score = (my_mobility * 2 +           # Maintain my mobility
+                (20 - opp_mobility) * 1.5 +  # Reduce opponent mobility
+                blocking_score -             # Strategic blocking
+                edge_penalty)                # Avoid edges/corners
+        
+        return score
+    
+    # Get all legal moves
+    moves = get_all_legal_moves(board)
+    
+    if not moves:
+        # No legal moves - return dummy move (shouldn't happen per spec)
+        return "0,0:0,0:0,0"
+    
+    # Find best move
+    best_move = moves[0]
+    best_score = evaluate_move(board, best_move)
+    
+    for move in moves[1:]:
+        score = evaluate_move(board, move)
+        if score > best_score:
+            best_move = move
+            best_score = score
+    
+    # Return formatted move string
+    from_r, from_c, to_r, to_c, arrow_r, arrow_c = best_move
+    return f"{from_r},{from_c}:{to_r},{to_c}:{arrow_r},{arrow_c}"

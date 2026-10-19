@@ -1,0 +1,191 @@
+The strategy for this policy is to use **iterative deepening alpha-beta search** with **negamax** and **quiescence search** to find the best move within the time limit. The evaluation function prioritizes:
+1. **Advancement**: Pieces closer to the opponent's home row are valued exponentially higher (since one piece reaching the end wins)
+2. **Material**: Keeping more pieces than the opponent
+3. **Captures**: Quiescence search ensures we don't stop evaluating in the middle of a tactical exchange
+
+The search uses move ordering (captures first) to improve alpha-beta pruning efficiency. It checks for immediate winning moves first, then searches deeper until time runs out, ensuring we always return the best move found so far.
+
+<code>
+import time
+from typing import List, Tuple, Set, Optional
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    start_time = time.time()
+    time_limit = 0.9  # Safety margin
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Generate all legal moves
+    moves = generate_moves(me_set, opp_set, color)
+    
+    if not moves:
+        # Should not happen in a valid game state
+        return ((0, 0), (0, 0))
+    
+    # Check for immediate win (reach home row)
+    for move in moves:
+        _, (to_r, to_c) = move
+        if color == 'b' and to_r == 0:
+            return move
+        if color == 'w' and to_r == 7:
+            return move
+    
+    # Check for capturing last opponent piece
+    if len(opp_set) == 1:
+        target = list(opp_set)[0]
+        for move in moves:
+            if move[1] == target:
+                return move
+    
+    best_move = moves[0]
+    depth = 1
+    
+    try:
+        while depth <= 6:  # Reasonable max depth for 1 second
+            if time.time() - start_time > time_limit:
+                break
+            score, move = negamax(me_set, opp_set, color, depth, -float('inf'), float('inf'), start_time, time_limit)
+            if move is not None:
+                best_move = move
+            depth += 1
+    except TimeoutError:
+        pass
+    
+    return best_move
+
+def generate_moves(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], color: str) -> List[Tuple[Tuple[int, int], Tuple[int, int]]]:
+    moves = []
+    dr = -1 if color == 'b' else 1
+    
+    for r, c in me_set:
+        # Forward straight
+        nr, nc = r + dr, c
+        if 0 <= nr < 8 and (nr, nc) not in opp_set and (nr, nc) not in me_set:
+            moves.append(((r, c), (nr, nc)))
+        
+        # Diagonal captures and moves
+        for dc in (-1, 1):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if (nr, nc) in opp_set:
+                    moves.append(((r, c), (nr, nc)))
+                elif (nr, nc) not in me_set:
+                    moves.append(((r, c), (nr, nc)))
+    return moves
+
+def apply_move(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], move: Tuple[Tuple[int, int], Tuple[int, int]]) -> Tuple[Set[Tuple[int, int]], Set[Tuple[int, int]]]:
+    (fr, fc), (tr, tc) = move
+    new_me = me_set - {(fr, fc)} | {(tr, tc)}
+    new_opp = opp_set - {(tr, tc)}  # Remove captured piece if present
+    return new_me, new_opp
+
+def evaluate(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], color: str) -> float:
+    if not opp_set:
+        return 10000.0
+    if not me_set:
+        return -10000.0
+    
+    if color == 'b':
+        # Black wants row 0 (lower is better for black)
+        my_max_progress = max(7 - r for r, c in me_set)
+        my_total = sum(7 - r for r, c in me_set)
+        opp_max_progress = max(r for r, c in opp_set)
+        opp_total = sum(r for r, c in opp_set)
+    else:
+        # White wants row 7 (higher is better for white)
+        my_max_progress = max(r for r, c in me_set)
+        my_total = sum(r for r, c in me_set)
+        opp_max_progress = max(7 - r for r, c in opp_set)
+        opp_total = sum(7 - r for r, c in opp_set)
+    
+    # Weight max progress heavily (one pawn reaching end wins)
+    # Weight total progress moderately
+    # Weight material
+    material = len(me_set) - len(opp_set)
+    return my_max_progress * 100 + my_total * 10 + material * 50 - opp_max_progress * 100 - opp_total * 10
+
+def quiesce(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], color: str, alpha: float, beta: float, start_time: float, time_limit: float) -> float:
+    if time.time() - start_time > time_limit:
+        raise TimeoutError()
+    
+    stand_pat = evaluate(me_set, opp_set, color)
+    if stand_pat >= beta:
+        return beta
+    if alpha < stand_pat:
+        alpha = stand_pat
+    
+    # Generate only capture moves
+    dr = -1 if color == 'b' else 1
+    capture_moves = []
+    
+    for r, c in me_set:
+        for dc in (-1, 1):
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and (nr, nc) in opp_set:
+                capture_moves.append(((r, c), (nr, nc)))
+    
+    for move in capture_moves:
+        new_me, new_opp = apply_move(me_set, opp_set, move)
+        score = -quiesce(new_opp, new_me, 'w' if color == 'b' else 'b', -beta, -alpha, start_time, time_limit)
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    
+    return alpha
+
+def negamax(me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], color: str, depth: int, alpha: float, beta: float, start_time: float, time_limit: float) -> Tuple[float, Optional[Tuple[Tuple[int, int], Tuple[int, int]]]]:
+    if time.time() - start_time > time_limit:
+        raise TimeoutError()
+    
+    # Terminal checks
+    if color == 'b':
+        if any(r == 0 for r, c in me_set):
+            return 10000.0, None
+        if any(r == 7 for r, c in opp_set):
+            return -10000.0, None
+    else:
+        if any(r == 7 for r, c in me_set):
+            return 10000.0, None
+        if any(r == 0 for r, c in opp_set):
+            return -10000.0, None
+    
+    if not opp_set:
+        return 10000.0, None
+    if not me_set:
+        return -10000.0, None
+    
+    moves = generate_moves(me_set, opp_set, color)
+    
+    if not moves:
+        return -10000.0, None
+    
+    if depth == 0:
+        return quiesce(me_set, opp_set, color, alpha, beta, start_time, time_limit), None
+    
+    # Move ordering: captures first (better alpha-beta pruning)
+    capture_moves = []
+    quiet_moves = []
+    for m in moves:
+        if m[1] in opp_set:
+            capture_moves.append(m)
+        else:
+            quiet_moves.append(m)
+    ordered_moves = capture_moves + quiet_moves
+    
+    best_move = ordered_moves[0]
+    
+    for move in ordered_moves:
+        new_me, new_opp = apply_move(me_set, opp_set, move)
+        score, _ = negamax(new_opp, new_me, 'w' if color == 'b' else 'b', depth - 1, -beta, -alpha, start_time, time_limit)
+        score = -score
+        
+        if score > alpha:
+            alpha = score
+            best_move = move
+        if alpha >= beta:
+            break
+    
+    return alpha, best_move
+</code>

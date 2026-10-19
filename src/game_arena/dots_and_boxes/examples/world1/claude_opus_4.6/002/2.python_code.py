@@ -1,0 +1,197 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    def get_legal_moves():
+        moves = []
+        for r in range(5):
+            for c in range(4):
+                if horizontal[r, c] == 0:
+                    moves.append((r, c, 'H'))
+        for r in range(4):
+            for c in range(5):
+                if vertical[r, c] == 0:
+                    moves.append((r, c, 'V'))
+        return moves
+
+    def box_sides(r, c):
+        """Count how many sides box (r,c) has filled. Box (r,c) is valid for r,c in 0..3."""
+        count = 0
+        if horizontal[r, c] != 0: count += 1      # top
+        if horizontal[r+1, c] != 0: count += 1    # bottom
+        if vertical[r, c] != 0: count += 1        # left
+        if vertical[r, c+1] != 0: count += 1      # right
+        return count
+
+    def boxes_affected(move):
+        """Return list of boxes affected by a move and how many sides each would have after the move."""
+        r, c, d = move
+        boxes = []
+        if d == 'H':
+            # horizontal edge at (r, c) is top of box (r, c) and bottom of box (r-1, c)
+            if r < 4 and c < 4:
+                boxes.append((r, c))
+            if r > 0 and c < 4:
+                boxes.append((r-1, c))
+        else:
+            # vertical edge at (r, c) is left of box (r, c) and right of box (r, c-1)
+            if r < 4 and c < 4:
+                boxes.append((r, c))
+            if r < 4 and c > 0:
+                boxes.append((r, c-1))
+        return boxes
+
+    def captures(move):
+        """How many boxes does this move complete?"""
+        count = 0
+        for br, bc in boxes_affected(move):
+            if capture[br, bc] == 0 and box_sides(br, bc) == 3:
+                count += 1
+        return count
+
+    def gives_boxes(move):
+        """How many boxes would have 3 sides after this move (giving opponent a capture)?"""
+        count = 0
+        for br, bc in boxes_affected(move):
+            if capture[br, bc] == 0 and box_sides(br, bc) == 2:
+                count += 1
+        return count
+
+    def simulate(h, v, cap):
+        """Deep simulation with minimax for the current player."""
+        pass  # We'll use a simpler approach
+
+    legal = get_legal_moves()
+    if not legal:
+        return "0,0,H"  # shouldn't happen
+
+    # 1. Always capture if possible
+    capturing_moves = [(m, captures(m)) for m in legal if captures(m) > 0]
+    if capturing_moves:
+        # If multiple capturing moves, pick the one that captures most
+        # Then after capturing, we get another turn, so pick greedily
+        capturing_moves.sort(key=lambda x: -x[1])
+        best = capturing_moves[0][0]
+        return f"{best[0]},{best[1]},{best[2]}"
+
+    # 2. Find safe moves (don't create 3-sided boxes)
+    safe_moves = [m for m in legal if gives_boxes(m) == 0]
+
+    if safe_moves:
+        # Among safe moves, prefer moves that don't open chains
+        # Heuristic: prefer edges adjacent to boxes with fewer sides
+        def safe_score(m):
+            score = 0
+            for br, bc in boxes_affected(m):
+                if capture[br, bc] == 0:
+                    s = box_sides(br, bc)
+                    if s == 0:
+                        score += 0
+                    elif s == 1:
+                        score += 1
+                    # s == 2 won't happen since gives_boxes == 0 means no box goes to 3
+            return score
+        safe_moves.sort(key=lambda m: safe_score(m))
+        best = safe_moves[0]
+        return f"{best[0]},{best[1]},{best[2]}"
+
+    # 3. No safe moves - must give away boxes. Use chain analysis.
+    # Find all uncaptured boxes and their side counts
+    # Group boxes with 2 sides into chains/loops
+    # Strategy: open the shortest chain first; if chain length <= 2, consider double-dealing
+
+    # Build graph of uncaptured boxes that share an undrawn edge
+    uncaptured = []
+    for r in range(4):
+        for c in range(4):
+            if capture[r, c] == 0:
+                uncaptured.append((r, c))
+
+    # All uncaptured boxes should have >= 2 sides (since no safe moves exist, 
+    # every box with <3 sides would mean there's a safe move)
+    # Actually, boxes with 2 sides: adding an edge makes them 3-sided (gives to opponent)
+    # Boxes with 3 sides: already capturable (but we handled that above)
+    
+    # Find chains: connected components of boxes via shared undrawn edges
+    # where boxes have exactly 2 sides filled (these are "chain" boxes)
+    # Boxes with 3 sides are "free" boxes that can be captured
+    
+    # Since no capturing moves exist, all uncaptured boxes have <= 2 sides... 
+    # Wait, that's not right. If a box has 3 sides but we already checked captures,
+    # it would have been caught. So all uncaptured boxes have <= 2 sides.
+    # Since no safe moves exist, every legal move creates at least one 3-sided box.
+    # This means all uncaptured boxes adjacent to any legal move have exactly 2 sides.
+    
+    # Group into chains via shared undrawn internal edges
+    box_set = set(uncaptured)
+    adj = {b: [] for b in uncaptured}
+    
+    for r, c in uncaptured:
+        # Check shared edges with neighbors
+        # Right neighbor (r, c+1): shared edge is vertical[r, c+1]
+        if (r, c+1) in box_set and vertical[r, c+1] == 0:
+            adj[(r, c)].append((r, c+1))
+            adj[(r, c+1)].append((r, c))
+        # Bottom neighbor (r+1, c): shared edge is horizontal[r+1, c]
+        if (r+1, c) in box_set and horizontal[r+1, c] == 0:
+            adj[(r, c)].append((r+1, c))
+            adj[(r+1, c)].append((r, c))
+
+    # Remove duplicates
+    for b in adj:
+        adj[b] = list(set(adj[b]))
+
+    # Find connected components
+    visited = set()
+    components = []
+    for b in uncaptured:
+        if b not in visited:
+            comp = []
+            stack = [b]
+            while stack:
+                node = stack.pop()
+                if node in visited:
+                    continue
+                visited.add(node)
+                comp.append(node)
+                for nb in adj[node]:
+                    if nb not in visited:
+                        stack.append(nb)
+            components.append(comp)
+
+    # Determine if component is a chain or loop
+    # A chain has endpoints (boxes with degree 1 in the component graph)
+    # A loop has all boxes with degree 2
+    
+    # Sort components by size (open shortest first for control)
+    components.sort(key=lambda comp: len(comp))
+
+    # Open the shortest chain: pick a move that gives boxes in the shortest component
+    if components:
+        target_comp = set(components[0])
+        # Find a move that only affects boxes in this component
+        best_move = None
+        best_gives = float('inf')
+        for m in legal:
+            affected = boxes_affected(m)
+            g = gives_boxes(m)
+            affected_uncap = [(br, bc) for br, bc in affected if capture[br, bc] == 0]
+            in_target = all((br, bc) in target_comp for br, bc in affected_uncap)
+            if in_target and g < best_gives:
+                best_gives = g
+                best_move = m
+        
+        if best_move is None:
+            # Fallback: pick move giving fewest boxes
+            legal.sort(key=lambda m: gives_boxes(m))
+            best_move = legal[0]
+        
+        # Double-dealing: if chain length <= 2 and there are longer chains,
+        # we might want to sacrifice differently, but for simplicity:
+        return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+    # Final fallback
+    legal.sort(key=lambda m: gives_boxes(m))
+    best = legal[0]
+    return f"{best[0]},{best[1]},{best[2]}"

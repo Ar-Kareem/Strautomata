@@ -1,0 +1,106 @@
+To solve this problem, we need to create an AI for playing Checkers that can make smart moves to outperform other AI policies. The AI should prioritize making captures first, especially those that lead to promoting pieces. If there are no captures available, the AI should make a non-capturing move that brings its pieces closer to promotion.
+
+### Approach
+1. **Capture Moves Priority**: The AI should always prioritize capture moves over non-capture moves. If there are multiple capture moves, it should prioritize moves that result in a piece being promoted to a king.
+2. **Promotion Priority**: Moves that result in a regular piece (man) being promoted to a king are highly prioritized. This is because kings can move backwards and have more flexibility on the board.
+3. **Distance to Promotion Row**: If there are no captures available, the AI should move pieces towards the promotion row. For black pieces, this means moving down towards row 0, and for white pieces, moving up towards row 7.
+4. **Movement Priority**: If no promotions are possible, the AI should make moves that bring pieces closer to the promotion row. Kings are given higher priority due to their ability to move in any direction, providing more strategic options.
+
+### Solution Code
+```python
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    def get_cap_priority(move):
+        from_pos, to_pos = move
+        dr_total = to_pos[0] - from_pos[0]
+        dc_total = to_pos[1] - from_pos[1]
+        dr = dr_total // 2
+        dc = dc_total // 2
+        inter_r = from_pos[0] + dr
+        inter_c = from_pos[1] + dc
+        is_king_capture = (inter_r, inter_c) in opp_kings
+        promote = dest_promote_move(move[1], color)
+        if promote:
+            return (0, 0, dr, dc)
+        if is_king_capture:
+            return (1, 0, dr, dc)
+        return (2, get_dist_priority(to_pos, color), dr, dc)
+
+    def dest_promote_move(to_pos, color):
+        promote_row = 0 if color == 'b' else 7
+        return to_pos[0] == promote_row
+
+    def get_dist_priority(to_pos, color):
+        to_r = to_pos[0]
+        if color == 'b':
+            return to_r
+        else:
+            return 7 - to_r
+
+    # Generate all possible capture moves
+    captures = []
+    my_pieces = my_men + my_kings
+    for piece in my_pieces:
+        r, c = piece
+        # Determine movement directions for capture
+        if piece in my_kings:
+            dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            if color == 'b':
+                dirs = [(-1, -1), (-1, 1)]
+            else:
+                dirs = [(1, -1), (1, 1)]
+        for dr, dc in dirs:
+            inter_r, inter_c = r + dr, c + dc
+            dest_r, dest_c = inter_r + dr, inter_c + dc
+            if 0 <= inter_r < 8 and 0 <= inter_c < 8 and 0 <= dest_r < 8 and 0 <= dest_c < 8:
+                # Check if intermediate has opponent's piece
+                if (inter_r, inter_c) in opp_men or (inter_r, inter_c) in opp_kings:
+                    # Check destination is empty
+                    if (dest_r, dest_c) not in my_men and (dest_r, dest_c) not in my_kings and (dest_r, dest_c) not in opp_men and (dest_r, dest_c) not in opp_kings:
+                        captures.append(((piece[0], piece[1]), (dest_r, dest_c)))
+
+    if captures:
+        # Prioritize captures that promote or capture kings
+        captures.sort(key=get_cap_priority)
+        # Choose the highest priority move
+        best = captures[0][0], captures[0][1]
+        return best
+
+    # Generate non-capture moves
+    non_captures = []
+    for piece in my_men + my_kings:
+        r, c = piece
+        directions = []
+        if piece in my_kings:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        else:
+            if color == 'b':
+                directions = [(-1, -1), (-1, 1)]
+            else:
+                directions = [(1, -1), (1, 1)]
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if (nr, nc) not in my_men and (nr, nc) not in my_kings and (nr, nc) not in opp_men and (nr, nc) not in opp_kings:
+                    non_captures.append(((r, c), (nr, nc)))
+
+    if non_captures:
+        promote_moves = [m for m in non_captures if dest_promote_move(m[1], color)]
+        if promote_moves:
+            # Select move closest to promotion (already in promotion priority)
+            # Sort by distance in reverse for black/w
+            promote_moves.sort(key=lambda m: get_dist_priority(m[1], color))
+            return promote_moves[-1] if color == 'b' else promote_moves[0]
+        # Sort normal moves by priority (distance to promotion)
+        non_captures.sort(key=lambda m: (get_dist_priority(m[1], color),))
+        return non_captures[0]
+    else:
+        # Shouldn't happen as per problem statement, but fallback
+        return ((0, 0), (1, 1))
+```
+
+### Explanation
+1. **Capture Moves Generation**: The code first generates all possible capture moves by checking each piece's movement in its respective directions. Captures are done over one step, and the destination must be empty.
+2. **Capture Prioritization**: Captures are prioritized based on whether they result in a promotion or capture an opponent's king. Promotions are checked first, followed by king captures, and then other captures.
+3. **Non-Capture Moves Generation**: If no captures are possible, the code generates non-capture moves. These moves are sorted by how close they bring the piece to the promotion row. Kings are given priority movements in any direction, while regular pieces move towards their respective promotion rows.
+4. **Move Selection**: The best move is selected based on the highest priority: captures that promote pieces are chosen first, followed by captures of opponent kings, and then regular captures. Non-capture moves are selected based on their proximity to the promotion row.

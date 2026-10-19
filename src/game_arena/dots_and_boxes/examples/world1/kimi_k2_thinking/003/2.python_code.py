@@ -1,0 +1,174 @@
+
+import numpy as np
+import random
+
+def count_boxes_if_move(row, col, dir, h, v, cap):
+    """Count boxes that would be completed by drawing edge at (row,col) in direction dir."""
+    count = 0
+    
+    if dir == 'H':
+        # Check box above (row-1, col)
+        if row > 0 and cap[row-1, col] == 0:
+            sides = (1 if h[row-1, col] != 0 else 0) + \
+                    (1 if v[row-1, col] != 0 else 0) + \
+                    (1 if v[row-1, col+1] != 0 else 0)
+            if sides == 3:
+                count += 1
+        
+        # Check box below (row, col)
+        if row < 4 and cap[row, col] == 0:
+            sides = (1 if h[row+1, col] != 0 else 0) + \
+                    (1 if v[row, col] != 0 else 0) + \
+                    (1 if v[row, col+1] != 0 else 0)
+            if sides == 3:
+                count += 1
+    
+    else:  # 'V'
+        # Check box left (row, col-1)
+        if col > 0 and cap[row, col-1] == 0:
+            sides = (1 if h[row, col-1] != 0 else 0) + \
+                    (1 if h[row+1, col-1] != 0 else 0) + \
+                    (1 if v[row, col-1] != 0 else 0)
+            if sides == 3:
+                count += 1
+        
+        # Check box right (row, col)
+        if col < 4 and cap[row, col] == 0:
+            sides = (1 if h[row, col] != 0 else 0) + \
+                    (1 if h[row+1, col] != 0 else 0) + \
+                    (1 if v[row, col+1] != 0 else 0)
+            if sides == 3:
+                count += 1
+    
+    return count
+
+def count_dangerous_if_move(row, col, dir, h, v, cap):
+    """Count boxes that would have exactly 3 sides after this move (giving opponent a capture)."""
+    count = 0
+    
+    if dir == 'H':
+        # Box above
+        if row > 0 and cap[row-1, col] == 0:
+            sides = (1 if h[row-1, col] != 0 else 0) + \
+                   (1 if v[row-1, col] != 0 else 0) + \
+                   (1 if v[row-1, col+1] != 0 else 0)
+            if sides == 2:  # Exactly 2 other sides filled
+                count += 1
+        
+        # Box below
+        if row < 4 and cap[row, col] == 0:
+            sides = (1 if h[row+1, col] != 0 else 0) + \
+                   (1 if v[row, col] != 0 else 0) + \
+                   (1 if v[row, col+1] != 0 else 0)
+            if sides == 2:
+                count += 1
+    
+    else:  # 'V'
+        # Box left
+        if col > 0 and cap[row, col-1] == 0:
+            sides = (1 if h[row, col-1] != 0 else 0) + \
+                   (1 if h[row+1, col-1] != 0 else 0) + \
+                   (1 if v[row, col-1] != 0 else 0)
+            if sides == 2:
+                count += 1
+        
+        # Box right
+        if col < 4 and cap[row, col] == 0:
+            sides = (1 if h[row, col] != 0 else 0) + \
+                   (1 if h[row+1, col] != 0 else 0) + \
+                   (1 if v[row, col+1] != 0 else 0)
+            if sides == 2:
+                count += 1
+    
+    return count
+
+def policy(horizontal, vertical, capture):
+    """Select the best move for Dots and Boxes on a 4x4 grid."""
+    
+    # Strategy 1: Capture any available boxes
+    capture_moves = []
+    max_capture_count = 0
+    
+    # Check horizontal edges
+    for r in range(5):
+        for c in range(5):
+            if c < 4 and horizontal[r, c] == 0:
+                num_boxes = count_boxes_if_move(r, c, 'H', horizontal, vertical, capture)
+                if num_boxes > max_capture_count:
+                    max_capture_count = num_boxes
+                    capture_moves = [(r, c, 'H')]
+                elif num_boxes == max_capture_count and num_boxes > 0:
+                    capture_moves.append((r, c, 'H'))
+    
+    # Check vertical edges
+    for r in range(5):
+        for c in range(5):
+            if r < 4 and vertical[r, c] == 0:
+                num_boxes = count_boxes_if_move(r, c, 'V', horizontal, vertical, capture)
+                if num_boxes > max_capture_count:
+                    max_capture_count = num_boxes
+                    capture_moves = [(r, c, 'V')]
+                elif num_boxes == max_capture_count and num_boxes > 0:
+                    capture_moves.append((r, c, 'V'))
+    
+    if capture_moves:
+        # Pick a random capturing move (they're equally good)
+        r, c, d = random.choice(capture_moves)
+        return f"{r},{c},{d}"
+    
+    # Strategy 2: Make a safe move (creates no 3-sided boxes)
+    safe_moves = []
+    dangerous_moves = []
+    
+    # Check horizontal edges
+    for r in range(5):
+        for c in range(5):
+            if c < 4 and horizontal[r, c] == 0:
+                dangerous_count = count_dangerous_if_move(r, c, 'H', horizontal, vertical, capture)
+                if dangerous_count == 0:
+                    safe_moves.append((r, c, 'H'))
+                else:
+                    dangerous_moves.append((r, c, 'H', dangerous_count))
+    
+    # Check vertical edges
+    for r in range(5):
+        for c in range(5):
+            if r < 4 and vertical[r, c] == 0:
+                dangerous_count = count_dangerous_if_move(r, c, 'V', horizontal, vertical, capture)
+                if dangerous_count == 0:
+                    safe_moves.append((r, c, 'V'))
+                else:
+                    dangerous_moves.append((r, c, 'V', dangerous_count))
+    
+    if safe_moves:
+        # Pick a random safe move
+        r, c, d = random.choice(safe_moves)
+        return f"{r},{c},{d}"
+    
+    # Strategy 3: All moves are dangerous - sacrifice wisely
+    # Prefer giving an even number of boxes (maintain control)
+    if dangerous_moves:
+        even_moves = [m for m in dangerous_moves if m[3] % 2 == 0]
+        odd_moves = [m for m in dangerous_moves if m[3] % 2 == 1]
+        
+        if even_moves:
+            # Choose the even move with smallest count
+            even_moves.sort(key=lambda x: x[3])
+            r, c, d, _ = even_moves[0]
+            return f"{r},{c},{d}"
+        
+        # No even options, choose smallest odd
+        odd_moves.sort(key=lambda x: x[3])
+        r, c, d, _ = odd_moves[0]
+        return f"{r},{c},{d}"
+    
+    # Emergency fallback: return any legal move
+    for r in range(5):
+        for c in range(5):
+            if c < 4 and horizontal[r, c] == 0:
+                return f"{r},{c},H"
+            if r < 4 and vertical[r, c] == 0:
+                return f"{r},{c},V"
+    
+    # Should never reach here if game isn't over
+    return "0,0,H"

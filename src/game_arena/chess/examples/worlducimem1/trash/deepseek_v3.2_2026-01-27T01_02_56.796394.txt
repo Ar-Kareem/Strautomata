@@ -1,0 +1,828 @@
+## Strategy
+
+I'll implement a chess engine based on negamax search with alpha-beta pruning and iterative deepening. The engine will include:
+
+1. **Board Representation**: Custom chess board implementation to efficiently generate moves and evaluate positions.
+2. **Move Generation**: Legal move generation for all piece types.
+3. **Evaluation Function**: Material counting, positional scoring, pawn structure, king safety, and mobility evaluation.
+4. **Search Algorithm**: Negamax with alpha-beta pruning, quiescence search, and iterative deepening.
+5. **Time Management**: Uses remaining time to decide search depth.
+6. **Opening Book**: Simple hardcoded opening responses for early moves.
+
+The policy will store board state and search results in memory to improve efficiency between moves.
+
+<code>
+import time
+import math
+from collections import defaultdict
+
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+}
+
+# Positional piece-square tables (for middle game)
+PAWN_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    0,  0,  0, 20, 20,  0,  0,  0,
+    5, -5,-10,  0,  0,-10, -5,  5,
+    5, 10, 10,-20,-20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+]
+
+KNIGHT_TABLE = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50
+]
+
+BISHOP_TABLE = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20
+]
+
+ROOK_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+]
+
+QUEEN_TABLE = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+]
+
+KING_MIDDLE_TABLE = [
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+    20, 20,  0,  0,  0,  0, 20, 20,
+    20, 30, 10,  0,  0, 10, 30, 20
+]
+
+def square_to_index(sq):
+    """Convert algebraic notation to 0-63 index."""
+    file_char = sq[0]
+    rank_char = sq[1]
+    file_ord = ord(file_char) - ord('a')
+    rank = int(rank_char) - 1
+    return rank * 8 + file_ord
+
+def index_to_square(idx):
+    """Convert 0-63 index to algebraic notation."""
+    rank = idx // 8 + 1
+    file_char = chr(ord('a') + (idx % 8))
+    return f"{file_char}{rank}"
+
+class ChessBoard:
+    def __init__(self, pieces=None, to_play='white'):
+        self.board = [None] * 64  # 8x8 board
+        self.to_play = 1 if to_play == 'white' else -1
+        self.castling_rights = {'K': True, 'Q': True, 'k': True, 'q': True}
+        self.en_passant_square = None
+        self.halfmove_clock = 0
+        self.fullmove_number = 1
+        
+        if pieces:
+            for square, piece_code in pieces.items():
+                idx = square_to_index(square)
+                color = 1 if piece_code[0] == 'w' else -1
+                piece_type = piece_code[1]
+                self.board[idx] = (color, piece_type)
+    
+    def copy(self):
+        """Create a deep copy of the board."""
+        new_board = ChessBoard()
+        new_board.board = self.board[:]
+        new_board.to_play = self.to_play
+        new_board.castling_rights = self.castling_rights.copy()
+        new_board.en_passant_square = self.en_passant_square
+        new_board.halfmove_clock = self.halfmove_clock
+        new_board.fullmove_number = self.fullmove_number
+        return new_board
+    
+    def make_move(self, move_str):
+        """Make a move from UCI string."""
+        if len(move_str) == 5:  # Promotion
+            from_sq = move_str[:2]
+            to_sq = move_str[2:4]
+            promo = move_str[4]
+        else:
+            from_sq = move_str[:2]
+            to_sq = move_str[2:4]
+            promo = None
+        
+        from_idx = square_to_index(from_sq)
+        to_idx = square_to_index(to_sq)
+        
+        moving_piece = self.board[from_idx]
+        if not moving_piece:
+            return False
+        
+        # Save state for castling rights update
+        old_castling = self.castling_rights.copy()
+        old_en_passant = self.en_passant_square
+        
+        # Reset en passant
+        self.en_passant_square = None
+        
+        # Handle pawn double move for en passant
+        if moving_piece[1] == 'P' and abs(to_idx - from_idx) == 16:
+            # Two-square pawn move
+            self.en_passant_square = index_to_square(from_idx + (8 if moving_piece[0] == 1 else -8))
+        
+        # Handle en passant capture
+        if moving_piece[1] == 'P' and to_idx % 8 != from_idx % 8 and not self.board[to_idx]:
+            # Diagonal move to empty square = en passant
+            captured_idx = to_idx - (8 if moving_piece[0] == 1 else -8)
+            self.board[captured_idx] = None
+        
+        # Handle castling
+        if moving_piece[1] == 'K' and abs(to_idx - from_idx) == 2:
+            # King is castling
+            if to_idx > from_idx:  # Kingside
+                rook_from = from_idx + 3
+                rook_to = from_idx + 1
+            else:  # Queenside
+                rook_from = from_idx - 4
+                rook_to = from_idx - 1
+            
+            self.board[rook_to] = self.board[rook_from]
+            self.board[rook_from] = None
+        
+        # Move the piece
+        if promo:
+            # Promotion
+            self.board[to_idx] = (moving_piece[0], promo.upper())
+        else:
+            self.board[to_idx] = moving_piece
+        self.board[from_idx] = None
+        
+        # Update castling rights
+        if moving_piece[1] == 'K':
+            if moving_piece[0] == 1:
+                self.castling_rights['K'] = False
+                self.castling_rights['Q'] = False
+            else:
+                self.castling_rights['k'] = False
+                self.castling_rights['q'] = False
+        
+        # If rook moves or is captured, update castling rights
+        for idx, piece in [(from_idx, moving_piece), (to_idx, self.board[to_idx])]:
+            if piece and piece[1] == 'R':
+                if idx == 0 and piece[0] == 1:
+                    self.castling_rights['Q'] = False
+                elif idx == 7 and piece[0] == 1:
+                    self.castling_rights['K'] = False
+                elif idx == 56 and piece[0] == -1:
+                    self.castling_rights['q'] = False
+                elif idx == 63 and piece[0] == -1:
+                    self.castling_rights['k'] = False
+        
+        # Update halfmove clock
+        if moving_piece[1] == 'P' or self.board[to_idx]:
+            self.halfmove_clock = 0
+        else:
+            self.halfmove_clock += 1
+        
+        # Update fullmove number
+        if self.to_play == -1:  # Black just moved
+            self.fullmove_number += 1
+        
+        # Switch player
+        self.to_play = -self.to_play
+        
+        return True
+    
+    def is_square_attacked(self, square_idx, by_color):
+        """Check if a square is attacked by pieces of given color."""
+        # Check knights
+        knight_moves = [-17, -15, -10, -6, 6, 10, 15, 17]
+        for move in knight_moves:
+            target = square_idx + move
+            if 0 <= target < 64:
+                piece = self.board[target]
+                if piece and piece[0] == by_color and piece[1] == 'N':
+                    return True
+        
+        # Check pawns
+        pawn_dir = 8 if by_color == 1 else -8
+        for dx in [-1, 1]:
+            target = square_idx + pawn_dir + dx
+            if 0 <= target < 64 and abs((target % 8) - (square_idx % 8)) == 1:
+                piece = self.board[target]
+                if piece and piece[0] == by_color and piece[1] == 'P':
+                    return True
+        
+        # Check king
+        king_moves = [-9, -8, -7, -1, 1, 7, 8, 9]
+        for move in king_moves:
+            target = square_idx + move
+            if 0 <= target < 64 and abs((target % 8) - (square_idx % 8)) <= 1:
+                piece = self.board[target]
+                if piece and piece[0] == by_color and piece[1] == 'K':
+                    return True
+        
+        # Check sliding pieces (rooks, bishops, queens)
+        directions = [
+            (-1, 0), (1, 0), (0, -1), (0, 1),  # Rook moves
+            (-1, -1), (-1, 1), (1, -1), (1, 1)  # Bishop moves
+        ]
+        
+        for dx, dy in directions:
+            x, y = square_idx % 8, square_idx // 8
+            steps = 1
+            while True:
+                nx, ny = x + dx * steps, y + dy * steps
+                if not (0 <= nx < 8 and 0 <= ny < 8):
+                    break
+                
+                target = ny * 8 + nx
+                piece = self.board[target]
+                
+                if piece:
+                    if piece[0] == by_color:
+                        # Check piece type
+                        if steps == 1:
+                            if (dx == 0 or dy == 0) and piece[1] in ['R', 'Q']:
+                                return True
+                            if (dx != 0 and dy != 0) and piece[1] in ['B', 'Q']:
+                                return True
+                        else:
+                            if (dx == 0 or dy == 0) and piece[1] in ['R', 'Q']:
+                                return True
+                            if (dx != 0 and dy != 0) and piece[1] in ['B', 'Q']:
+                                return True
+                    break
+                steps += 1
+        
+        return False
+    
+    def get_king_position(self, color):
+        """Find the king of given color."""
+        for i in range(64):
+            piece = self.board[i]
+            if piece and piece[0] == color and piece[1] == 'K':
+                return i
+        return -1
+    
+    def is_in_check(self, color=None):
+        """Check if the king of given color is in check."""
+        if color is None:
+            color = self.to_play
+        king_pos = self.get_king_position(color)
+        if king_pos == -1:
+            return False
+        return self.is_square_attacked(king_pos, -color)
+    
+    def generate_moves(self):
+        """Generate all legal moves for current player."""
+        moves = []
+        
+        for from_idx in range(64):
+            piece = self.board[from_idx]
+            if not piece or piece[0] != self.to_play:
+                continue
+            
+            color, piece_type = piece
+            
+            if piece_type == 'P':
+                # Pawn moves
+                forward = 8 if color == 1 else -8
+                start_rank = 1 if color == 1 else 6
+                promo_rank = 6 if color == 1 else 1
+                
+                # Single push
+                to_idx = from_idx + forward
+                if 0 <= to_idx < 64 and not self.board[to_idx]:
+                    from_sq = index_to_square(from_idx)
+                    to_sq = index_to_square(to_idx)
+                    
+                    # Promotion
+                    if from_idx // 8 == promo_rank:
+                        for promo in ['q', 'r', 'b', 'n']:
+                            moves.append(f"{from_sq}{to_sq}{promo}")
+                    else:
+                        moves.append(f"{from_sq}{to_sq}")
+                    
+                    # Double push from starting rank
+                    if from_idx // 8 == start_rank:
+                        to_idx2 = from_idx + forward * 2
+                        if 0 <= to_idx2 < 64 and not self.board[to_idx2] and not self.board[to_idx]:
+                            moves.append(f"{from_sq}{index_to_square(to_idx2)}")
+                
+                # Captures
+                for dx in [-1, 1]:
+                    to_idx = from_idx + forward + dx
+                    if 0 <= to_idx < 64 and abs((to_idx % 8) - (from_idx % 8)) == 1:
+                        target = self.board[to_idx]
+                        from_sq = index_to_square(from_idx)
+                        to_sq = index_to_square(to_idx)
+                        
+                        # Regular capture
+                        if target and target[0] == -color:
+                            if from_idx // 8 == promo_rank:
+                                for promo in ['q', 'r', 'b', 'n']:
+                                    moves.append(f"{from_sq}{to_sq}{promo}")
+                            else:
+                                moves.append(f"{from_sq}{to_sq}")
+                        
+                        # En passant
+                        elif self.en_passant_square:
+                            ep_idx = square_to_index(self.en_passant_square)
+                            if to_idx == ep_idx:
+                                moves.append(f"{from_sq}{to_sq}")
+            
+            elif piece_type == 'N':
+                # Knight moves
+                knight_moves = [-17, -15, -10, -6, 6, 10, 15, 17]
+                for move in knight_moves:
+                    to_idx = from_idx + move
+                    if 0 <= to_idx < 64:
+                        # Check if move stays on board (wraparound)
+                        from_x, from_y = from_idx % 8, from_idx // 8
+                        to_x, to_y = to_idx % 8, to_idx // 8
+                        if abs(from_x - to_x) + abs(from_y - to_y) == 3 and abs(from_x - to_x) > 0 and abs(from_y - to_y) > 0:
+                            target = self.board[to_idx]
+                            if not target or target[0] == -color:
+                                moves.append(f"{index_to_square(from_idx)}{index_to_square(to_idx)}")
+            
+            elif piece_type == 'B':
+                # Bishop moves
+                directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+                for dx, dy in directions:
+                    x, y = from_idx % 8, from_idx // 8
+                    steps = 1
+                    while True:
+                        nx, ny = x + dx * steps, y + dy * steps
+                        if not (0 <= nx < 8 and 0 <= ny < 8):
+                            break
+                        
+                        to_idx = ny * 8 + nx
+                        target = self.board[to_idx]
+                        
+                        if not target:
+                            moves.append(f"{index_to_square(from_idx)}{index_to_square(to_idx)}")
+                        elif target[0] == -color:
+                            moves.append(f"{index_to_square(from_idx)}{index_to_square(to_idx)}")
+                            break
+                        else:
+                            break
+                        steps += 1
+            
+            elif piece_type == 'R':
+                # Rook moves
+                directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                for dx, dy in directions:
+                    x, y = from_idx % 8, from_idx // 8
+                    steps = 1
+                    while True:
+                        nx, ny = x + dx * steps, y + dy * steps
+                        if not (0 <= nx < 8 and 0 <= ny < 8):
+                            break
+                        
+                        to_idx = ny * 8 + nx
+                        target = self.board[to_idx]
+                        
+                        if not target:
+                            moves.append(f"{index_to_square(from_idx)}{index_to_square(to_idx)}")
+                        elif target[0] == -color:
+                            moves.append(f"{index_to_square(from_idx)}{index_to_square(to_idx)}")
+                            break
+                        else:
+                            break
+                        steps += 1
+            
+            elif piece_type == 'Q':
+                # Queen moves (bishop + rook)
+                directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+                for dx, dy in directions:
+                    x, y = from_idx % 8, from_idx // 8
+                    steps = 1
+                    while True:
+                        nx, ny = x + dx * steps, y + dy * steps
+                        if not (0 <= nx < 8 and 0 <= ny < 8):
+                            break
+                        
+                        to_idx = ny * 8 + nx
+                        target = self.board[to_idx]
+                        
+                        if not target:
+                            moves.append(f"{index_to_square(from_idx)}{index_to_square(to_idx)}")
+                        elif target[0] == -color:
+                            moves.append(f"{index_to_square(from_idx)}{index_to_square(to_idx)}")
+                            break
+                        else:
+                            break
+                        steps += 1
+            
+            elif piece_type == 'K':
+                # King moves
+                king_moves = [-9, -8, -7, -1, 1, 7, 8, 9]
+                for move in king_moves:
+                    to_idx = from_idx + move
+                    if 0 <= to_idx < 64:
+                        from_x, from_y = from_idx % 8, from_idx // 8
+                        to_x, to_y = to_idx % 8, to_idx // 8
+                        if abs(from_x - to_x) <= 1 and abs(from_y - to_y) <= 1:
+                            target = self.board[to_idx]
+                            if not target or target[0] == -color:
+                                # Check if moving into check
+                                temp_board = self.copy()
+                                temp_board.board[to_idx] = temp_board.board[from_idx]
+                                temp_board.board[from_idx] = None
+                                temp_board.to_play = -temp_board.to_play
+                                if not temp_board.is_in_check(color):
+                                    moves.append(f"{index_to_square(from_idx)}{index_to_square(to_idx)}")
+                
+                # Castling
+                if color == 1:  # White
+                    if self.castling_rights['K'] and not self.is_in_check(1):
+                        # Kingside
+                        if (not self.board[61] and not self.board[62] and 
+                            not self.is_square_attacked(61, -1) and 
+                            not self.is_square_attacked(62, -1)):
+                            moves.append("e1g1")
+                    
+                    if self.castling_rights['Q'] and not self.is_in_check(1):
+                        # Queenside
+                        if (not self.board[57] and not self.board[58] and not self.board[59] and 
+                            not self.is_square_attacked(58, -1) and 
+                            not self.is_square_attacked(59, -1)):
+                            moves.append("e1c1")
+                
+                else:  # Black
+                    if self.castling_rights['k'] and not self.is_in_check(-1):
+                        # Kingside
+                        if (not self.board[5] and not self.board[6] and 
+                            not self.is_square_attacked(5, 1) and 
+                            not self.is_square_attacked(6, 1)):
+                            moves.append("e8g8")
+                    
+                    if self.castling_rights['q'] and not self.is_in_check(-1):
+                        # Queenside
+                        if (not self.board[1] and not self.board[2] and not self.board[3] and 
+                            not self.is_square_attacked(2, 1) and 
+                            not self.is_square_attacked(3, 1)):
+                            moves.append("e8c8")
+        
+        # Filter out moves that leave king in check
+        legal_moves = []
+        for move in moves:
+            temp_board = self.copy()
+            temp_board.make_move(move)
+            if not temp_board.is_in_check(self.to_play):
+                legal_moves.append(move)
+        
+        return legal_moves
+    
+    def evaluate(self):
+        """Evaluate position from perspective of current player."""
+        score = 0
+        
+        # Material count
+        for idx in range(64):
+            piece = self.board[idx]
+            if piece:
+                color, piece_type = piece
+                value = PIECE_VALUES[piece_type]
+                
+                # Add positional value
+                if piece_type == 'P':
+                    table = PAWN_TABLE
+                elif piece_type == 'N':
+                    table = KNIGHT_TABLE
+                elif piece_type == 'B':
+                    table = BISHOP_TABLE
+                elif piece_type == 'R':
+                    table = ROOK_TABLE
+                elif piece_type == 'Q':
+                    table = QUEEN_TABLE
+                elif piece_type == 'K':
+                    table = KING_MIDDLE_TABLE
+                else:
+                    table = [0] * 64
+                
+                # Flip table for black pieces
+                if color == 1:
+                    positional = table[idx]
+                else:
+                    positional = table[63 - idx]
+                
+                score += color * (value + positional // 2)
+        
+        # Mobility bonus
+        mobility = 0
+        for idx in range(64):
+            piece = self.board[idx]
+            if piece and piece[0] == self.to_play:
+                # Simple mobility estimate
+                if piece[1] in ['Q', 'R', 'B']:
+                    # Count number of squares attacked
+                    if piece[1] == 'Q':
+                        directions = 8
+                    elif piece[1] == 'R':
+                        directions = 4
+                    else:  # Bishop
+                        directions = 4
+                    mobility += directions * 2
+        
+        score += self.to_play * mobility
+        
+        # King safety penalty for being in check
+        if self.is_in_check(self.to_play):
+            score -= 50 * self.to_play
+        
+        return score
+
+class ChessEngine:
+    def __init__(self):
+        self.nodes_searched = 0
+        self.start_time = 0
+        self.time_limit = 0.95  # seconds
+        self.transposition_table = {}
+        self.killer_moves = [[None, None] for _ in range(100)]  # Depth up to 100
+        self.history_heuristic = defaultdict(int)
+    
+    def order_moves(self, board, moves, depth):
+        """Order moves for better alpha-beta pruning."""
+        scored_moves = []
+        
+        for move in moves:
+            score = 0
+            
+            # Capture heuristic
+            if len(move) >= 4:
+                to_idx = square_to_index(move[2:4])
+                captured_piece = board.board[to_idx]
+                if captured_piece:
+                    # MVV-LVA (Most Valuable Victim - Least Valuable Aggressor)
+                    from_idx = square_to_index(move[:2])
+                    attacker = board.board[from_idx]
+                    if attacker and captured_piece:
+                        victim_value = PIECE_VALUES.get(captured_piece[1], 0)
+                        attacker_value = PIECE_VALUES.get(attacker[1], 0)
+                        score += 1000 + victim_value - attacker_value // 10
+            
+            # Promotion heuristic
+            if len(move) == 5:
+                promo = move[4]
+                if promo == 'q':
+                    score += 900
+                elif promo == 'r':
+                    score += 500
+                elif promo == 'b':
+                    score += 330
+                elif promo == 'n':
+                    score += 320
+            
+            # Killer move heuristic
+            if move == self.killer_moves[depth][0]:
+                score += 800
+            elif move == self.killer_moves[depth][1]:
+                score += 700
+            
+            # History heuristic
+            score += self.history_heuristic.get(move, 0) // 64
+            
+            scored_moves.append((score, move))
+        
+        # Sort by score (highest first)
+        scored_moves.sort(reverse=True, key=lambda x: x[0])
+        return [move for _, move in scored_moves]
+    
+    def quiescence(self, board, alpha, beta, color):
+        """Quiescence search to avoid horizon effect."""
+        self.nodes_searched += 1
+        
+        # Stand pat score
+        stand_pat = board.evaluate() * color
+        
+        if stand_pat >= beta:
+            return beta
+        if alpha < stand_pat:
+            alpha = stand_pat
+        
+        # Generate capture moves
+        moves = board.generate_moves()
+        capture_moves = []
+        for move in moves:
+            if len(move) >= 4:
+                to_idx = square_to_index(move[2:4])
+                if board.board[to_idx]:
+                    capture_moves.append(move)
+        
+        # Order captures by MVV-LVA
+        capture_moves = self.order_moves(board, capture_moves, 0)
+        
+        for move in capture_moves:
+            # Delta pruning
+            to_idx = square_to_index(move[2:4])
+            captured_value = PIECE_VALUES.get(board.board[to_idx][1] if board.board[to_idx] else 'P', 0)
+            if stand_pat + captured_value + 200 < alpha:
+                continue
+            
+            board_copy = board.copy()
+            board_copy.make_move(move)
+            
+            score = -self.quiescence(board_copy, -beta, -alpha, -color)
+            
+            if score >= beta:
+                return beta
+            if score > alpha:
+                alpha = score
+        
+        return alpha
+    
+    def negamax(self, board, depth, alpha, beta, color, ply):
+        """Negamax search with alpha-beta pruning."""
+        self.nodes_searched += 1
+        
+        # Time check
+        if self.nodes_searched % 1000 == 0 and time.time() - self.start_time > self.time_limit:
+            raise TimeoutError()
+        
+        # Check for repetition or 50-move rule (simplified)
+        if board.halfmove_clock >= 100 or depth == 0:
+            return self.quiescence(board, alpha, beta, color)
+        
+        # Transposition table lookup (simplified)
+        board_key = str(board.board) + str(board.to_play)
+        if board_key in self.transposition_table:
+            entry = self.transposition_table[board_key]
+            if entry[0] >= depth:
+                return entry[1]
+        
+        # Null move pruning
+        if depth >= 3 and not board.is_in_check(board.to_play):
+            # Try a null move
+            board_copy = board.copy()
+            board_copy.to_play = -board_copy.to_play
+            board_copy.en_passant_square = None
+            null_score = -self.negamax(board_copy, depth - 1 - 2, -beta, -beta + 1, -color, ply + 1)
+            
+            if null_score >= beta:
+                return beta
+        
+        moves = board.generate_moves()
+        if not moves:
+            if board.is_in_check(board.to_play):
+                return -20000 + ply  # Checkmate (closer mate is better)
+            else:
+                return 0  # Stalemate
+        
+        # Move ordering
+        ordered_moves = self.order_moves(board, moves, depth)
+        
+        best_score = -30000
+        best_move = ordered_moves[0] if ordered_moves else None
+        
+        for i, move in enumerate(ordered_moves):
+            board_copy = board.copy()
+            board_copy.make_move(move)
+            
+            # Late move reduction
+            reduction = 0
+            if depth >= 3 and i >= 4 and not board.is_in_check(board.to_play):
+                reduction = 1
+            
+            if i == 0:  # PV node
+                score = -self.negamax(board_copy, depth - 1, -beta, -alpha, -color, ply + 1)
+            else:
+                score = -self.negamax(board_copy, depth - 1 - reduction, -alpha - 1, -alpha, -color, ply + 1)
+                if score > alpha:
+                    score = -self.negamax(board_copy, depth - 1, -beta, -alpha, -color, ply + 1)
+            
+            if score > best_score:
+                best_score = score
+                best_move = move
+            
+            if score > alpha:
+                alpha = score
+            
+            if alpha >= beta:
+                # Beta cutoff
+                # Update killer moves
+                if move not in self.killer_moves[depth]:
+                    self.killer_moves[depth][1] = self.killer_moves[depth][0]
+                    self.killer_moves[depth][0] = move
+                
+                # Update history heuristic
+                self.history_heuristic[move] += depth * depth
+                break
+        
+        # Store in transposition table
+        self.transposition_table[board_key] = (depth, best_score)
+        
+        return best_score
+    
+    def search(self, board, max_depth=15):
+        """Iterative deepening search."""
+        self.nodes_searched = 0
+        self.start_time = time.time()
+        
+        moves = board.generate_moves()
+        if not moves:
+            return None
+        
+        # Opening book (simple)
+        opening_moves = {
+            # Common openings
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR": ["e2e4", "d2d4", "g1f3"],
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR": ["e7e5", "c7c5", "e7e6"],
+            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR": ["g1f3", "f1c4", "f1b5"],
+        }
+        
+        # Try to use opening book
+        board_fen = self.board_to_fen(board)
+        if board_fen in opening_moves:
+            for move in opening_moves[board_fen]:
+                if move in moves:
+                    return move
+        
+        best_move = moves[0]
+        best_score = -30000
+        
+        try:
+            for depth in range(1, max_depth + 1):
+                current_best = None
+                current_score = -30000
+                alpha = -30000
+                beta = 30000
+                
+                # Search with iterative deepening
+                for move in moves:
+                    board_copy = board.copy()
+                    board_copy.make_move(move)
+                    
+                    score = -self.negamax(board_copy, depth - 1, -beta, -alpha, -board.to_play, 1)
+                    
+                    if score > current_score:
+                        current_score = score
+                        current_best = move
+                    
+                    if current_score > alpha:
+                        alpha = current_score
+                
+                # Only update if we completed the depth
+                if time.time() - self.start_time < self.time_limit:
+                    best_move = current_best
+                    best_score = current_score
+                    
+                    # If we found a forced mate, return immediately
+                    if best_score > 10000:
+                        break
+                else:
+                    break
+        
+        except TimeoutError:
+            # Time's up, use best move from previous iteration
+            pass
+        
+        return best_move
+    
+    def board_to_fen(self, board):
+        """Convert board to FEN-like string for opening book."""
+        fen_parts = []
+        empty_count = 0
+        
+        for rank in range(7, -1, -1):
+            for file in range(8):
+                idx = rank * 8 + file
+                piece = board.board[idx]
+                
+                if piece is None:
+                    empty_count += 1
+                else:
+                    if empty_count > 0:
+                        fen_parts.append(str(empty_count))
+                        empty_count = 0
+                    
+                    color_char = 'w' if piece[0] == 1 else '

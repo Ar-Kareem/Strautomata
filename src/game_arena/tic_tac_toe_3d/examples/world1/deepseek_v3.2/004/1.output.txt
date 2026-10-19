@@ -1,0 +1,152 @@
+<thinking>
+We need to write a policy for 3D Tic Tac Toe (3x3x3). The board is 3 layers, each 3x3? Actually it's a 3D list: board[z][y][x]? The problem says "three integers 0–2 indicating the empty cell you choose where the n-th integer corresponds to the n-th dimension in the input board." So likely board[depth][row][col]? But they gave example: [[[0, 0, 1], ...]] would represent a board where the front and top line has the first two cells empty and the last cell is occupied by you. That suggests board[z][y][x] where z is outer? Actually they say "front and top line". Hard to interpret.
+
+We need to decide on coordinate system. Usually 3D Tic Tac Toe coordinates: (x, y, z) where each 0-2. They say n-th integer corresponds to n-th dimension in input board. So board is list of lists of lists: board[i][j][k] where i is first dimension? They said "front and top line" – maybe board[z][y][x] where z is depth, y is row, x is column.
+
+We'll assume board[z][y][x]: z depth (0 front? 2 back?), y row (0 top? 2 bottom?), x column (0 left? 2 right?). But we can treat indices as arbitrary.
+
+Goal: win by getting three in a row in any straight line (rows, columns, pillars, diagonals within a layer, diagonals across layers). There are 49 possible winning lines? Actually 3 rows per layer (3*3=9), 3 columns per layer (9), 3 pillars (vertical lines through layers) per column-row combination? Actually pillars: each (x,y) across z: 3*3=9 pillars. Then diagonals within each layer: 2 per layer (3 layers) = 6. Then space diagonals: through cube corners? There are 4 space diagonals? Actually cube has 4 main diagonals from corner to opposite corner. Also face diagonals across layers? Like diagonal in one plane but also across layers? There are many.
+
+Let's list all winning lines: 
+- For each fixed z, y: row y (3 cells)
+- For each fixed z, x: column x (3 cells)
+- For each fixed y, x: pillar (z direction) (3 cells)
+- For each fixed z: two diagonals within that layer: (0,0)-(1,1)-(2,2) and (0,2)-(1,1)-(2,0) => 6 total.
+- For each fixed y: diagonal in x-z plane? Actually layer y: rows are along x, columns along z? Not typical.
+- For each fixed x: diagonal in y-z plane?
+- Space diagonals: (0,0,0)-(1,1,1)-(2,2,2); (2,0,0)-(1,1,1)-(0,2,2); (0,2,0)-(1,1,1)-(2,0,2); (2,2,0)-(1,1,1)-(0,0,2). That's 4.
+
+Also other triples like (0,0,1)-(1,1,1)-(2,2,1)? That's a diagonal in layer z=1 but already counted.
+
+Total winning lines: 9+9+9+6+4 = 37? Actually 9 rows, 9 columns, 9 pillars, 6 planar diagonals, 4 space diagonals = 37.
+
+We need to implement a policy that returns a move. We can implement a simple minimax with alpha-beta pruning. Since board size small (27 cells), we can search entire game tree? 27! is huge but depth limited. We can do depth-limited minimax with heuristic evaluation.
+
+Better: implement a winning move detection, block opponent's winning move, then try to create forks (two winning threats). For 3D Tic Tac Toe, there are many forks.
+
+Because time limited, we can implement a simple heuristic: 
+1. If there's a winning move (line where we have two of ours and one empty), take it.
+2. If opponent has a winning move (two opponent and one empty), block it.
+3. Else, try to create a fork: move that gives us two lines each with two of ours? Actually fork: move that creates two threats (each line with two of ours and one empty). But opponent can block only one.
+4. If no fork, take center cells? In 3D, center cell is (1,1,1) which is most powerful.
+5. Then take corners? Or random.
+
+We'll implement using numpy for convenience.
+
+Let's define coordinate order: return (x, y, z) or (z, y, x)? They said n-th integer corresponds to n-th dimension in input board. Input board is list[list[list[int]]], outermost list is first dimension, then second, then third. So board[i][j][k] where i is first dimension (0-2), j second (0-2), k third (0-2). Return (i, j, k). We'll assume i depth (z), j row (y), k column (x). But we can treat indices generically.
+
+We'll generate all winning lines as list of lists of (i,j,k) triples.
+
+Steps:
+- Flatten board to 3D numpy array.
+- Generate all winning lines (27 lines? Actually we should compute all lines of length 3 that are collinear and within bounds). Simpler: predefine all winning lines manually. There are 49 lines? Let's compute programmatically: For each direction (dx,dy,dz) where each in {-1,0,1} not all zero, and for each start cell (i,j,k) such that start + 2*direction is within 0-2, we get a line. That yields all lines.
+
+We can generate:
+directions = [(dx,dy,dz) for dx in (-1,0,1) for dy in (-1,0,1) for dz in (-1,0,1) if (dx,dy,dz)!=(0,0,0)]
+For each direction, for each start (i,j,k) in range(3), compute end = (i+2*dx, j+2*dy, k+2*dz), if within bounds, collect cells.
+
+That will give all 49 lines? Let's count: There are 26 directions (3^3 -1). For each direction, number of starting positions that allow line of length 3: if dx=1, start i can be 0 only; if dx=0, start i can be 0,1,2; if dx=-1, start i can be 2 only. So for each direction, number of starts = product of (1 if dx!=0 else 3). Sum over all directions: Might be 49. Let's trust.
+
+Implementation plan:
+- If winning move exists, take it.
+- If opponent winning move exists, block it.
+- Else evaluate each empty cell with a heuristic score: number of lines through that cell where we have one of ours and rest empty (potential). Also prioritize center (1,1,1).
+- Choose cell with highest score.
+
+We'll implement heuristic: score = sum over lines through cell: for each line, count our pieces, opponent pieces, empty. If opponent piece present, ignore (no potential). If our piece present, add weight based on count: if line has two ours, we already handled winning move; but here we consider lines with one ours and two empties: that's a potential threat. Add 10 points for each such line. Also add 1 point for each line with zero ours and zero opponent (all empty). Also center bonus.
+
+Also we can consider blocking opponent's potential forks? Might be too complex.
+
+Let's code.
+</thinking>
+<code>
+import numpy as np
+import itertools
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    # Convert board to numpy array for easier manipulation
+    arr = np.array(board, dtype=int)  # shape (3,3,3)
+    
+    # Generate all winning lines (list of list of (i,j,k) tuples)
+    lines = []
+    directions = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if not (dx == 0 and dy == 0 and dz == 0)]
+    for dx, dy, dz in directions:
+        # Determine starting indices range
+        start_i_range = range(3) if dx == 0 else (0 if dx == 1 else 2,)
+        start_j_range = range(3) if dy == 0 else (0 if dy == 1 else 2,)
+        start_k_range = range(3) if dz == 0 else (0 if dz == 1 else 2,)
+        for i in start_i_range:
+            for j in start_j_range:
+                for k in start_k_range:
+                    end_i = i + 2 * dx
+                    end_j = j + 2 * dy
+                    end_k = k + 2 * dz
+                    if 0 <= end_i < 3 and 0 <= end_j < 3 and 0 <= end_k < 3:
+                        line = [(i, j, k), (i + dx, j + dy, k + dz), (i + 2*dx, j + 2*dy, k + 2*dz)]
+                        # Avoid duplicates (some lines may be generated multiple times due to symmetry, but fine)
+                        lines.append(line)
+    
+    # Helper to count pieces in a line
+    def line_counts(line):
+        counts = {1: 0, -1: 0, 0: 0}
+        for (i, j, k) in line:
+            val = arr[i, j, k]
+            counts[val] += 1
+        return counts[1], counts[-1], counts[0]
+    
+    # 1. Check for winning move
+    for line in lines:
+        ours, opp, empty = line_counts(line)
+        if ours == 2 and empty == 1:
+            # Find the empty cell in this line
+            for (i, j, k) in line:
+                if arr[i, j, k] == 0:
+                    return (i, j, k)
+    
+    # 2. Block opponent's winning move
+    for line in lines:
+        ours, opp, empty = line_counts(line)
+        if opp == 2 and empty == 1:
+            for (i, j, k) in line:
+                if arr[i, j, k] == 0:
+                    return (i, j, k)
+    
+    # Heuristic evaluation of empty cells
+    empty_cells = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if arr[i, j, k] == 0]
+    best_score = -1
+    best_move = None
+    
+    # Precompute lines through each cell (for efficiency)
+    lines_through = {cell: [] for cell in empty_cells}
+    for line in lines:
+        for cell in line:
+            if cell in lines_through:
+                lines_through[cell].append(line)
+    
+    for cell in empty_cells:
+        score = 0
+        # Center bonus
+        if cell == (1, 1, 1):
+            score += 20
+        # Corner bonus (corners are (0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2))
+        if sum(1 for coord in cell if coord in (0, 2)) == 3:
+            score += 5
+        
+        for line in lines_through[cell]:
+            ours, opp, empty = line_counts(line)
+            if opp > 0:
+                # opponent already in this line, not promising
+                continue
+            if ours == 1 and empty == 2:  # cell included, so actually after placing ours, line would have 2 ours
+                score += 10
+            elif ours == 0 and empty == 3:
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_move = cell
+    
+    # Fallback: first empty cell (should not happen)
+    if best_move is None:
+        best_move = empty_cells[0]
+    return best_move
+</code>

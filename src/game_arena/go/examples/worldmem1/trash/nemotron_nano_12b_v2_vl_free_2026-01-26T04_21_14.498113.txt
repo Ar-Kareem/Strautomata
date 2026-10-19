@@ -1,0 +1,93 @@
+This policy focuses on prioritizing captures to maximize immediate gain, then connects to safe groups, and finally seeks strategic positions like corners.
+
+### Strategy
+1. **Capture Priority**: Check all potential moves to capture as many opponent stones as possible. A move captures a group if placing a stone there closes all liberties of the opponent's group.
+2. **Territory Expansion**: If no captures are possible, select moves that connect to multiple own stones, increasing stability.
+3. **Strategic Placement**: Fallback to placing stones in key areas like corners or the center if no advantageous moves are found.
+
+### Python Code
+<code>
+import sys
+from collections import defaultdict, deque
+
+# Directions: up, down, left, right.
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+def policy(me, opponent, memory):
+    if not memory:
+        memory = {}
+
+    me_set = set(tuple(stone) for stone in me)
+    opp_set = set(tuple(cell) for cell in opponent)
+    occupied = me_set | set(opponent)
+
+    legal_moves = [(r, c) for r in range(1, 20) for c in range(1, 20) if (r, c) not in occupied]
+    if not legal_moves:
+        return ((0, 0), memory)
+
+    def liberties(cell, occupied_all):
+        x, y = cell
+        libs = 0
+        for dx, dy in DIRS:
+            nx, ny = x + dx, y + dy
+            if 1 <= nx <= 19 and 1 <= ny <= 19:
+                if (nx, ny) not in occupied_all:
+                    return len([1 for nx, ny in [(x+dx, y+dy) for dx, dy in DIRS] if (nx, ny) not in occupied_all])
+        return 0
+
+    groups = []
+    visited = set()
+    dirs = DIRS
+    for cell in opp_set:
+        if cell not in visited:
+            group = set()
+            queue = deque([cell])
+            visited.add(cell)
+            while queue:
+                x, y = queue.popleft()
+                group.add((x, y))
+                for dx, dy in dirs:
+                    nx, ny = x + dx, y + dy
+                    if 1 <= nx <= 19 and 1 <= ny <= 19 and (nx, ny) in opp_set and (nx, ny) not in visited:
+                        visited.add((nx, ny))
+                        queue.append((nx, ny))
+            groups.append(group)
+
+    move_scores = []
+    for move in legal_moves:
+        temp_occupied = me_set | opp_stones | {move}
+        captured = 0
+        for cell in opp_set:
+            if cell in visited:
+                continue
+            new_group = set()
+            queue = deque([cell])
+            local_visited = {cell}
+            while queue:
+                x, y = queue.popleft()
+                new_group.add((x, y))
+                for dx, dy in dirs:
+                    nx, ny = x + dx, y + dy
+                    if 1 <= nx <= 19 and 1 <= ny <= 19 and (nx, ny) in opp_set and (nx, ny) not in local_visited:
+                        local_visited.add((nx, ny))
+                        queue.append((nx, ny))
+            lib = 0
+            for gc in new_group:
+                for d in dirs:
+                    cx, cy = gc[0] + d[0], gc[1] + d[1]
+                    if 1 <= cx <= 19 and 1 <= cy <= 19:
+                        if (cx, cy) not in temp_occupied:
+                            lib = len([(cx, cy)] for mx, my in dirs if (cx, cy) not in temp_occupied])
+                            break
+                if lib > 0:
+                    break
+            if lib == 0:
+                captured += len(new_group)
+        move_scores.append((-captured, move))
+
+    move_scores.sort()
+    best_moves = [move for captured, move in move_scores if captured == move_scores[0][0]]
+    best_move = best_moves[0]
+
+    return (best_move, {})
+</code>

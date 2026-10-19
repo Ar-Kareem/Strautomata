@@ -1,0 +1,123 @@
+
+import numpy as np
+
+def policy(horizontal, vertical, capture):
+    # First look for any moves that complete a box
+    for row in range(4):
+        for col in range(4):
+            # Check for completable boxes
+            sides = [
+                (row, col, 'H'),      # top
+                (row, col+1, 'H'),    # bottom
+                (row, col, 'V'),      # left
+                (row+1, col, 'V')     # right
+            ]
+            sides_completed = 0
+            for r, c, d in sides:
+                if (d == 'H' and horizontal[r,c] != 0) or (d == 'V' and vertical[r,c] != 0):
+                    sides_completed += 1
+            
+            # If 3 sides completed, we can capture this box
+            if sides_completed == 3:
+                for r, c, d in sides:
+                    if d == 'H' and horizontal[r,c] == 0:
+                        return f"{r},{c},H"
+                    if d == 'V' and vertical[r,c] == 0:
+                        return f"{r},{c},V"
+    
+    # Look for safe moves that don't create 3-edge boxes
+    safe_moves = []
+    possible_moves = []
+    
+    # Collect all possible horizontal moves
+    for row in range(5):
+        for col in range(4):
+            if horizontal[row,col] == 0:
+                moves = []
+                # Check impact on adjacent boxes
+                # Above the line (only if not top edge)
+                if row > 0:
+                    sides_above = [
+                        (row-1, col, 'H'),     # top of box above
+                        (row-1, col+1, 'H'),   # bottom of box above
+                        (row-1, col, 'V'),     # left of box above
+                        (row, col, 'V')        # right of box above
+                    ]
+                    above_completed = sum(
+                        1 for r,c,d in sides_above 
+                        if (d == 'H' and horizontal[r,c] != 0) or (d == 'V' and vertical[r,c] != 0)
+                    )
+                    if above_completed == 2:  # Would create 3 sides if played
+                        moves.append((True, above_completed))
+                
+                # Below the line (only if not bottom edge)
+                if row < 4:
+                    sides_below = [
+                        (row, col, 'H'),       # top of box below
+                        (row, col+1, 'H'),     # bottom of box below
+                        (row, col, 'V'),       # left of box below
+                        (row+1, col, 'V')      # right of box below
+                    ]
+                    below_completed = sum(
+                        1 for r,c,d in sides_below 
+                        if (d == 'H' and horizontal[r,c] != 0) or (d == 'V' and vertical[r,c] != 0)
+                    )
+                    if below_completed == 2:  # Would create 3 sides if played
+                        moves.append((True, below_completed))
+                
+                if not moves:  # This is a safe move
+                    safe_moves.append((row,col,'H'))
+                else:
+                    possible_moves.append((row,col,'H'))
+    
+    # Collect all possible vertical moves
+    for row in range(4):
+        for col in range(5):
+            if vertical[row,col] == 0:
+                moves = []
+                # Check impact on left box
+                if col > 0:
+                    sides_left = [
+                        (row, col-1, 'H'),    # top of left box
+                        (row+1, col-1, 'H'),  # bottom of left box
+                        (row, col-1, 'V'),    # left of left box
+                        (row+1, col-1, 'V')   # right of left box
+                    ]
+                    left_completed = sum(
+                        1 for r,c,d in sides_left 
+                        if (d == 'H' and horizontal[r,c] != 0) or (d == 'V' and vertical[r,c] != 0)
+                    )
+                    if left_completed == 2:
+                        moves.append((True, left_completed))
+                
+                # Check impact on right box
+                if col < 4:
+                    sides_right = [
+                        (row, col, 'H'),      # top of right box
+                        (row+1, col, 'H'),    # bottom of right box
+                        (row, col, 'V'),      # left of right box
+                        (row+1, col, 'V')     # right of right box
+                    ]
+                    right_completed = sum(
+                        1 for r,c,d in sides_right 
+                        if (d == 'H' and horizontal[r,c] != 0) or (d == 'V' and vertical[r,c] != 0)
+                    )
+                    if right_completed == 2:
+                        moves.append((True, right_completed))
+                
+                if not moves:  # This is a safe move
+                    safe_moves.append((row,col,'V'))
+                else:
+                    possible_moves.append((row,col,'V'))
+    
+    # Prefer safe moves
+    if safe_moves:
+        # Prioritize center moves
+        safe_moves.sort(key=lambda x: (abs(x[0]-2) + abs(x[1]-2)))
+        row, col, dr = safe_moves[0]
+        return f"{row},{col},{dr}"
+    
+    # No safe moves - pick move that creates fewest dangerous boxes
+    possible_moves.sort(key=lambda x: x[1])  # Sort by danger level
+    row, col, dr = possible_moves[0]
+    return f"{row},{col},{dr}"

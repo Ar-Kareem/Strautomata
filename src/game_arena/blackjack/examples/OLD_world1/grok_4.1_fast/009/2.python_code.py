@@ -1,0 +1,59 @@
+
+cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+card_idx = {cards[i]: i for i in range(13)}
+
+def compute_hand_value(mask, target):
+    fixed_sum = 0
+    num_aces = 0
+    for i in range(13):
+        if mask & (1 << i):
+            c = cards[i]
+            if c == "A":
+                num_aces += 1
+            else:
+                val = 10 if c in {"J", "Q", "K"} else int(c)
+                fixed_sum += val
+    min_sum = fixed_sum + num_aces
+    if min_sum > target:
+        return -999999
+    score = fixed_sum + num_aces * 11
+    while score > target and num_aces > 0:
+        score -= 10
+        num_aces -= 1
+    return score
+
+def mask_from_hand(hand):
+    mask = 0
+    for c in hand:
+        if c in card_idx:
+            mask |= (1 << card_idx[c])
+    return mask
+
+def policy(hand: list[str], target: int) -> str:
+    current_mask = mask_from_hand(hand)
+    memo = {}
+
+    def get_opt_value(m, t):
+        if m in memo:
+            return memo[m]
+        vs = compute_hand_value(m, t)
+        rem = [i for i in range(13) if (m & (1 << i)) == 0]
+        if not rem:
+            vh = vs - 10000000.0
+        else:
+            sh = sum(get_opt_value(m | (1 << ni), t) for ni in rem)
+            vh = sh / len(rem)
+        res = max(vs, vh)
+        memo[m] = res
+        return res
+
+    value_stay = compute_hand_value(current_mask, target)
+    rem = [i for i in range(13) if (current_mask & (1 << i)) == 0]
+    if not rem:
+        return "STAY"
+    sum_hit = sum(get_opt_value(current_mask | (1 << ni), target) for ni in rem)
+    value_hit = sum_hit / len(rem)
+    if value_hit > value_stay:
+        return "HIT"
+    else:
+        return "STAY"

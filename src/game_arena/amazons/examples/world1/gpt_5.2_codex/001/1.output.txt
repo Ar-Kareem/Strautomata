@@ -1,0 +1,93 @@
+The strategy for this policy is a depth‑2 minimax search with a mobility‑based heuristic. It generates all legal moves, evaluates each by the difference in reachable squares for both sides, and anticipates the opponent’s best reply. This yields a strong, fast policy for a 6x6 board while always returning a legal move.
+
+<code>
+import numpy as np
+
+# Directions for queen-like movement
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),          (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+def in_bounds(r, c):
+    return 0 <= r < 6 and 0 <= c < 6
+
+def count_reachable(board, player):
+    count = 0
+    positions = np.argwhere(board == player)
+    for fr, fc in positions:
+        for dr, dc in DIRS:
+            r, c = fr + dr, fc + dc
+            while in_bounds(r, c) and board[r, c] == 0:
+                count += 1
+                r += dr
+                c += dc
+    return count
+
+def generate_moves(board, player):
+    moves = []
+    positions = np.argwhere(board == player)
+    for fr, fc in positions:
+        for dr, dc in DIRS:
+            r, c = fr + dr, fc + dc
+            while in_bounds(r, c) and board[r, c] == 0:
+                # move amazon to (r,c)
+                board[fr, fc] = 0
+                board[r, c] = player
+                # shoot arrow
+                for adr, adc in DIRS:
+                    ar, ac = r + adr, c + adc
+                    while in_bounds(ar, ac) and board[ar, ac] == 0:
+                        moves.append((fr, fc, r, c, ar, ac))
+                        ar += adr
+                        ac += adc
+                # revert
+                board[fr, fc] = player
+                board[r, c] = 0
+                r += dr
+                c += dc
+    return moves
+
+def apply_move(board, move, player):
+    fr, fc, tr, tc, ar, ac = move
+    newb = board.copy()
+    newb[fr, fc] = 0
+    newb[tr, tc] = player
+    newb[ar, ac] = -1
+    return newb
+
+def evaluate(board):
+    # mobility difference
+    return count_reachable(board, 1) - count_reachable(board, 2)
+
+def policy(board) -> str:
+    board = np.array(board)
+    my_moves = generate_moves(board, 1)
+    if not my_moves:
+        # No legal move; fallback (should not happen)
+        return "0,0:0,0:0,0"
+
+    best_move = my_moves[0]
+    best_value = -1e9
+
+    for move in my_moves:
+        b1 = apply_move(board, move, 1)
+        opp_moves = generate_moves(b1, 2)
+        if not opp_moves:
+            # Winning move
+            best_move = move
+            best_value = 1e9
+            break
+        # Opponent chooses move minimizing our evaluation
+        worst_for_us = 1e9
+        for om in opp_moves:
+            b2 = apply_move(b1, om, 2)
+            val = evaluate(b2)
+            if val < worst_for_us:
+                worst_for_us = val
+        if worst_for_us > best_value:
+            best_value = worst_for_us
+            best_move = move
+
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

@@ -1,0 +1,386 @@
+The strategy for this policy is:
+
+- **Always return a legal move** by only choosing from the 40 real edges of a 4x4 Dots and Boxes board.
+- **Take boxes when profitable**: if a move captures a box, it is strongly preferred.
+- **Avoid giving away boxes**: when no capture is available, prefer **safe moves** that do not create a 3-sided box for the opponent.
+- **When forced to open a chain**, choose the move that appears to give away the **smallest opponent capture run**.
+- **Play the endgame exactly**: when the number of remaining edges is small, use a cached minimax-style search that correctly handles extra turns after captures.
+
+<code>
+import numpy as np
+from functools import lru_cache
+
+# ============================================================
+# Board model for a 4x4 box Dots and Boxes board
+# Valid edges:
+#   Horizontal: rows 0..4, cols 0..3  -> 20 edges
+#   Vertical:   rows 0..3, cols 0..4  -> 20 edges
+# Total = 40 edges
+# ============================================================
+
+EDGE_INFO = []          # index -> (row, col, 'H'/'V')
+H_INDEX = {}            # (row, col) -> edge index
+V_INDEX = {}            # (row, col) -> edge index
+
+# Horizontal edges: 0..19
+for r in range(5):
+    for c in range(4):
+        idx = len(EDGE_INFO)
+        EDGE_INFO.append((r, c, 'H'))
+        H_INDEX[(r, c)] = idx
+
+# Vertical edges: 20..39
+for r in range(4):
+    for c in range(5):
+        idx = len(EDGE_INFO)
+        EDGE_INFO.append((r, c, 'V'))
+        V_INDEX[(r, c)] = idx
+
+NUM_EDGES = len(EDGE_INFO)  # 40
+FULL_MASK = (1 << NUM_EDGES) - 1
+
+# Box definitions
+# box b = r*4 + c has edges:
+#   top    H(r, c)
+#   bottom H(r+1, c)
+#   left   V(r, c)
+#   right  V(r, c+1)
+BOX_MASKS = []
+EDGE_BOXES = [[] for _ in range(NUM_EDGES)]
+
+for r in range(4):
+    for c in range(4):
+        edges = [
+            H_INDEX[(r, c)],
+            H_INDEX[(r + 1, c)],
+            V_INDEX[(r, c)],
+            V_INDEX[(r, c + 1)],
+        ]
+        mask = 0
+        b = len(BOX_MASKS)
+        for e in edges:
+            mask |= (1 << e)
+            EDGE_BOXES[e].append(b)
+        BOX_MASKS.append(mask)
+
+EDGE_BOXES = tuple(tuple(lst) for lst in EDGE_BOXES)
+
+ENDGAME_THRESHOLD = 16
+
+
+# ============================================================
+# Low-level helpers
+# ============================================================
+
+def _box_count(mask: int, box_idx: int) -> int:
+    return (mask & BOX_MASKS[box_idx]).bit_count()
+
+
+def _legal_moves(mask: int):
+    empties = FULL_MASK ^ mask
+    while empties:
+        lsb = empties & -empties
+        e = lsb.bit_length() - 1
+        yield e
+        empties ^= lsb
+
+
+def _capture_count(mask: int, edge_idx: int) -> int:
+    # Since edge_idx is empty, adding it captures any adjacent box
+    # that currently has exactly 3 occupied sides.
+    k = 0
+    for b in EDGE_BOXES[edge_idx]:
+        if _box_count(mask, b) == 3:
+            k += 1
+    return k
+
+
+def _is_safe(mask: int, edge_idx: int) -> bool:
+    # Safe = not a capture and does not create a 3-sided box.
+    if _capture_count(mask, edge_idx) > 0:
+        return False
+    for b in EDGE_BOXES[edge_idx]:
+        if _box_count(mask, b) == 2:
+            return False
+    return True
+
+
+# ============================================================
+# Cached move classification
+# ============================================================
+
+@lru_cache(maxsize=None)
+def _capturing_moves(mask: int):
+    return tuple(e for e in _legal_moves(mask) if _capture_count(mask, e) > 0)
+
+
+@lru_cache(maxsize=None)
+def _safe_moves(mask: int):
+    return tuple(e for e in _legal_moves(mask) if _is_safe(mask, e))
+
+
+@lru_cache(maxsize=None)
+def _max_capture_run(mask: int) -> int:
+    """
+    Maximum number of boxes the player to move can collect immediately
+    if they keep taking capturing moves as long as they want to.
+    Used as a heuristic for chain-opening decisions.
+    """
+    best = 0
+    for e in _capturing_moves(mask):
+        new_mask = mask | (1 << e)
+        val = _capture_count(mask, e) + _max_capture_run(new_mask)
+        if val > best:
+            best = val
+    return best
+
+
+# ============================================================
+# Exact endgame search
+# solve(mask) returns the best future box differential from the
+# current player's perspective, considering only remaining boxes.
+# Extra turns after captures are handled exactly.
+# ============================================================
+
+@lru_cache(maxsize=None)
+def _solve(mask: int) -> int:
+    if mask == FULL_MASK:
+        return 0
+
+    best = -10**9
+
+    caps = _capturing_moves(mask)
+    cap_set = set(caps)
+
+    # Try capturing moves first
+    for e in caps:
+        new_mask = mask | (1 << e)
+        k = _capture_count(mask, e)
+        val = k + _solve(new_mask)   # same player moves again
+        if val > best:
+            best = val
+
+    # Then all non-capturing moves
+    for e in _legal_moves(mask):
+        if e in cap_set:
+            continue
+        new_mask = mask | (1 << e)
+        val = -_solve(new_mask)      # turn passes
+        if val > best:
+            best = val
+
+    if best == -10**9:
+        return 0
+    return best
+
+
+def _choose_exact(mask: int) -> int:
+    best_move = None
+    best_val = -10**9
+
+    caps = _capturing_moves(mask)
+    cap_set = set(caps)
+
+    for e in caps:
+        new_mask = mask | (1 << e)
+        k = _capture_count(mask, e)
+        val = k + _solve(new_mask)
+        if val > best_val:
+            best_val = val
+            best_move = e
+
+    for e in _legal_moves(mask):
+        if e in cap_set:
+            continue
+        new_mask = mask | (1 << e)
+        val = -_solve(new_mask)
+        if val > best_val:
+            best_val = val
+            best_move = e
+
+    return best_move
+
+
+# ============================================================
+# Heuristic move scoring for midgame
+# ============================================================
+
+def _safe_move_score(mask: int, edge_idx: int) -> int:
+    # Prefer touching boxes with fewer existing sides:
+    # 0->1 is best, 1->2 is acceptable.
+    score = 0
+    for b in EDGE_BOXES[edge_idx]:
+        cnt = _box_count(mask, b)
+        if cnt == 0:
+            score += 6
+        elif cnt == 1:
+            score += 2
+        elif cnt == 2:
+            score -= 100  # shouldn't happen for safe move
+
+    # Border edges affect only one box, often slightly safer structurally.
+    if len(EDGE_BOXES[edge_idx]) == 1:
+        score += 1
+
+    new_mask = mask | (1 << edge_idx)
+
+    # A safe move should not give opponent a capture immediately,
+    # but heavily penalize just in case.
+    opp_caps = _capturing_moves(new_mask)
+    if opp_caps:
+        score -= 10000
+        return score
+
+    opp_safe_count = len(_safe_moves(new_mask))
+
+    # If opponent has no safe move, they may be forced to open a chain.
+    if opp_safe_count == 0:
+        legal_after = tuple(_legal_moves(new_mask))
+        if legal_after:
+            # Opponent will choose the sacrifice minimizing our next capture run.
+            forced_for_us = min(_max_capture_run(new_mask | (1 << f)) for f in legal_after)
+        else:
+            forced_for_us = 0
+        score += 100 + 20 * forced_for_us
+    else:
+        # Slight preference for reducing opponent's easy options.
+        score -= opp_safe_count
+
+    return score
+
+
+def _capture_move_score(mask: int, edge_idx: int) -> int:
+    k = _capture_count(mask, edge_idx)
+    new_mask = mask | (1 << edge_idx)
+
+    continuation = _max_capture_run(new_mask)
+    future_safe = len(_safe_moves(new_mask))
+
+    # Capturing is very valuable; continuation and future safe control are nice too.
+    score = 500 * k + 50 * continuation + 10 * future_safe
+
+    # If after this capture we will still have to open something nasty,
+    # estimate that pain.
+    if continuation == 0 and future_safe == 0:
+        legal_after = tuple(_legal_moves(new_mask))
+        if legal_after:
+            best_sacrifice = min(_max_capture_run(new_mask | (1 << f)) for f in legal_after)
+        else:
+            best_sacrifice = 0
+        score -= 100 * best_sacrifice
+
+    return score
+
+
+def _sacrifice_move_score(mask: int, edge_idx: int) -> int:
+    new_mask = mask | (1 << edge_idx)
+
+    # Estimate how many boxes opponent can immediately sweep.
+    opp_gain = _max_capture_run(new_mask)
+
+    # Prefer opening fewer near-complete boxes directly.
+    created = 0
+    for b in EDGE_BOXES[edge_idx]:
+        if _box_count(mask, b) == 2:
+            created += 1
+
+    score = -100 * opp_gain - 10 * created
+
+    if len(EDGE_BOXES[edge_idx]) == 1:
+        score += 1
+
+    return score
+
+
+# ============================================================
+# Input conversion and fallback
+# ============================================================
+
+def _arrays_to_mask(horizontal: np.ndarray, vertical: np.ndarray) -> int:
+    mask = 0
+    idx = 0
+
+    # Horizontal valid entries: (0..4, 0..3)
+    for r in range(5):
+        for c in range(4):
+            if int(horizontal[r, c]) != 0:
+                mask |= (1 << idx)
+            idx += 1
+
+    # Vertical valid entries: (0..3, 0..4)
+    for r in range(4):
+        for c in range(5):
+            if int(vertical[r, c]) != 0:
+                mask |= (1 << idx)
+            idx += 1
+
+    return mask
+
+
+def _fallback_move(horizontal: np.ndarray, vertical: np.ndarray) -> str:
+    # First, try the 40 real edges.
+    for r in range(5):
+        for c in range(4):
+            if int(horizontal[r, c]) == 0:
+                return f"{r},{c},H"
+
+    for r in range(4):
+        for c in range(5):
+            if int(vertical[r, c]) == 0:
+                return f"{r},{c},V"
+
+    # Emergency fallback in case the environment uses extra cells unexpectedly.
+    hr = min(5, horizontal.shape[0])
+    hc = min(5, horizontal.shape[1])
+    for r in range(hr):
+        for c in range(hc):
+            if int(horizontal[r, c]) == 0:
+                return f"{r},{c},H"
+
+    vr = min(5, vertical.shape[0])
+    vc = min(5, vertical.shape[1])
+    for r in range(vr):
+        for c in range(vc):
+            if int(vertical[r, c]) == 0:
+                return f"{r},{c},V"
+
+    # Should never happen unless called on a finished board.
+    return "0,0,H"
+
+
+# ============================================================
+# Public policy API
+# ============================================================
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    try:
+        mask = _arrays_to_mask(horizontal, vertical)
+        remaining = NUM_EDGES - mask.bit_count()
+
+        if remaining <= 0:
+            return _fallback_move(horizontal, vertical)
+
+        # Exact play in the endgame.
+        if remaining <= ENDGAME_THRESHOLD:
+            move = _choose_exact(mask)
+        else:
+            caps = _capturing_moves(mask)
+            if caps:
+                move = max(caps, key=lambda e: (_capture_move_score(mask, e), -e))
+            else:
+                safe = _safe_moves(mask)
+                if safe:
+                    move = max(safe, key=lambda e: (_safe_move_score(mask, e), -e))
+                else:
+                    legal = tuple(_legal_moves(mask))
+                    move = max(legal, key=lambda e: (_sacrifice_move_score(mask, e), -e))
+
+        if move is None:
+            return _fallback_move(horizontal, vertical)
+
+        r, c, d = EDGE_INFO[move]
+        return f"{r},{c},{d}"
+
+    except Exception:
+        return _fallback_move(horizontal, vertical)
+</code>

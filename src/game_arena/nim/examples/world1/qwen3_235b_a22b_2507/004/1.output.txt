@@ -1,0 +1,93 @@
+The strategy for this policy is based on the **misère version of Nim**, where the player who takes the last object **loses**. This is a well-known variant of Nim, and optimal play can be achieved by modifying the classical Nim-sum strategy.
+
+In normal Nim (last player wins), the optimal strategy is to make the XOR (nim-sum) of all pile sizes zero. However, in **misère Nim**, the strategy differs only when all non-zero piles are of size 1 — in that case, we want an **odd** number of piles with 1 to force the opponent to take the last one. But since our goal is to **avoid taking the last object**, we must take special care.
+
+However, for **4 piles**, and when **all piles are ≥ 2**, the optimal **misère strategy actually mirrors the normal play strategy**: make the nim-sum (XOR of all pile sizes) zero — **except** when the game is in a state where flipping to all-ones is imminent.
+
+But since the game starts far from that and we want a **simple, robust, and fast** policy that works perfectly in all cases, we use the following approach:
+
+### Key Insights:
+1. **Misère Nim with 4 piles**: When the number of piles is even, the misère game behaves almost identically to normal play **until the endgame**.
+2. We follow **normal Nim strategy (XOR = 0)** unless we are in a near-terminal state where we must deviate.
+3. When all non-zero piles are 1, we want to **leave an odd number of 1s** (so opponent is forced to take the last one).
+4. If only one pile has >1 stones, we may want to reduce it to 1 or 0 depending on context to control parity.
+
+Our implementation includes:
+- Compute the XOR of all piles.
+- If we can make XOR zero with a valid move, we do so — **unless** this would leave only one pile >1 and total non-zero piles odd, etc.
+- Special handling when all piles are ≤ 2: switch to **misère endgame database** or simplified logic.
+
+We use **perfect misère play** by checking known results: in multi-pile misère Nim, **play normal strategy until fewer than 3 piles have more than 1 object**.
+
+### Final Rule (Classic Misère Nim Strategy):
+> If no pile has more than 1 stone, take from any pile: the outcome depends on parity.
+> Else, if more than one pile has >1 stone, play normal strategy (make XOR zero).
+> Else (exactly one pile has >1), play to leave an **odd number of 1s**.
+
+We implement this logic carefully.
+
+<code>
+def policy(piles: list[int]) -> str:
+    import numpy as np
+
+    # Count piles with more than 1 stone
+    big_piles = [i for i in range(4) if piles[i] > 1]
+    ones = sum(1 for p in piles if p == 1)
+    zeros = sum(1 for p in piles if p == 0)
+    non_zero = 4 - zeros
+
+    # Case 1: Only one pile has >1 stone
+    if len(big_piles) == 1:
+        big_idx = big_piles[0]
+        # We want to control the parity of ones
+        # If current ones are even, reduce big pile to 1 (so total non-zero is odd)
+        # If ones is odd, reduce big pile to 0 (so total non-zero is even)
+        if ones % 2 == 0:
+            # Reduce big pile to 1 -> total ones becomes odd
+            take = piles[big_idx] - 1
+            if take >= 1:
+                return f"{big_idx},{take}"
+            else:
+                # Already 1? Shouldn't happen.
+                # Fall through
+                pass
+        else:
+            # Reduce big pile to 0
+            take = piles[big_idx]
+            if take >= 1:
+                return f"{big_idx},{take}"
+
+    # Case 2: No pile has more than 1 stone (only 0s and 1s)
+    if len(big_piles) == 0:
+        # Take from any pile with 1
+        for i in range(4):
+            if piles[i] == 1:
+                return f"{i},1"
+
+    # Case 3: Two or more piles have >1 stone -> play normal Nim
+    xor = 0
+    for p in piles:
+        xor ^= p
+
+    if xor == 0:
+        # Already losing? Then make a small move to prolong game
+        # Find first non-zero pile and take 1
+        for i in range(4):
+            if piles[i] > 0:
+                return f"{i},1"
+    else:
+        # Try to find a move that makes XOR = 0
+        for i in range(4):
+            if piles[i] == 0:
+                continue
+            # What would the pile be after removal?
+            target = xor ^ piles[i]  # desired value after move
+            take = piles[i] - target
+            if 1 <= take <= piles[i]:
+                return f"{i},{take}"
+
+    # Fallback: should not happen, but pick a valid move
+    for i in range(4):
+        if piles[i] > 0:
+            return f"{i},1"
+</code>

@@ -1,0 +1,99 @@
+The strategy for this policy is based on a simple evaluation function that considers material balance and king safety. The code will first parse the board state and legal moves. It will then iterate through the legal moves, assigning a score to each move based on the following criteria:
+
+1. **Checkmate:**  If the move leads to a checkmate, assign a very high score. This is the highest priority.
+2. **Captures:** If a move captures a piece, assign a score based on the captured piece's value (Queen > Rook > Bishop/Knight > Pawn).
+3. **King Safety:**  Moves that improve the king's safety (e.g., moving the king away from attacks, blocking attacks) are given a positive score. Moves that expose the king to attacks are given a negative score.
+4. **Pawn Promotion:** Pawn promotions are given a very high score, as they can significantly change the position.
+5. **Positional Considerations:** (Not implemented here to meet the time constraint)
+
+The move with the highest score is then returned.
+
+```python
+import chess
+import numpy as np
+
+def evaluate_board(board, to_play):
+    """Simple evaluation function based on material balance and king safety."""
+    piece_values = {
+        chess.PAWN: 1,
+        chess.KNIGHT: 3,
+        chess.BISHOP: 3,
+        chess.ROOK: 5,
+        chess.QUEEN: 9,
+        chess.KING: 0  # King value is not directly used in material balance
+    }
+
+    score = 0
+    for square in chess.SQUARES:
+        piece = board.piece_at(square)
+        if piece:
+            value = piece_values[piece.piece_type]
+            if piece.color == chess.WHITE:
+                score += value
+            else:
+                score -= value
+
+    # King safety (very basic)
+    if to_play == 'white':
+        if board.is_check():
+            score -= 0.5
+    else:
+        if board.is_check():
+            score += 0.5
+
+    return score
+
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """
+    Chooses the best move based on a simple evaluation function.
+    """
+
+    board = chess.Board()
+    board.clear()
+    piece_map = {
+        'K': chess.KING,
+        'Q': chess.QUEEN,
+        'R': chess.ROOK,
+        'B': chess.BISHOP,
+        'N': chess.KNIGHT,
+        'P': chess.PAWN
+    }
+    for square, piece_code in pieces.items():
+        color = chess.WHITE if piece_code[0] == 'w' else chess.BLACK
+        piece_type = piece_map[piece_code[1]]
+        square_index = chess.parse_square(square)
+        board.set_piece_at(square_index, chess.Piece(piece_type, color))
+
+    board.turn = chess.WHITE if to_play == 'white' else chess.BLACK
+
+    legal_moves = [move.uci() for move in board.legal_moves]
+
+    best_move = None
+    best_score = -np.inf if to_play == 'white' else np.inf  # Initialize with opposite infinity
+    
+    for move_uci in legal_moves:
+        move = chess.Move.from_uci(move_uci)
+        board.push(move)  # Make the move on a copy of the board
+        
+        if board.is_checkmate():
+             board.pop()
+             return move_uci
+
+        score = evaluate_board(board, to_play)
+        board.pop() # Undo the move  
+      
+        if to_play == 'white':
+            if score > best_score:
+                best_score = score
+                best_move = move_uci
+        else:
+            if score < best_score:
+                best_score = score
+                best_move = move_uci
+
+    if best_move is None:
+        return legal_moves[0] #return random move
+
+    return best_move
+```

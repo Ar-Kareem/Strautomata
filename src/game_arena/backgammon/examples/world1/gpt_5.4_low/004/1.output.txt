@@ -1,0 +1,326 @@
+The strategy for this policy is:
+
+1. Generate only legal moves by simulating Backgammon rules directly:
+   - enter from bar first,
+   - forbid landing on points with 2+ opposing checkers,
+   - handle hits,
+   - handle bearing off including oversized bear-offs,
+   - respect die order and pass rules.
+
+2. Enumerate legal action candidates for both die orders (`H` and `L`) when two dice are present.
+
+3. Enforce mandatory-play rules:
+   - if both dice can be played, only consider 2-move actions,
+   - otherwise if only one die can be played, prefer actions using the higher die when possible.
+
+4. Score resulting positions with a practical heuristic:
+   - reward bearing off and hitting,
+   - penalize own bar checkers and pip count,
+   - reward blocking points, especially in the home board,
+   - penalize blots,
+   - reward primes and racing advantage.
+
+5. Always return a syntactically valid legal move string, with a conservative fallback if needed.
+
+<code>
+from typing import List, Tuple, Dict
+
+def policy(state: dict) -> str:
+    my_pts = list(state["my_pts"])
+    opp_pts = list(state["opp_pts"])
+    my_bar = int(state["my_bar"])
+    opp_bar = int(state["opp_bar"])
+    my_off = int(state["my_off"])
+    opp_off = int(state["opp_off"])
+    dice = list(state["dice"])
+
+    base_state = {
+        "my_pts": my_pts,
+        "opp_pts": opp_pts,
+        "my_bar": my_bar,
+        "opp_bar": opp_bar,
+        "my_off": my_off,
+        "opp_off": opp_off,
+    }
+
+    def clone_state(s: Dict) -> Dict:
+        return {
+            "my_pts": s["my_pts"][:],
+            "opp_pts": s["opp_pts"][:],
+            "my_bar": s["my_bar"],
+            "opp_bar": s["opp_bar"],
+            "my_off": s["my_off"],
+            "opp_off": s["opp_off"],
+        }
+
+    def all_in_home(s: Dict) -> bool:
+        if s["my_bar"] > 0:
+            return False
+        # All remaining on points 0..5
+        for i in range(6, 24):
+            if s["my_pts"][i] > 0:
+                return False
+        return True
+
+    def can_bear_off_from(s: Dict, src: int, die: int) -> bool:
+        if not all_in_home(s):
+            return False
+        dest = src - die
+        if dest == -1:
+            return True
+        if dest < -1:
+            # Oversized bear-off allowed only from highest occupied point
+            for j in range(src + 1, 6):
+                if s["my_pts"][j] > 0:
+                    return False
+            return True
+        return False
+
+    def apply_move(s: Dict, src_token: str, die: int):
+        ns = clone_state(s)
+
+        if src_token == "B":
+            if ns["my_bar"] <= 0:
+                return None
+            dest = 24 - die
+            if dest < 0 or dest > 23:
+                return None
+            if ns["opp_pts"][dest] >= 2:
+                return None
+            ns["my_bar"] -= 1
+            if ns["opp_pts"][dest] == 1:
+                ns["opp_pts"][dest] = 0
+                ns["opp_bar"] += 1
+            ns["my_pts"][dest] += 1
+            return ns
+
+        if not src_token.startswith("A"):
+            return None
+        try:
+            src = int(src_token[1:])
+        except:
+            return None
+        if src < 0 or src > 23:
+            return None
+        if ns["my_pts"][src] <= 0:
+            return None
+        if ns["my_bar"] > 0:
+            return None
+
+        dest = src - die
+        ns["my_pts"][src] -= 1
+
+        if dest >= 0:
+            if ns["opp_pts"][dest] >= 2:
+                return None
+            if ns["opp_pts"][dest] == 1:
+                ns["opp_pts"][dest] = 0
+                ns["opp_bar"] += 1
+            ns["my_pts"][dest] += 1
+            return ns
+        else:
+            if can_bear_off_from(s, src, die):
+                ns["my_off"] += 1
+                return ns
+            return None
+
+    def single_die_moves(s: Dict, die: int) -> List[Tuple[str, Dict]]:
+        moves = []
+        if die < 1 or die > 6:
+            return moves
+
+        if s["my_bar"] > 0:
+            ns = apply_move(s, "B", die)
+            if ns is not None:
+                moves.append(("B", ns))
+            return moves
+
+        # Iterate from farthest to nearest; helps natural play ordering
+        for src in range(23, -1, -1):
+            if s["my_pts"][src] <= 0:
+                continue
+            tok = f"A{src}"
+            ns = apply_move(s, tok, die)
+            if ns is not None:
+                moves.append((tok, ns))
+        return moves
+
+    def gen_for_order(s: Dict, dice_seq: List[int], idx: int = 0):
+        if idx >= len(dice_seq):
+            return [([], s)]
+        die = dice_seq[idx]
+        moves = single_die_moves(s, die)
+        out = []
+        if moves:
+            for tok, ns in moves:
+                for toks, fs in gen_for_order(ns, dice_seq, idx + 1):
+                    out.append(([tok] + toks, fs))
+        else:
+            for toks, fs in gen_for_order(s, dice_seq, idx + 1):
+                out.append((["P"] + toks, fs))
+        return out
+
+    def pip_count_me(s: Dict) -> int:
+        total = 25 * s["my_bar"]
+        for i, n in enumerate(s["my_pts"]):
+            total += (i + 1) * n
+        return total
+
+    def pip_count_opp(s: Dict) -> int:
+        total = 25 * s["opp_bar"]
+        for i, n in enumerate(s["opp_pts"]):
+            total += (24 - i) * n
+        return total
+
+    def longest_prime(pts: List[int]) -> int:
+        best = cur = 0
+        for x in pts:
+            if x >= 2:
+                cur += 1
+                if cur > best:
+                    best = cur
+            else:
+                cur = 0
+        return best
+
+    def blot_count(pts: List[int]) -> int:
+        return sum(1 for x in pts if x == 1)
+
+    def eval_state(s: Dict) -> float:
+        my_pip = pip_count_me(s)
+        opp_pip = pip_count_opp(s)
+
+        made_home = sum(1 for i in range(6) if s["my_pts"][i] >= 2)
+        made_outer = sum(1 for i in range(6, 24) if s["my_pts"][i] >= 2)
+        blots_home = sum(1 for i in range(6) if s["my_pts"][i] == 1)
+        blots_outer = sum(1 for i in range(6, 24) if s["my_pts"][i] == 1)
+        anchors = sum(1 for i in range(18, 24) if s["my_pts"][i] >= 2)
+
+        prime_bonus = longest_prime(s["my_pts"]) * 8
+        opp_prime_pen = longest_prime(s["opp_pts"]) * 6
+
+        score = 0.0
+        score += 140.0 * s["my_off"]
+        score -= 140.0 * s["opp_off"]
+
+        score += 24.0 * s["opp_bar"]
+        score -= 30.0 * s["my_bar"]
+
+        score += 1.1 * (opp_pip - my_pip)
+
+        score += 9.0 * made_home
+        score += 4.0 * made_outer
+        score += 3.0 * anchors
+
+        score -= 10.0 * blots_home
+        score -= 5.0 * blots_outer
+
+        score += prime_bonus
+        score -= opp_prime_pen
+
+        # Small preference for stronger home board when opponent has men on bar
+        score += 2.0 * s["opp_bar"] * made_home
+
+        return score
+
+    def format_action(order_char: str, toks: List[str]) -> str:
+        tt = toks[:]
+        while len(tt) < 2:
+            tt.append("P")
+        return f"{order_char}:{tt[0]},{tt[1]}"
+
+    # No dice / no move phase
+    if len(dice) == 0:
+        return "H:P,P"
+
+    candidates = []
+
+    if len(dice) == 1:
+        d = dice[0]
+        seqs = gen_for_order(base_state, [d])
+        for toks, fs in seqs:
+            candidates.append({
+                "order": "H",
+                "dice_seq": [d],
+                "toks": toks,
+                "state": fs,
+                "played": sum(1 for t in toks if t != "P"),
+                "used_dice": [d] if toks and toks[0] != "P" else [],
+            })
+    else:
+        d1, d2 = dice[0], dice[1]
+        hi = max(d1, d2)
+        lo = min(d1, d2)
+
+        # H order = higher die first
+        for toks, fs in gen_for_order(base_state, [hi, lo]):
+            used = []
+            if len(toks) > 0 and toks[0] != "P":
+                used.append(hi)
+            if len(toks) > 1 and toks[1] != "P":
+                used.append(lo)
+            candidates.append({
+                "order": "H",
+                "dice_seq": [hi, lo],
+                "toks": toks,
+                "state": fs,
+                "played": sum(1 for t in toks if t != "P"),
+                "used_dice": used,
+            })
+
+        # L order = lower die first
+        for toks, fs in gen_for_order(base_state, [lo, hi]):
+            used = []
+            if len(toks) > 0 and toks[0] != "P":
+                used.append(lo)
+            if len(toks) > 1 and toks[1] != "P":
+                used.append(hi)
+            candidates.append({
+                "order": "L",
+                "dice_seq": [lo, hi],
+                "toks": toks,
+                "state": fs,
+                "played": sum(1 for t in toks if t != "P"),
+                "used_dice": used,
+            })
+
+        # Enforce mandatory maximum number of dice played
+        if candidates:
+            max_played = max(c["played"] for c in candidates)
+            candidates = [c for c in candidates if c["played"] == max_played]
+
+            # If only one die can be played, must use the higher die when possible
+            if max_played == 1 and hi != lo:
+                using_hi = [c for c in candidates if hi in c["used_dice"]]
+                if using_hi:
+                    candidates = using_hi
+
+    # If generation somehow failed, return full pass
+    if not candidates:
+        return "H:P,P"
+
+    # Pick best by heuristic
+    best = None
+    best_key = None
+
+    for c in candidates:
+        score = eval_state(c["state"])
+
+        # Tiebreakers:
+        # 1) prefer more borne off, more opponent on bar
+        # 2) prefer fewer blots
+        s = c["state"]
+        tiebreak = (
+            s["my_off"],
+            s["opp_bar"],
+            -blot_count(s["my_pts"]),
+            -pip_count_me(s),
+        )
+        key = (score, ) + tiebreak
+
+        if best is None or key > best_key:
+            best = c
+            best_key = key
+
+    return format_action(best["order"], best["toks"])
+</code>

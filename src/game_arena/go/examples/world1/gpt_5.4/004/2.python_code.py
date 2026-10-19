@@ -1,0 +1,248 @@
+
+from collections import deque
+
+BOARD_SIZE = 19
+DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+
+def in_bounds(r, c):
+    return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc):
+            yield nr, nc
+
+
+def build_board(me, opponent):
+    board = {}
+    for p in me:
+        board[p] = 1
+    for p in opponent:
+        board[p] = 2
+    return board
+
+
+def get_group_and_liberties(board, start):
+    color = board.get(start, 0)
+    if color == 0:
+        return set(), set()
+    group = set()
+    liberties = set()
+    q = [start]
+    group.add(start)
+    i = 0
+    while i < len(q):
+        r, c = q[i]
+        i += 1
+        for nr, nc in neighbors(r, c):
+            v = board.get((nr, nc), 0)
+            if v == 0:
+                liberties.add((nr, nc))
+            elif v == color and (nr, nc) not in group:
+                group.add((nr, nc))
+                q.append((nr, nc))
+    return group, liberties
+
+
+def simulate_move(board, move, color):
+    if move in board:
+        return None
+    new_board = dict(board)
+    new_board[move] = color
+    opp = 3 - color
+
+    captured = 0
+    checked = set()
+    for nb in neighbors(*move):
+        if new_board.get(nb, 0) == opp and nb not in checked:
+            grp, libs = get_group_and_liberties(new_board, nb)
+            checked |= grp
+            if len(libs) == 0:
+                captured += len(grp)
+                for s in grp:
+                    del new_board[s]
+
+    my_grp, my_libs = get_group_and_liberties(new_board, move)
+    if len(my_libs) == 0:
+        return None
+    return new_board, captured, my_grp, my_libs
+
+
+def is_legal(board, move, color):
+    return simulate_move(board, move, color) is not None
+
+
+def collect_group_info(board, stones):
+    seen = set()
+    infos = []
+    for s in stones:
+        if s in seen or s not in board:
+            continue
+        grp, libs = get_group_and_liberties(board, s)
+        seen |= grp
+        infos.append((grp, libs))
+    return infos
+
+
+def opening_points():
+    pts = [
+        (10, 10),
+        (4, 4), (4, 10), (4, 16),
+        (10, 4), (10, 16),
+        (16, 4), (16, 10), (16, 16),
+        (4, 7), (4, 13), (7, 4), (7, 16),
+        (13, 4), (13, 16), (16, 7), (16, 13),
+    ]
+    return pts
+
+
+def candidate_moves(board, me, opponent):
+    occupied = set(board.keys())
+    cand = set()
+
+    stones = me + opponent
+    if not stones:
+        return opening_points()
+
+    for r, c in stones:
+        for dr in range(-2, 3):
+            for dc in range(-2, 3):
+                if abs(dr) + abs(dc) > 3:
+                    continue
+                nr, nc = r + dr, c + dc
+                if in_bounds(nr, nc) and (nr, nc) not in occupied:
+                    cand.add((nr, nc))
+
+    for p in opening_points():
+        if p not in occupied:
+            cand.add(p)
+
+    for r in range(8, 13):
+        for c in range(8, 13):
+            if (r, c) not in occupied:
+                cand.add((r, c))
+
+    return list(cand)
+
+
+def score_move(board, move, me, opponent, my_infos, opp_infos):
+    sim = simulate_move(board, move, 1)
+    if sim is None:
+        return -10**18
+    new_board, captured, my_grp, my_libs = sim
+
+    score = 0.0
+
+    score += captured * 1000.0
+
+    if len(my_libs) == 1:
+        score -= 500.0
+    elif len(my_libs) == 2:
+        score -= 80.0
+    else:
+        score += min(len(my_libs), 6) * 8.0
+
+    threatened_saved = 0
+    for grp, libs in my_infos:
+        if len(libs) == 1 and move in libs:
+            threatened_saved += len(grp)
+    score += threatened_saved * 120.0
+
+    attack_value = 0
+    checked = set()
+    for nr, nc in neighbors(*move):
+        if new_board.get((nr, nc), 0) == 2 and (nr, nc) not in checked:
+            grp, libs = get_group_and_liberties(new_board, (nr, nc))
+            checked |= grp
+            if len(libs) == 1:
+                attack_value += len(grp) * 90.0
+            elif len(libs) == 2:
+                attack_value += len(grp) * 18.0
+    score += attack_value
+
+    friendly_adj = 0
+    enemy_adj = 0
+    for nb in neighbors(*move):
+        v = board.get(nb, 0)
+        if v == 1:
+            friendly_adj += 1
+        elif v == 2:
+            enemy_adj += 1
+    score += friendly_adj * 12.0
+    score += enemy_adj * 8.0
+
+    r, c = move
+    dist_center = abs(r - 10) + abs(c - 10)
+    score += max(0, 10 - dist_center) * 1.5
+
+    if r in (1, 19) or c in (1, 19):
+        score -= 6.0
+    if r in (2, 18) or c in (2, 18):
+        score -= 2.0
+
+    local_empty = 0
+    for nb in neighbors(r, c):
+        if board.get(nb, 0) == 0:
+            local_empty += 1
+    score += local_empty * 2.0
+
+    return score
+
+
+def policy(me, opponent):
+    board = build_board(me, opponent)
+
+    my_infos = collect_group_info(board, me)
+    opp_infos = collect_group_info(board, opponent)
+
+    # 1. Immediate captures of opponent groups in atari.
+    capture_moves = []
+    for grp, libs in opp_infos:
+        if len(libs) == 1:
+            mv = next(iter(libs))
+            sim = simulate_move(board, mv, 1)
+            if sim is not None:
+                capture_moves.append((len(grp), mv))
+    if capture_moves:
+        capture_moves.sort(reverse=True)
+        return capture_moves[0][1]
+
+    # 2. Save own groups in atari.
+    save_moves = []
+    for grp, libs in my_infos:
+        if len(libs) == 1:
+            mv = next(iter(libs))
+            sim = simulate_move(board, mv, 1)
+            if sim is not None:
+                save_moves.append((len(grp), mv))
+    if save_moves:
+        save_moves.sort(reverse=True)
+        return save_moves[0][1]
+
+    # 3. Score tactical and strategic candidates.
+    cands = candidate_moves(board, me, opponent)
+    best_move = None
+    best_score = -10**18
+
+    for mv in cands:
+        sc = score_move(board, mv, me, opponent, my_infos, opp_infos)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+
+    if best_move is not None and is_legal(board, best_move, 1):
+        return best_move
+
+    # 4. Fallback: first legal move anywhere.
+    occupied = set(board.keys())
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            mv = (r, c)
+            if mv not in occupied and is_legal(board, mv, 1):
+                return mv
+
+    # 5. No legal move found.
+    return (0, 0)

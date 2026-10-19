@@ -1,0 +1,183 @@
+**Strategy Overview**
+
+The board is a standard 3 × 3 Tic‑Tac‑Toe.  
+A move is legal iff the chosen cell is currently empty (`b`).  
+The game ends as soon as one player has three marks in a row, column or diagonal.
+
+The optimal way to play Tic‑Tac‑Toe is perfect‑play search:
+
+1. **Parse the state** – build a dictionary `board[(row,col)] = mark` from the
+   `cell` propositions.  The current player is given by the `control` fact
+   (or by the `role` argument if the fact is missing).
+
+2. **Immediate win / block** –  
+   * If we can mark a cell and finish a line, do it.  
+   * If the opponent can win on their next move, block that cell.  
+
+   These two cheap checks cover most forced moves.
+
+3. **Full minimax search** – for all remaining empty cells simulate the move,
+   recursively explore the game tree, and pick the move that maximises the
+   outcome for the current player (a win = +1, a loss = ‑1, a draw = 0).  
+   The opponent’s turn is treated as a minimising player, so the same routine
+   works for both `x` and `o`.  The board is tiny (max 9 cells), so a simple
+   depth‑first search without memoisation is more than fast enough.
+
+4. **Return the move** – output the chosen cell as `mark(row,col)` in the
+   required Stanford syntax.
+
+Because the search explores every possible continuation, the policy never
+loses – it either wins or forces a draw.
+
+<code>
+import sys
+from typing import List, Tuple, Optional
+
+# ----------------------------------------------------------------------
+# Helper functions
+# ----------------------------------------------------------------------
+def opponent(role: str) -> str:
+    """Return the other player ('x' <-> 'o')."""
+    return 'o' if role == 'x' else 'x'
+
+# All rows, columns and diagonals that constitute a win
+WIN_LINES = [
+    [(1,1),(1,2),(1,3)],  # top row
+    [(2,1),(2,2),(2,3)],  # middle row
+    [(3,1),(3,2),(3,3)],  # bottom row
+    [(1,1),(2,1),(3,1)],  # left column
+    [(1,2),(2,2),(3,2)],  # middle column
+    [(1,3),(2,3),(3,3)],  # right column
+    [(1,1),(2,2),(3,3)],  # main diagonal
+    [(1,3),(2,2),(3,1)],  # anti‑diagonal
+]
+
+def get_winner(board: dict) -> Optional[str]:
+    """
+    Return 'x' or 'o' if that player has three in a row.
+    Return 'draw' if the board is full and no player has won.
+    Return None if the game is not finished.
+    """
+    for line in WIN_LINES:
+        marks = [board.get(cell, 'b') for cell in line]
+        if marks[0] != 'b' and marks[0] == marks[1] == marks[2]:
+            return marks[0]          # winner found
+    # No winner – check for a full board (draw)
+    if all(board.get((r, c), 'b') != 'b' for r in range(1, 4) for c in range(1, 4)):
+        return 'draw'
+    return None
+
+def empty_cells(board: dict) -> List[Tuple[int, int]]:
+    """Return list of (row, col) coordinates that are still empty."""
+    return [(r, c) for r in range(1, 4) for c in range(1, 4) if board.get((r, c), 'b') == 'b']
+
+def minimax(board: dict, current_role: str, target_role: str) -> int:
+    """
+    Recursive minimax from the perspective of target_role.
+    Returns +1 for a target_role win, -1 for a loss, 0 for a draw.
+    """
+    winner = get_winner(board)
+    if winner == target_role:
+        return 1
+    if winner == opponent(target_role):
+        return -1
+    if winner == 'draw':
+        return 0
+
+    empties = empty_cells(board)
+    # Maximising node: it's target_role's turn
+    if current_role == target_role:
+        best = -2  # smaller than any possible score
+        for r, c in empties:
+            board[(r, c)] = current_role
+            score = minimax(board, opponent(current_role), target_role)
+            best = max(best, score)
+            del board[(r, c)]   # undo move
+            if best == 1:      # prune – cannot get better
+                return 1
+        return best
+    else:
+        # Minimising node: opponent's turn
+        best = 2   # larger than any possible score
+        for r, c in empties:
+            board[(r, c)] = current_role
+            score = minimax(board, opponent(current_role), target_role)
+            best = min(best, score)
+            del board[(r, c)]
+            if best == -1:    # prune – cannot get worse for opponent
+                return -1
+        return best
+
+# ----------------------------------------------------------------------
+# Main policy function
+# ----------------------------------------------------------------------
+def policy(state: List[List[object]], role: str) -> str:
+    """
+    Given the current board state and the role that must move,
+    return a legal move in Stanford syntax, e.g. 'mark(2,3)'.
+    """
+    # ------------------------------------------------------------------
+    # 1. Parse the state into a mutable board dictionary
+    # ------------------------------------------------------------------
+    board = {}
+    turn = role                     # default: it's the given role's turn
+    for prop in state:
+        if prop[0] == 'cell':
+            row = int(prop[1])
+            col = int(prop[2])
+            mark = prop[3]
+            board[(row, col)] = mark
+        elif prop[0] == 'control':
+            turn = prop[1]          # explicit turn information
+        # other proposition types are ignored
+
+    # ------------------------------------------------------------------
+    # 2. Collect legal moves (empty cells)
+    # ------------------------------------------------------------------
+    empties = empty_cells(board)
+    if not empties:                 # No legal moves – shouldn't happen in a real call
+        # Return a dummy but syntactically correct move (won't be used)
+        return "mark(1,1)"
+
+    # ------------------------------------------------------------------
+    # 3. Immediate winning move (take it if available)
+    # ------------------------------------------------------------------
+    for r, c in empties:
+        board[(r, c)] = role
+        if get_winner(board) == role:
+            del board[(r, c)]
+            return f"mark({r},{c})"
+        del board[(r, c)]
+
+    # ------------------------------------------------------------------
+    # 4. Block opponent's immediate winning move
+    # ------------------------------------------------------------------
+    opp = opponent(role)
+    for r, c in empties:
+        board[(r, c)] = opp
+        if get_winner(board) == opp:
+            del board[(r, c)]
+            return f"mark({r},{c})"
+        del board[(r, c)]
+
+    # ------------------------------------------------------------------
+    # 5. Full minimax search – evaluate every possible move
+    # ------------------------------------------------------------------
+    best_move = None
+    best_score = -2                 # lower than the worst possible outcome
+    for r, c in empties:
+        board[(r, c)] = role
+        score = minimax(board, opponent(role), role)   # after our move, opponent acts first
+        del board[(r, c)]
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            if best_score == 1:    # early exit: we can force a win
+                break
+
+    # As a fallback, pick the first empty cell (should never be needed)
+    if best_move is None:
+        best_move = empties[0]
+
+    return f"mark({best_move[0]},{best_move[1]})"
+</code>

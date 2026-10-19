@@ -1,0 +1,208 @@
+The strategy for this policy is a practical, rule-based approach that prioritizes safety and material gains. It first checks if the current player is in check. If in check, it seeks moves that resolve the check through captures (especially queen/rook captures), blocking (for sliding attacks), or king moves as last resorts. In non-check positions, it favors captures of valuable pieces (queen/rook) and otherwise selects centralizing moves for pawns or piece development. The implementation uses lightweight board analysis to detect check and compute move scores without complex search.
+
+<code>
+import numpy as np
+
+def is_knight_attack(attacker, king_sq):
+    """Check if a knight attacks the king_sq."""
+    file_diff = abs(ord(attacker[0]) - ord(king_sq[0]))
+    rank_diff = abs(int(attacker[1]) - int(king_sq[1]))
+    return file_diff == 2 and rank_diff == 1
+
+def same_file(a, b):
+    return a[0] == b[0]
+
+def same_rank(a, b):
+    return int(a[1]) == int(b[1])
+
+def diagonal(a, b):
+    f1, r1 = a[0], int(a[1])
+    f2, r2 = b[0], int(b[1])
+    return abs(ord(f1) - ord(f2)) == abs(r1 - r2) and abs(ord(f1) - ord(f2)) > 0
+
+def get_path_rook(attacker, king_sq):
+    """Get path between rook-like piece and king_sq (rook/bishop)."""
+    f1, r1 = attacker[0], int(attacker[1])
+    f2, r2 = king_sq[0], int(king_sq[1])
+    path = []
+    if same_file(attacker, king_sq):
+        ranks = range(min(r1, r2)+1, max(r1, r2))
+        path = [f1+str(rank) for rank in ranks]
+    elif same_rank(attacker, king_sq):
+        files = range(min(ord(f1), ord(f2))+1, max(ord(f1), ord(f2)))
+        path = [chr(f)+str(r1) for f in files]
+    return path
+
+def get_path_bishop(attacker, king_sq):
+    """Get diagonal path for bishop."""
+    f1, r1 = attacker[0], int(attacker[1])
+    f2, r2 = king_sq[0], int(king_sq[1])
+    file_diff = abs(ord(f1) - ord(f2))
+    rank_diff = abs(r1 - r2)
+    if file_diff != rank_diff:
+        return None
+    step_file = 1 if f2 > f1 else -1
+    step_rank = 1 if r2 > r1 else -1
+    path = []
+    for i in range(1, file_diff):
+        f = chr(ord(f1) + step_file * i)
+        r = str(r1 + step_rank * i)
+        path.append(f+r)
+    return path
+
+def is_path_clear(path):
+    """Check if all squares in path are empty."""
+    for square in path:
+        if square in pieces:
+            return False
+    return True
+
+def get_piece_value(piece_type):
+    """Return material value of piece."""
+    values = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    return values.get(piece_type, 0)
+
+def policy(pieces, to_play):
+    our_color = to_play
+    opponent_color = 'w' if to_play == 'black' else 'b'
+    
+    # Find our king
+    our_king = None
+    for square, piece in pieces.items():
+        if piece[0] == our_color and piece[1] == 'K':
+            our_king = square
+            break
+    if our_king is None:
+        return ""  # Should not happen
+        
+    # Check if in check
+    attacks = []
+    for square, piece in pieces.items():
+        if piece[0] != our_color:
+            if piece[1] == 'N':
+                if is_knight_attack(square, our_king):
+                    attacks.append(square)
+            elif piece[1] == 'P':
+                # Pawn attacks
+                f = ord(square[0])
+                r = int(square[1])
+                if our_color == 'white':
+                    targets = []
+                    if f-1 >= ord('a') and r-1 >= 1:
+                        targets.append(chr(f-1)+str(r-1))
+                    if f+1 <= ord('h') and r-1 >= 1:
+                        targets.append(chr(f+1)+str(r-1))
+                else:
+                    if f-1 >= ord('a') and r+1 <= 8:
+                        targets.append(chr(f-1)+str(r+1))
+                    if f+1 <= ord('h') and r+1 <= 8:
+                        targets.append(chr(f+1)+str(r+1))
+                for target in targets:
+                    if target == our_king and target in pieces and pieces[target][0] == opponent_color:
+                        attacks.append(square)
+            else:  # Sliding: Q, R, B
+                if same_file(square, our_king) or same_rank(square, our_king) or diagonal(square, our_king):
+                    piece_type = piece[1]
+                    if piece_type == 'R' or piece_type == 'Q':
+                        path = get_path_rook(square, our_king)
+                        if path and is_path_clear(path):
+                            attacks.append(square)
+                    elif piece_type == 'B' or piece_type == 'Q':
+                        path = get_path_bishop(square, our_king)
+                        if path and is_path_clear(path):
+                            attacks.append(square)
+    
+    in_check = len(attacks) > 0
+    
+    # Helper: categorize moves
+    def capture_move(move):
+        start, end = move[0:2], move[2:4]
+        if end in pieces and pieces[end][0] != our_color:
+            captured = pieces[end]
+            return True, captured
+        return False, None
+    
+    # Sort legal moves by capture material value (descending)
+    def sort_captures(legal_moves):
+        scores = []
+        for move in legal_moves:
+            cap, piece = capture_move(move)
+            if cap:
+                val = get_piece_value(piece[1])
+                scores.append((val, move))
+        if scores:
+            scores.sort(reverse=True)
+            return [m for v,m in scores]
+        return []
+    
+    # Check for capture moves (queen/rook priority)
+    capture_moves = sort_captures(legal_moves)
+    if capture_moves:
+        return capture_moves[0]
+    
+    # If in check, handle non-captures
+    if in_check:
+        non_capture_moves = [m for m in legal_moves if not capture_move(m)[0]]
+        if not non_capture_moves:
+            return ""  # No legal moves? Shouldn't happen
+            
+        # Get current attack paths (sliding pieces only)
+        attack_paths = []
+        for attacker in attacks:
+            piece = pieces[attacker]
+            if piece[1] in ('R','B','Q'):
+                path = []
+                if same_file(attacker, our_king) or same_rank(attacker, our_king):
+                    path = get_path_rook(attacker, our_king)
+                else:  # diagonal
+                    path = get_path_bishop(attacker, our_king)
+                if path and is_path_clear(path):
+                    attack_paths.append((attacker, path))
+        
+        # Prefer moves blocking attacks (non-king moves)
+        def move_blocks(start, end, paths):
+            for (attacker, path) in paths:
+                if start in path or end in path:
+                    return True
+            return False
+        
+        blocking_moves = []
+        king_moves = []
+        for move in non_capture_moves:
+            start, end = move[0:2], move[2:4]
+            if move_blocks(start, end, attack_paths):
+                blocking_moves.append(move)
+            elif start == our_king:
+                king_moves.append(move)
+        
+        if blocking_moves:
+            return blocking_moves[0]
+        if king_moves:
+            return king_moves[0]
+        return non_capture_moves[0]  # Fallback
+    
+    # Non-check: prioritize central moves for pawns/promotions
+    central = ['c3','c4','c5','c6','d3','d4','d5','d6','e3','e4','e5','e6']
+    best_score = -1000
+    best_move = None
+    
+    def move_score(move):
+        start, end = move[0:2], move[2:4]
+        # Captures already handled
+        # For non-captures:
+        score = 0
+        if end in central:
+            score += 5
+        # Prefer king moves if beneficial
+        if start == our_king:
+            score += 20
+        return score
+    
+    for move in legal_moves:
+        score = move_score(move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move if best_move else legal_moves[0]
+</code>

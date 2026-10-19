@@ -1,0 +1,269 @@
+
+import numpy as np
+
+# Bitboard constants
+FULL_MASK = 0xFFFFFFFFFFFFFFFF
+WEIGHTS = [
+    120, -20, 20, 5, 5, 20, -20, 120,
+    -20, -40, -5, -5, -5, -5, -40, -20,
+    20, -5, 15, 3, 3, 15, -5, 20,
+    5, -5, 3, 3, 3, 3, -5, 5,
+    5, -5, 3, 3, 3, 3, -5, 5,
+    20, -5, 15, 3, 3, 15, -5, 20,
+    -20, -40, -5, -5, -5, -5, -40, -20,
+    120, -20, 20, 5, 5, 20, -20, 120
+]
+
+# Direction shifts and masks for bitboard operations
+# Order: right, left, up, down, up-right, up-left, down-right, down-left
+SHIFTS = [1, -1, 8, -8, 9, 7, -7, -9]
+MASKS = [
+    0x7F7F7F7F7F7F7F7F,  # right: clear col 7 (h-file)
+    0xFEFEFEFEFEFEFEFE,  # left: clear col 0 (a-file)
+    0x00FFFFFFFFFFFFFF,  # up: clear row 7 (rank 8)
+    0xFFFFFFFFFFFFFF00,  # down: clear row 0 (rank 1)
+    0x007F7F7F7F7F7F7F,  # up-right: clear col 7 and row 7
+    0x00FEFEFEFEFEFEFE,  # up-left: clear col 0 and row 7
+    0x7F7F7F7F7F7F7F00,  # down-right: clear col 7 and row 0
+    0xFEFEFEFEFEFEFE00   # down-left: clear col 0 and row 0
+]
+
+CORNERS = [1 << 0, 1 << 7, 1 << 56, 1 << 63]
+
+def get_moves_bb(p, o):
+    """Return bitboard of legal moves for player p against opponent o."""
+    empty = ~(p | o) & FULL_MASK
+    moves = 0
+    for i in range(8):
+        shift = SHIFTS[i]
+        mask = MASKS[i]
+        candidates = o & mask
+        if shift > 0:
+            x = (p << shift) & candidates
+            x |= (x << shift) & candidates
+            x |= (x << shift) & candidates
+            x |= (x << shift) & candidates
+            x |= (x << shift) & candidates
+            x |= (x << shift) & candidates
+            moves |= (x << shift) & empty
+        else:
+            s = -shift
+            x = (p >> s) & candidates
+            x |= (x >> s) & candidates
+            x |= (x >> s) & candidates
+            x |= (x >> s) & candidates
+            x |= (x >> s) & candidates
+            x |= (x >> s) & candidates
+            moves |= (x >> s) & empty
+    return moves
+
+def apply_move_bb(p, o, move):
+    """Apply move and return (new_p, new_o)."""
+    flips = 0
+    for i in range(8):
+        shift = SHIFTS[i]
+        mask = MASKS[i]
+        line = 0
+        if shift > 0:
+            bit = (move << shift) & mask
+            while bit & o:
+                line |= bit
+                bit = (bit << shift) & mask
+            if bit & p:
+                flips |= line
+        else:
+            s = -shift
+            bit = (move >> s) & mask
+            while bit & o:
+                line |= bit
+                bit = (bit >> s) & mask
+            if bit & p:
+                flips |= line
+    new_p = p | move | flips
+    new_o = o & ~flips
+    return new_p, new_o
+
+def evaluate_bb(p, o, empty):
+    """Heuristic evaluation from perspective of p."""
+    if empty == 0:
+        pc = p.bit_count()
+        oc = o.bit_count()
+        if pc > oc:
+            return 10000 + pc - oc
+        elif pc < oc:
+            return -10000 + pc - oc
+        else:
+            return 0
+    
+    pm = get_moves_bb(p, o)
+    om = get_moves_bb(o, p)
+    
+    if pm == 0 and om == 0:
+        pc = p.bit_count()
+        oc = o.bit_count()
+        if pc > oc:
+            return 10000 + pc - oc
+        elif pc < oc:
+            return -10000 + pc - oc
+        else:
+            return 0
+    
+    score = 0
+    pp = p
+    while pp:
+        lsb = pp & -pp
+        idx = (lsb.bit_length() - 1)
+        score += WEIGHTS[idx]
+        pp ^= lsb
+    
+    oo = o
+    while oo:
+        lsb = oo & -oo
+        idx = (lsb.bit_length() - 1)
+        score -= WEIGHTS[idx]
+        oo ^= lsb
+    
+    if pm == 0:
+        score -= 100
+    else:
+        score += (pm.bit_count() - om.bit_count()) * 10
+    
+    return score
+
+def negamax_bb(p, o, depth, alpha, beta, empty):
+    """Negamax search with alpha-beta pruning."""
+    if depth == 0:
+        return evaluate_bb(p, o, empty)
+    
+    moves = get_moves_bb(p, o)
+    
+    if moves == 0:
+        if get_moves_bb(o, p) == 0:
+            return evaluate_bb(p, o, 0)
+        return -negamax_bb(o, p, depth, -beta, -alpha, empty)
+    
+    move_list = []
+    m = moves
+    while m:
+        lsb = m & -m
+        move_list.append(lsb)
+        m ^= lsb
+    
+    def move_priority(m):
+        return 100 if m in CORNERS else 0
+    
+    move_list.sort(key=move_priority, reverse=True)
+    
+    for move in move_list:
+        new_p, new_o = apply_move_bb(p, o, move)
+        val = -negamax_bb(new_o, new_p, depth - 1, -beta, -alpha, empty - 1)
+        if val >= beta:
+            return beta
+        if val > alpha:
+            alpha = val
+    return alpha
+
+def solve_endgame_bb(p, o, alpha, beta, empty):
+    """Exact solve for endgame using alpha-beta."""
+    moves = get_moves_bb(p, o)
+    
+    if moves == 0:
+        if get_moves_bb(o, p) == 0:
+            pc = p.bit_count()
+            oc = o.bit_count()
+            if pc > oc:
+                return 10000 + pc - oc
+            elif pc < oc:
+                return -10000 + pc - oc
+            else:
+                return 0
+        return -solve_endgame_bb(o, p, -beta, -alpha, empty)
+    
+    move_list = []
+    m = moves
+    while m:
+        lsb = m & -m
+        move_list.append(lsb)
+        m ^= lsb
+    
+    def move_priority(m):
+        return 100 if m in CORNERS else 0
+    
+    move_list.sort(key=move_priority, reverse=True)
+    
+    for move in move_list:
+        new_p, new_o = apply_move_bb(p, o, move)
+        val = -solve_endgame_bb(new_o, new_p, -beta, -alpha, empty - 1)
+        if val >= beta:
+            return beta
+        if val > alpha:
+            alpha = val
+    return alpha
+
+def policy(you, opponent):
+    # Convert numpy arrays to bitboards
+    p = 0
+    o = 0
+    for r in range(8):
+        for c in range(8):
+            idx = r * 8 + c
+            if you[r, c]:
+                p |= (1 << idx)
+            if opponent[r, c]:
+                o |= (1 << idx)
+    
+    empty_count = 64 - p.bit_count() - o.bit_count()
+    moves = get_moves_bb(p, o)
+    
+    if moves == 0:
+        return "pass"
+    
+    # Extract move list
+    move_list = []
+    m = moves
+    while m:
+        lsb = m & -m
+        move_list.append(lsb)
+        m ^= lsb
+    
+    def move_priority(m):
+        return 100 if m in CORNERS else 0
+    
+    move_list.sort(key=move_priority, reverse=True)
+    best_move = move_list[0]
+    
+    if empty_count <= 12:
+        # Exact endgame solve
+        best_val = -99999
+        for move in move_list:
+            new_p, new_o = apply_move_bb(p, o, move)
+            val = -solve_endgame_bb(new_o, new_p, -99999, 99999, empty_count - 1)
+            if val > best_val:
+                best_val = val
+                best_move = move
+    else:
+        # Heuristic search
+        depth = 4
+        if empty_count < 40:
+            depth = 5
+        if empty_count < 20:
+            depth = 6
+        
+        best_val = -99999
+        alpha = -99999
+        beta = 99999
+        
+        for move in move_list:
+            new_p, new_o = apply_move_bb(p, o, move)
+            val = -negamax_bb(new_o, new_p, depth - 1, -beta, -alpha, empty_count - 1)
+            if val > best_val:
+                best_val = val
+                best_move = move
+            if val > alpha:
+                alpha = val
+    
+    # Convert bit to algebraic notation
+    idx = best_move.bit_length() - 1
+    r = idx // 8
+    c = idx % 8
+    return chr(ord('a') + c) + str(r + 1)

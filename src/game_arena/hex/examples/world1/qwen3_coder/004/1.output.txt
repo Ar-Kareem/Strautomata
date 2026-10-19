@@ -1,0 +1,200 @@
+The strategy for this policy is to:
+
+1. Prioritize immediate win conditions when detected
+2. Block opponent's imminent winning moves
+3. Build connectivity towards our own winning sides (top-bottom for black, left-right for white)
+4. Control the center area, which has higher connectivity potential
+5. Evaluate positional value based on proximity to target sides and ability to form connections
+
+The approach combines tactical elements (winning/blocking) with positional play, using BFS-based connectivity checks to assess progress toward victory. It favors central positions early on for flexibility while progressively focusing on extending chains toward target edges.
+
+<code>
+import collections
+
+def get_neighbors(row, col):
+    """Return the 6 neighboring hex cells."""
+    directions = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+    neighbors = []
+    for dr, dc in directions:
+        nr, nc = row + dr, col + dc
+        if 0 <= nr < 11 and 0 <= nc < 11:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def bfs_connected(stones, start_positions, targets):
+    """Check if any position in start_positions can reach any position in targets via stones."""
+    visited = set()
+    queue = collections.deque(start_positions)
+    visited.update(start_positions)
+    
+    while queue:
+        r, c = queue.popleft()
+        if (r, c) in targets:
+            return True
+            
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) not in visited and (nr, nc) in stones:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+    return False
+
+def find_winning_move(me_stones, color):
+    """Check if we have an immediate winning move."""
+    my_set = set(me_stones)
+    if color == 'b':  # Black connects top to bottom
+        top_edge = [(0, i) for i in range(11) if (0, i) not in my_set]
+        bottom_edge = [(10, i) for i in range(11) if (10, i) not in my_set]
+        for pos in top_edge:
+            if pos[0] == 0 and all(p in my_set for p in get_neighbors(*pos) if p[0] > 0):
+                continue  # Skip if blocked by opponent
+            test_set = my_set | {pos}
+            if bfs_connected(test_set, [pos], bottom_edge):
+                return pos
+        for pos in bottom_edge:
+            if pos[0] == 10 and all(p in my_set for p in get_neighbors(*pos) if p[0] < 10):
+                continue
+            test_set = my_set | {pos}
+            if bfs_connected(test_set, [pos], top_edge):
+                return pos
+                
+    else:  # White connects left to right
+        left_edge = [(i, 0) for i in range(11) if (i, 0) not in my_set]
+        right_edge = [(i, 10) for i in range(11) if (i, 10) not in my_set]
+        for pos in left_edge:
+            if pos[1] == 0 and all(p in my_set for p in get_neighbors(*pos) if p[1] > 0):
+                continue
+            test_set = my_set | {pos}
+            if bfs_connected(test_set, [pos], right_edge):
+                return pos
+        for pos in right_edge:
+            if pos[1] == 10 and all(p in my_set for p in get_neighbors(*pos) if p[1] < 10):
+                continue
+            test_set = my_set | {pos}
+            if bfs_connected(test_set, [pos], left_edge):
+                return pos
+    return None
+
+def find_blocking_move(me_stones, opp_stones, opp_color):
+    """Try to block opponent's immediate win."""
+    opp_set = set(opp_stones)
+    if opp_color == 'b':
+        top_edge = [(0, i) for i in range(11) if (0, i) not in opp_set]
+        bottom_edge = [(10, i) for i in range(11) if (10, i) not in opp_set]
+        candidate_moves = []
+        for pos in top_edge:
+            if pos[0] == 0 and all(p not in opp_set for p in get_neighbors(*pos)):
+                candidate_moves.append(pos)
+        for pos in bottom_edge:
+            if pos[0] == 10 and all(p not in opp_set for p in get_neighbors(*pos)):
+                candidate_moves.append(pos)
+        # Check if placing at these locations would give opponent connection
+        for move in candidate_moves:
+            test_opp = opp_set | {move}
+            if bfs_connected(test_opp, [move], top_edge if move[0]==10 else bottom_edge):
+                return move
+    
+    else:  # Opponent is white
+        left_edge = [(i, 0) for i in range(11) if (i, 0) not in opp_set]
+        right_edge = [(i, 10) for i in range(11) if (i, 10) not in opp_set]
+        candidate_moves = []
+        for pos in left_edge:
+            if pos[1] == 0 and all(p not in opp_set for p in get_neighbors(*pos)):
+                candidate_moves.append(pos)
+        for pos in right_edge:
+            if pos[1] == 10 and all(p not in opp_set for p in get_neighbors(*pos)):
+                candidate_moves.append(pos)
+        for move in candidate_moves:
+            test_opp = opp_set | {move}
+            if bfs_connected(test_opp, [move], left_edge if move[1]==10 else right_edge):
+                return move
+    return None
+
+def evaluate_position(row, col, me_stones, opp_stones, color):
+    """Evaluate how good a position is for us."""
+    score = 0
+    neighbors = get_neighbors(row, col)
+    
+    # Prefer positions connected to more of our stones
+    my_set = set(me_stones)
+    opp_set = set(opp_stones)
+    
+    friendly_count = sum(1 for n in neighbors if n in my_set)
+    opponent_count = sum(1 for n in neighbors if n in opp_set)
+    
+    score += friendly_count * 3
+    score -= opponent_count * 2
+    
+    # Prefer positions closer to our target sides
+    if color == 'b':  # Black wants top-bottom
+        dist_to_top = row
+        dist_to_bottom = 10 - row
+        score += max(0, 5 - min(dist_to_top, dist_to_bottom)) * 2
+    else:  # White wants left-right
+        dist_to_left = col
+        dist_to_right = 10 - col
+        score += max(0, 5 - min(dist_to_left, dist_to_right)) * 2
+        
+    # Slight preference for center positions
+    center_r, center_c = 5, 5
+    manhattan_dist = abs(row - center_r) + abs(col - center_c)
+    score += max(0, 3 - manhattan_dist//2)
+    
+    return score
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Convert lists to sets for faster lookups
+    my_stones = set(me)
+    opp_stones = set(opp)
+    all_stones = my_stones | opp_stones
+    
+    # Determine opponent's color
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    # 1. Try to win immediately
+    win_move = find_winning_move(me, color)
+    if win_move and win_move not in all_stones:
+        return win_move
+    
+    # 2. Try to block opponent from winning
+    block_move = find_blocking_move(me, opp, opp_color)
+    if block_move and block_move not in all_stones:
+        return block_move
+    
+    # 3. Evaluate all available positions and pick best one
+    best_move = None
+    best_score = float('-inf')
+    
+    # Consider only empty positions near existing stones for efficiency
+    candidates = set()
+    for r, c in my_stones | opp_stones:
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) not in all_stones:
+                candidates.add((nr, nc))
+                
+    # If no candidates near existing stones, choose from entire board
+    if not candidates:
+        candidates = {(r, c) for r in range(11) for c in range(11)} - all_stones
+        
+    for pos in candidates:
+        score = evaluate_position(pos[0], pos[1], me, opp, color)
+        # Bonus for connecting existing groups
+        nearby_friends = [n for n in get_neighbors(*pos) if n in my_stones]
+        if len(nearby_friends) >= 2:
+            score += 5
+            
+        if score > best_score:
+            best_score = score
+            best_move = pos
+            
+    # Fallback: pick first available spot if somehow nothing found
+    if best_move is None:
+        for r in range(11):
+            for c in range(11):
+                if (r, c) not in all_stones:
+                    best_move = (r, c)
+                    break
+            if best_move:
+                break
+                
+    return best_move
+</code>

@@ -1,0 +1,318 @@
+My strategy is to implement a standard expectiminimax algorithm with a limited depth of 3 (including a quiescence-like expansion for the opponent's response). This ensures the agent looks ahead: it selects a move that maximizes its own position while considering the opponent's best counter-move.
+
+I will use a heuristic evaluation function based on the number of legal moves available to each player (mobility) and the number of squares controlled. I will prioritize moves that restrict the opponent's mobility while increasing my own. I will also implement a caching mechanism (transposition table) to speed up the search given the 1-second time limit.
+
+```python
+import numpy as np
+import sys
+
+def policy(board) -> str:
+    """
+    Amazons AI Policy using Alpha-Beta Pruning with depth 3.
+    Evaluation is based on mobility (number of legal moves) and territory.
+    """
+    
+    # Constants
+    EMPTY = 0
+    ME = 1
+    OPP = 2
+    ARROW = -1
+    SIZE = 6
+    
+    # Move directions (Row, Col) for Queen moves
+    DIRS = [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1),           (0, 1),
+            (1, -1),  (1, 0),  (1, 1)]
+
+    # Transposition cache to speed up repeated states within the search
+    transposition_table = {}
+
+    def is_on_board(r, c):
+        return 0 <= r < SIZE and 0 <= c < SIZE
+
+    def get_all_moves(brd, player):
+        """
+        Generates all legal moves for the given player.
+        Yields: (from_coord, to_coord, arrow_coord)
+        """
+        my_val = player
+        opp_val = 2 if player == 1 else 1
+        
+        # Find all my amazons
+        my_amazons = []
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if brd[r, c] == my_val:
+                    my_amazons.append((r, c))
+        
+        for r0, c0 in my_amazons:
+            # 1. Amazon movement: Queen moves
+            for dr, dc in DIRS:
+                r, c = r0 + dr, c0 + dc
+                while is_on_board(r, c) and brd[r, c] == EMPTY:
+                    # Found a valid landing spot
+                    to = (r, c)
+                    
+                    # 2. Arrow shooting: Queen moves from new position
+                    # Temporarily update board to simulate the amazon moved
+                    # (Optimization: we don't actually move the piece in memory, 
+                    # just treat the path as blocked by the new position)
+                    for adr, adc in DIRS:
+                        ar, ac = r + adr, c + adc
+                        while is_on_board(ar, ac):
+                            # Check if path is clear
+                            # If we are at the start of arrow path, the square (r,c) is the amazon
+                            # If we are beyond that, it must be empty (or vacated from r0,c0)
+                            
+                            # Specific rule: Path must be unobstructed.
+                            # Current square being checked: (ar, ac)
+                            val = brd[ar, ac]
+                            
+                            if val != EMPTY:
+                                # If it's the square we just moved FROM, is it an obstacle?
+                                # No, because we just vacated it.
+                                if (ar, ac) == (r0, c0):
+                                    # It's empty now, so allowed.
+                                    # However, we are moving *through* it?
+                                    # Yes, we can shoot through the vacated square.
+                                    pass
+                                else:
+                                    # It's a block, stop this direction
+                                    break
+                            
+                            # If we get here, (ar, ac) is valid for arrow
+                            yield ((r0, c0), to, (ar, ac))
+                            
+                            ar += adr
+                            ac += adc
+                    
+                    r += dr
+                    c += dc
+
+    def evaluate(brd, player):
+        """
+        Heuristic evaluation.
+        Positive score means 'player' is winning.
+        """
+        # Quick terminal check (though we expect moves to exist)
+        # If player has no moves, it's bad for them
+        # If opponent has no moves, it's good for player (win)
+        
+        # Calculate mobility
+        my_moves_count = 0
+        opp_moves_count = 0
+        
+        # To save time, we can estimate mobility or do full count
+        # Let's do a semi-full count but limit if it takes too long
+        # Or simply count legal moves (expensive but accurate for small board)
+        
+        my_moves = list(get_all_moves(brd, player))
+        opp_moves = list(get_all_moves(brd, 3 - player))
+        
+        my_moves_count = len(my_moves)
+        opp_moves_count = len(opp_moves)
+        
+        if my_moves_count == 0 and opp_moves_count == 0:
+            return 0 # Draw (rare)
+        if my_moves_count == 0:
+            return -100000 # I lose
+        if opp_moves_count == 0:
+            return 100000 # I win
+            
+        # Territory count (simple count of empty squares closer to me?)
+        # Let's stick to mobility as it's a strong indicator in Amazons
+        # Add piece placement bonus (center control)
+        center_bonus = 0
+        for r in range(SIZE):
+            for c in range(SIZE):
+                if brd[r, c] == player:
+                    # Bonus for being in center
+                    if 1 <= r <= 4 and 1 <= c <= 4:
+                        center_bonus += 2
+                    elif 0 <= r <= 5 and 0 <= c <= 5:
+                        center_bonus += 1
+        
+        return (my_moves_count - opp_moves_count) * 2 + center_bonus
+
+    def minimax(brd, depth, alpha, beta, maximizingPlayer):
+        """
+        Alpha-Beta search.
+        """
+        # Hash board for caching
+        # We use a simple string representation or bytes
+        # Note: board is numpy array, use tobytes() for hashing
+        state_key = (brd.tobytes(), depth, maximizingPlayer)
+        if state_key in transposition_table:
+            return transposition_table[state_key]
+
+        if depth == 0:
+            score = evaluate(brd, ME) if maximizingPlayer else evaluate(brd, OPP)
+            # We always evaluate from ME's perspective if we are at root,
+            # but for recursion we need to be careful.
+            # Let's stick to: evaluate returns score for 'player' argument.
+            # So if maximizingPlayer is True, we are maximizing ME's score.
+            if maximizingPlayer:
+                val = evaluate(brd, ME)
+            else:
+                # When minimizing, we want to evaluate from opponent's perspective?
+                # Actually, evaluate returns diff. 
+                # If we pass OPP to evaluate, it returns (OppMoves - MyMoves).
+                # So if Minimizing (Opponent moves), we want the lowest value for ME.
+                # evaluate(brd, OPP) returns (OppMoves - MyMoves).
+                # If Minimizing, we want this to be small (negative), meaning MyMoves > OppMoves.
+                val = evaluate(brd, OPP) 
+                # To standardize: evaluate returns (MyMoves - OppMoves) if player is ME.
+                # So if minimizing, let's just call evaluate(brd, ME) and negate?
+                # Let's clarify:
+                # Root: maximizing ME.
+                # Next step: minimizing OPP.
+                # We want to minimize the score of ME.
+                # So we call minimax with maximizingPlayer=False.
+                # Inside minimax, if maximizingPlayer=False, we call evaluate(brd, OPP).
+                # evaluate(brd, OPP) returns (OppMoves - MyMoves).
+                # The minimax logic (beta = min(...)) will correctly minimize this?
+                # Wait, if I am maximizing ME, and I want to minimize OPP's outcome,
+                # I want to minimize (OppMoves - MyMoves). Yes, that works.
+                pass
+            
+            return val
+
+        # Generate moves
+        # If maximizingPlayer is True, it's my turn (ME)
+        # If False, it's opponent's turn (OPP)
+        current_player = ME if maximizingPlayer else OPP
+        
+        # Optimization: If no moves, return static eval
+        # We need to check moves.
+        moves = list(get_all_moves(brd, current_player))
+        
+        if not moves:
+            # Terminal state
+            if maximizingPlayer:
+                return -100000 # I have no moves, I lose
+            else:
+                return 100000 # Opponent has no moves, I win
+        
+        # Sort moves for better pruning (heuristic: moves that reduce opp mobility)
+        # We can't afford to sort too heavily, but maybe random shuffle helps?
+        # Let's just iterate.
+        
+        if maximizingPlayer:
+            max_eval = -float('inf')
+            for move in moves:
+                # Apply move
+                from_pos, to_pos, arrow_pos = move
+                old_from = brd[from_pos]
+                old_to = brd[to_pos]
+                old_arrow = brd[arrow_pos]
+                
+                brd[from_pos] = EMPTY
+                brd[to_pos] = ME
+                brd[arrow_pos] = ARROW
+                
+                eval_val = minimax(brd, depth - 1, alpha, beta, False)
+                
+                # Undo move
+                brd[from_pos] = old_from
+                brd[to_pos] = old_to
+                brd[arrow_pos] = old_arrow
+                
+                if eval_val > max_eval:
+                    max_eval = eval_val
+                
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break # Beta cutoff
+            
+            transposition_table[state_key] = max_eval
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in moves:
+                from_pos, to_pos, arrow_pos = move
+                
+                old_from = brd[from_pos]
+                old_to = brd[to_pos]
+                old_arrow = brd[arrow_pos]
+                
+                brd[from_pos] = EMPTY
+                brd[to_pos] = OPP
+                brd[arrow_pos] = ARROW
+                
+                eval_val = minimax(brd, depth - 1, alpha, beta, True)
+                
+                brd[from_pos] = old_from
+                brd[to_pos] = old_to
+                brd[arrow_pos] = old_arrow
+                
+                if eval_val < min_eval:
+                    min_eval = eval_val
+                
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break # Alpha cutoff
+            
+            transposition_table[state_key] = min_eval
+            return min_eval
+
+    # Main execution
+    # We need to return the move string.
+    # We will perform the search at the root level to pick the best move.
+    
+    best_move = None
+    best_score = -float('inf')
+    alpha = -float('inf')
+    beta = float('inf')
+    
+    # Depth 2 is usually safe for 6x6 in 1s, but depth 3 might be possible if optimized.
+    # Let's try depth 3.
+    depth = 3
+    
+    root_moves = list(get_all_moves(board, ME))
+    
+    # Shuffle moves to avoid deterministic behavior if scores are equal
+    # But we want best score. Sorting by heuristic first might help?
+    # Let's just iterate.
+    
+    if not root_moves:
+        # Should not happen per prompt, but robust fallback
+        return "0,0:0,0:0,0" # Illegal but prevents crash
+
+    for move in root_moves:
+        from_pos, to_pos, arrow_pos = move
+        
+        # Apply
+        old_from = board[from_pos]
+        old_to = board[to_pos]
+        old_arrow = board[arrow_pos]
+        
+        board[from_pos] = EMPTY
+        board[to_pos] = ME
+        board[arrow_pos] = ARROW
+        
+        # We are now looking for the opponent's move that minimizes our score
+        score = minimax(board, depth - 1, alpha, beta, False)
+        
+        # Undo
+        board[from_pos] = old_from
+        board[to_pos] = old_to
+        board[arrow_pos] = old_arrow
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+        # Update alpha for root
+        alpha = max(alpha, score)
+        
+        # Time limit check? 
+        # We can't easily check time inside loops without overhead, 
+        # but depth 3 on 6x6 should be fine.
+        
+    if best_move:
+        f, t, a = best_move
+        return f"{f[0]},{f[1]}:{t[0]},{t[1]}:{a[0]},{a[1]}"
+    
+    # Fallback
+    return f"{root_moves[0][0][0]},{root_moves[0][0][1]}:{root_moves[0][1][0]},{root_moves[0][1][1]}:{root_moves[0][2][0]},{root_moves[0][2][1]}"
+```

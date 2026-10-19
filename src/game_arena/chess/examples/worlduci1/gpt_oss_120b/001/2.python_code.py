@@ -1,0 +1,245 @@
+
+# policy.py
+from typing import Dict, List, Tuple
+
+# piece values for material scoring
+PIECE_VALUE = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0,
+}
+
+# helper conversion between square names and coordinates
+FILE_TO_X = {c: i for i, c in enumerate('abcdefgh')}
+X_TO_FILE = {i: c for c, i in FILE_TO_X.items()}
+RANK_TO_Y = {c: i for i, c in enumerate('12345678')}
+Y_TO_RANK = {i: c for c, i in RANK_TO_Y.items()}
+
+
+def sq_to_xy(sq: str) -> Tuple[int, int]:
+    return FILE_TO_X[sq[0]], RANK_TO_Y[sq[1]]
+
+
+def xy_to_sq(x: int, y: int) -> str:
+    if 0 <= x < 8 and 0 <= y < 8:
+        return X_TO_FILE[x] + Y_TO_RANK[y]
+    return ''
+
+
+def piece_color(piece: str) -> str:
+    return piece[0]   # 'w' or 'b'
+
+
+def opponent(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+
+def attacks(square: str, piece: str, board: Dict[str, str]) -> bool:
+    """
+    Return True if the given piece (already placed on *square*) attacks the opponent king.
+    """
+    x, y = sq_to_xy(square)
+    col, typ = piece[0], piece[1]
+
+    # locate opponent king
+    king_sq = None
+    for sq, pc in board.items():
+        if pc == opponent(col) + 'K':
+            king_sq = sq
+            break
+    if not king_sq:
+        return False    # should not happen
+    kx, ky = sq_to_xy(king_sq)
+
+    dx = kx - x
+    dy = ky - y
+
+    # pawn attacks
+    if typ == 'P':
+        direction = 1 if col == 'w' else -1
+        return (dx, dy) in ((-1, direction), (1, direction))
+
+    # knight attacks
+    if typ == 'N':
+        return (abs(dx), abs(dy)) in ((1, 2), (2, 1))
+
+    # king attacks (useful only for check detection)
+    if typ == 'K':
+        return max(abs(dx), abs(dy)) == 1
+
+    # sliding pieces
+    if typ in ('B', 'R', 'Q'):
+        # determine allowed direction vectors
+        dirs = []
+        if typ in ('B', 'Q'):
+            dirs += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        if typ in ('R', 'Q'):
+            dirs += [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+        for step_x, step_y in dirs:
+            tx, ty = x + step_x, y + step_y
+            while 0 <= tx < 8 and 0 <= ty < 8:
+                cur_sq = xy_to_sq(tx, ty)
+                if cur_sq == king_sq:
+                    return True
+                if cur_sq in board:        # blocked by any piece
+                    break
+                tx += step_x
+                ty += step_y
+    return False
+
+
+def is_square_attacked(sq: str, by_color: str, board: Dict[str, str]) -> bool:
+    """
+    Return True if *sq* is attacked by any piece of colour *by_color*.
+    """
+    for src, pc in board.items():
+        if piece_color(pc) != by_color:
+            continue
+        if attacks(src, pc, board):
+            # attacks() only checks against opponent king; we need a generic test.
+            # For our limited use (checking if a piece would be captured after our move)
+            # we reuse the same logic but treat *sq* as the target.
+            # We'll simply generate pseudo‑moves for each attacker and see if they can capture.
+            x1, y1 = sq_to_xy(src)
+            x2, y2 = sq_to_xy(sq)
+            dx, dy = x2 - x1, y2 - y1
+            typ = pc[1]
+
+            if typ == 'P':
+                direction = 1 if by_color == 'w' else -1
+                if (dx, dy) in ((-1, direction), (1, direction)):
+                    return True
+            elif typ == 'N':
+                if (abs(dx), abs(dy)) in ((1, 2), (2, 1)):
+                    return True
+            elif typ == 'K':
+                if max(abs(dx), abs(dy)) == 1:
+                    return True
+            elif typ in ('B', 'R', 'Q'):
+                # verify sliding capture
+                dirs = []
+                if typ in ('B', 'Q'):
+                    dirs += [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+                if typ in ('R', 'Q'):
+                    dirs += [(-1, 0), (1, 0), (0, -1), (0, 1)]
+                for step_x, step_y in dirs:
+                    if step_x == 0 and step_y == 0:
+                        continue
+                    tx, ty = x1 + step_x, y1 + step_y
+                    blocked = False
+                    while 0 <= tx < 8 and 0 <= ty < 8:
+                        cur = xy_to_sq(tx, ty)
+                        if cur == sq:
+                            if not blocked:
+                                return True
+                            break
+                        if cur in board:
+                            blocked = True
+                            break
+                        tx += step_x
+                        ty += step_y
+    return False
+
+
+def policy(pieces: Dict[str, str], to_play: str) -> str:
+    """
+    Choose the best legal move from the global list `legal_moves`.
+
+    Arguments
+    ---------
+    pieces : dict
+        Mapping from square name to piece code (e.g. 'e4': 'wP').
+    to_play : str
+        Either 'white' or 'black'.
+
+    Returns
+    -------
+    str
+        A UCI move string that is guaranteed to be legal.
+    """
+    # The arena is expected to provide the list of legal moves in a global variable.
+    try:
+        moves: List[str] = legal_moves   # type: ignore[name-defined]
+    except NameError:
+        raise RuntimeError("The variable 'legal_moves' is not defined in the environment.")
+
+    if not moves:
+        raise RuntimeError("No legal moves available.")
+
+    my_color = 'w' if to_play == 'white' else 'b'
+    opp_color = opponent(my_color)
+
+    # locate opponent king once (used for check detection)
+    opp_king_sq = None
+    for sq, pc in pieces.items():
+        if pc == opp_color + 'K':
+            opp_king_sq = sq
+            break
+
+    best_score = -1e9
+    best_move = moves[0]
+
+    for mv in moves:
+        src = mv[0:2]
+        dst = mv[2:4]
+        promo = mv[4:] if len(mv) > 4 else ''
+
+        moving_piece = pieces.get(src)
+        if not moving_piece:
+            # should never happen for a legal move
+            continue
+
+        # capture evaluation
+        captured = pieces.get(dst)
+        capture_value = 0
+        if captured and piece_color(captured) == opp_color:
+            capture_value = PIECE_VALUE[captured[1]]
+
+        # simulate board after the move
+        new_board = pieces.copy()
+        del new_board[src]
+        # handle promotion
+        if promo:
+            new_piece = my_color + promo.upper()
+        else:
+            new_piece = moving_piece
+        new_board[dst] = new_piece
+
+        # check detection
+        gives_check = False
+        if opp_king_sq:
+            # temporary board may have moved the king (castling) – recalc king square
+            if new_board.get(opp_king_sq) != opp_color + 'K':
+                # king moved (unlikely for opponent on our turn) – find again
+                for sq, pc in new_board.items():
+                    if pc == opp_color + 'K':
+                        opp_king_sq = sq
+                        break
+            # see if any of our pieces now attack the opponent king
+            for sq, pc in new_board.items():
+                if piece_color(pc) != my_color:
+                    continue
+                if attacks(sq, pc, new_board):
+                    gives_check = True
+                    break
+
+        # safety: does the moved piece become attacked?
+        safety_penalty = 0
+        if is_square_attacked(dst, opp_color, new_board):
+            safety_penalty = 0.5  # modest penalty
+
+        # total score
+        score = capture_value
+        if gives_check:
+            score += 0.3
+        score -= safety_penalty
+
+        if score > best_score:
+            best_score = score
+            best_move = mv
+
+    return best_move

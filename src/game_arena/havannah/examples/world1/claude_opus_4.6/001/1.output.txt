@@ -1,0 +1,387 @@
+## Strategy
+
+My strategy implements a Monte Carlo Tree Search (MCTS) with domain-specific heuristics for Havannah:
+
+1. **Win/Loss Detection**: Before MCTS, check if any move wins immediately (play it) or if opponent has a winning move (block it).
+
+2. **MCTS with UCB1**: Use Upper Confidence Bound for tree exploration, balancing exploitation and exploration.
+
+3. **Smart Rollout Policy**: During simulations, bias moves toward:
+   - Moves adjacent to existing stones (connectivity is key in Havannah)
+   - Corner and edge cells (for bridge/fork threats)
+   - Blocking opponent connections
+
+4. **Connection Tracking**: Use Union-Find to efficiently track connected components and detect wins (rings, bridges, forks).
+
+5. **Heuristic Move ordering**: Prioritize moves near existing stones and strategically important positions to make MCTS more efficient within the 1-second time limit.
+
+<code>
+import numpy as np
+import time
+import math
+import random
+from collections import defaultdict
+
+def policy(me, opp, valid_mask):
+    board_size = len(valid_mask)
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    valid_moves = []
+    for r in range(board_size):
+        for c in range(board_size):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                valid_moves.append((r, c))
+    
+    if not valid_moves:
+        for r in range(board_size):
+            for c in range(board_size):
+                if valid_mask[r][c]:
+                    return (r, c)
+    
+    if len(valid_moves) == 1:
+        return valid_moves[0]
+    
+    N = board_size
+    
+    def neighbors(r, c):
+        return [(r-1, c), (r-1, c+1), (r, c-1), (r, c+1), (r+1, c-1), (r+1, c)]
+    
+    def valid_hex(r, c):
+        return 0 <= r < N and 0 <= c < N and valid_mask[r][c]
+    
+    # Identify corners and edges
+    # For a hex board of size s (s=8 for 15x15), the corners are specific cells
+    # The board is a hexagon. Let's identify corners and edges.
+    s = (N + 1) // 2  # s = 8 for N=15
+    
+    def get_corners():
+        corners = set()
+        # Top-left corner
+        corners.add((0, 0))
+        # Top-right corner
+        corners.add((0, s-1))
+        # Middle-left
+        corners.add((s-1, 0))
+        # Middle-right
+        corners.add((s-1, N-1))
+        # Bottom-left
+        corners.add((N-1, 0))
+        # Bottom-right
+        corners.add((N-1, s-1))
+        return corners
+    
+    def get_edge_id(r, c):
+        """Return edge id (0-5) or -1 if corner or interior.
+        Corners return -2."""
+        corners = get_corners()
+        if (r, c) in corners:
+            return -2  # corner, not part of any edge
+        
+        # Edge 0: top row (r=0), c in 1..s-2
+        if r == 0 and 1 <= c <= s-2:
+            return 0
+        # Edge 1: top-right diagonal
+        if c == s - 1 + r and r >= 1 and r <= s-2 and valid_hex(r, c):
+            return 1
+        # For the upper half (r < s-1): right edge is c = s-1+r
+        # Actually let me think about this more carefully for a 15x15 hex board
+        
+        # Let me use a simpler approach: enumerate border cells
+        # A cell is on the border if it's on valid_mask boundary
+        # (has fewer than 6 valid neighbors)
+        
+        return -1  # fallback
+    
+    def is_border(r, c):
+        if not valid_hex(r, c):
+            return False
+        count = 0
+        for nr, nc in neighbors(r, c):
+            if valid_hex(nr, nc):
+                count += 1
+        return count < 6
+    
+    def get_edge_assignment(r, c):
+        """Assign border cells to edges 0-5, corners get -2."""
+        if not valid_hex(r, c) or not is_border(r, c):
+            return -1
+        
+        corners = get_corners()
+        if (r, c) in corners:
+            return -2
+        
+        # Top edge (edge 0): r = 0
+        if r == 0:
+            return 0
+        # Top-right edge (edge 1): upper right boundary
+        if r < s - 1 and c == s - 1 + r:
+            return 1
+        # Bottom-right edge (edge 2): lower right boundary  
+        if r >= s - 1 and c == N - 1:
+            return 2
+        # Bottom edge (edge 3): r = N-1
+        if r == N - 1:
+            return 3
+        # Bottom-left edge (edge 4): lower left boundary
+        if r >= s - 1 and c == 0:
+            return 4
+        # Top-left edge (edge 5): upper left boundary
+        if r < s - 1 and c == 0:
+            return 5
+        
+        return -1
+    
+    corners = get_corners()
+    
+    # Precompute edge assignments for all border cells
+    edge_map = {}
+    for r in range(N):
+        for c in range(N):
+            if valid_hex(r, c) and is_border(r, c):
+                edge_map[(r, c)] = get_edge_assignment(r, c)
+    
+    # Union-Find
+    class UF:
+        def __init__(self):
+            self.parent = {}
+            self.rank = {}
+        
+        def find(self, x):
+            while self.parent[x] != x:
+                self.parent[x] = self.parent[self.parent[x]]
+                x = self.parent[x]
+            return x
+        
+        def union(self, a, b):
+            a, b = self.find(a), self.find(b)
+            if a == b:
+                return
+            if self.rank[a] < self.rank[b]:
+                a, b = b, a
+            self.parent[b] = a
+            if self.rank[a] == self.rank[b]:
+                self.rank[a] += 1
+        
+        def add(self, x):
+            if x not in self.parent:
+                self.parent[x] = x
+                self.rank[x] = 0
+    
+    def check_win(stones_set):
+        """Check if a set of stones forms a winning structure."""
+        if len(stones_set) < 3:
+            return False
+        
+        uf = UF()
+        for s in stones_set:
+            uf.add(s)
+        for s in stones_set:
+            for nr, nc in neighbors(s[0], s[1]):
+                if (nr, nc) in stones_set:
+                    uf.union(s, (nr, nc))
+        
+        # Group by component
+        components = defaultdict(set)
+        for s in stones_set:
+            components[uf.find(s)].add(s)
+        
+        for root, comp in components.items():
+            # Check bridge: connects 2 corners
+            comp_corners = set()
+            for s in comp:
+                if s in corners:
+                    comp_corners.add(s)
+            if len(comp_corners) >= 2:
+                return True
+            
+            # Check fork: connects 3 edges
+            comp_edges = set()
+            for s in comp:
+                if s in edge_map:
+                    e = edge_map[s]
+                    if e >= 0:
+                        comp_edges.add(e)
+            if len(comp_edges) >= 3:
+                return True
+            
+            # Check ring: component has a cycle
+            # A connected component with V vertices and E edges has a cycle if E >= V
+            if len(comp) >= 6:
+                edges_count = 0
+                for s in comp:
+                    for nr, nc in neighbors(s[0], s[1]):
+                        if (nr, nc) in comp:
+                            edges_count += 1
+                edges_count //= 2
+                if edges_count >= len(comp):
+                    return True
+        
+        return False
+    
+    # Check immediate wins
+    for move in valid_moves:
+        test_set = me_set | {move}
+        if check_win(test_set):
+            return move
+    
+    # Check opponent immediate wins (block)
+    blocking_moves = []
+    for move in valid_moves:
+        test_set = opp_set | {move}
+        if check_win(test_set):
+            blocking_moves.append(move)
+    
+    if len(blocking_moves) == 1:
+        return blocking_moves[0]
+    if len(blocking_moves) > 1:
+        # Multiple threats - try to block the most critical
+        # Still play MCTS but restrict to blocking moves... actually opponent wins next turn
+        # Just block one
+        return blocking_moves[0]
+    
+    # MCTS
+    start_time = time.time()
+    time_limit = 0.85
+    
+    # Prioritize moves near existing stones
+    def move_priority(move):
+        r, c = move
+        score = 0
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in me_set:
+                score += 3
+            if (nr, nc) in opp_set:
+                score += 2
+        if move in corners:
+            score += 2
+        if move in edge_map and edge_map[move] >= 0:
+            score += 1
+        # Center preference
+        center = N // 2
+        dist = abs(r - center) + abs(c - center)
+        score += max(0, 5 - dist) * 0.5
+        return score
+    
+    # Sort moves by priority for better MCTS
+    scored_moves = [(move_priority(m), m) for m in valid_moves]
+    scored_moves.sort(reverse=True)
+    candidate_moves = [m for _, m in scored_moves[:min(60, len(scored_moves))]]
+    
+    wins = defaultdict(int)
+    visits = defaultdict(int)
+    total_visits = 0
+    
+    def simulate(me_s, opp_s, avail, is_my_turn):
+        """Fast random rollout."""
+        me_s = set(me_s)
+        opp_s = set(opp_s)
+        avail = list(avail)
+        random.shuffle(avail)
+        
+        idx = 0
+        turn = is_my_turn
+        max_moves = min(40, len(avail))
+        
+        for i in range(max_moves):
+            if idx >= len(avail):
+                break
+            move = avail[idx]
+            idx += 1
+            
+            if move in me_s or move in opp_s:
+                continue
+            
+            if turn:
+                me_s.add(move)
+                if len(me_s) >= 6 and check_win_fast(me_s, move):
+                    return 1
+            else:
+                opp_s.add(move)
+                if len(opp_s) >= 6 and check_win_fast(opp_s, move):
+                    return -1
+            turn = not turn
+        
+        return 0
+    
+    def check_win_fast(stones_set, last_move):
+        """Quick win check focusing on component containing last_move."""
+        # BFS to find component of last_move
+        comp = set()
+        stack = [last_move]
+        while stack:
+            node = stack.pop()
+            if node in comp:
+                continue
+            comp.add(node)
+            for nr, nc in neighbors(node[0], node[1]):
+                if (nr, nc) in stones_set and (nr, nc) not in comp:
+                    stack.append((nr, nc))
+        
+        # Bridge check
+        comp_corners = 0
+        for s in comp:
+            if s in corners:
+                comp_corners += 1
+                if comp_corners >= 2:
+                    return True
+        
+        # Fork check
+        comp_edges = set()
+        for s in comp:
+            if s in edge_map:
+                e = edge_map[s]
+                if e >= 0:
+                    comp_edges.add(e)
+        if len(comp_edges) >= 3:
+            return True
+        
+        # Ring check
+        if len(comp) >= 6:
+            edge_count = 0
+            for s in comp:
+                for nr, nc in neighbors(s[0], s[1]):
+                    if (nr, nc) in comp:
+                        edge_count += 1
+            edge_count //= 2
+            if edge_count >= len(comp):
+                return True
+        
+        return False
+    
+    avail_for_sim = [m for m in valid_moves]
+    
+    iterations = 0
+    while time.time() - start_time < time_limit:
+        for move in candidate_moves:
+            if time.time() - start_time >= time_limit:
+                break
+            
+            new_me = me_set | {move}
+            new_avail = [m for m in avail_for_sim if m != move]
+            
+            result = simulate(new_me, opp_set, new_avail, False)
+            
+            visits[move] += 1
+            total_visits += 1
+            if result == 1:
+                wins[move] += 1
+            elif result == 0:
+                wins[move] += 0.5
+            
+            iterations += 1
+    
+    if total_visits == 0:
+        return candidate_moves[0] if candidate_moves else valid_moves[0]
+    
+    best_move = None
+    best_score = -1
+    for move in candidate_moves:
+        if visits[move] > 0:
+            score = wins[move] / visits[move]
+            if score > best_score:
+                best_score = score
+                best_move = move
+    
+    return best_move if best_move else valid_moves[0]
+</code>

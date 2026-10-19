@@ -1,0 +1,586 @@
+<thinking>
+The user wants a Python function `policy(board)` that returns an integer representing the column to drop a disc in a Connect 4 game.
+
+Here's my plan to approach this:
+
+1.  **Analyze the game state:** The `board` is a 6x7 grid. I need to understand what `0`, `1`, and `-1` mean. `1` is my disc, `-1` is the opponent's, `0` is empty.
+2.  **Valid moves:** A move is valid if the chosen column is not full (i.e., `board[0][col]` is `0`).
+3.  **Winning condition:** Four in a row (horizontal, vertical, or diagonal) of my discs (`1`).
+4.  **Opponent's winning condition:** Four in a row of opponent's discs (`-1`).
+
+**Strategy:**
+
+The core idea is to prioritize winning, then blocking the opponent, then creating threats, and finally, making a reasonable "safe" move.
+
+1.  **Direct Win:** Check if I can win in the next move. If so, return that column.
+2.  **Block Opponent:** Check if the opponent can win in their next move. If so, block them by placing my disc in that column.
+3.  **Two-way Threats (Critical):** If placing a disc creates two simultaneous threats of winning in the next turn (e.g., completes a three-in-a-row horizontally AND completes a three-in-a-row vertically/diagonally), that's a very strong move. This is hard to implement perfectly but worth considering. For now, I'll simplify this to checking for threats.
+4.  **Create Threats:** Look for moves that create a 3-in-a-row for me, especially if the 4th spot is available.
+5.  **Opponent Threat Evaluation:** Look for moves that create a 3-in-a-row for the opponent *and* if blocking that 3rd disc leads to an immediate win for them.
+6.  **Center Preference:** In Connect 4, the center columns are generally more strategically valuable because they offer more potential lines (horizontal, vertical, and both diagonals). So, if no immediate win/block/threat is found, prioritize central columns.
+7.  **Random/Safe Move:** If none of the above apply, just pick any valid column, preferably one that doesn't immediately set up the opponent for a win.
+
+**Helper Functions:**
+
+*   `is_valid_move(board, col)`: Checks if a column is available.
+*   `get_next_open_row(board, col)`: Returns the row where a disc would land in a given column.
+*   `check_win(board, player)`: Checks if `player` has won on the current board. This will be an expensive operation if called on every simulated move. I need a more efficient way to check if a *specific* move creates a win.
+*   `check_potential_win(board, r, c, player)`: Checks if placing `player`'s disc at `(r, c)` would result in a win for `player`. This is crucial for evaluating moves.
+
+**Detailed Implementation Plan:**
+
+1.  **`policy(board)` function:**
+    *   Initialize `my_player = 1` and `opp_player = -1`.
+    *   Get `valid_cols` (columns that are not full).
+    *   Iterate through `valid_cols`:
+        *   For each `col`:
+            *   Simulate dropping my disc (`my_player`) into `col`.
+            *   Get `r` (the row where it lands).
+            *   If `check_potential_win(simulated_board, r, col, my_player)` is true, immediately return `col`. (Direct Win)
+
+    *   If no direct win:
+        *   Iterate through `valid_cols`:
+            *   For each `col`:
+                *   Simulate dropping opponent's disc (`opp_player`) into `col`.
+                *   Get `r` (the row where it lands).
+                *   If `check_potential_win(simulated_board, r, col, opp_player)` is true, then this `col` is where the opponent would win. If I can block this move, return `col`. (Block Opponent)
+
+    *   If no direct win or immediate block:
+        *   **Prioritize columns that create immediate threats or set up future wins.**
+        *   A simple heuristic: Prioritize center columns. Create a list of columns in strategic order (e.g., `[3, 2, 4, 1, 5, 0, 6]`).
+        *   Iterate through these prioritized columns (filtered by `valid_cols`):
+            *   For each `col`:
+                *   Consider checking for creating 3-in-a-row opportunities that have an open end. This is a bit more complex.
+                *   For now, I'll simplify: just choose the first valid column from the prioritized list. This is a greedy approach but better than pure random.
+
+    *   If for some reason, no prioritized move is found (shouldn't happen with valid_cols), pick the first valid column.
+
+2.  **`check_potential_win(board, r, c, player)`:**
+    *   This function needs to check all 8 directions (horizontal left/right, vertical up/down, both diagonals) from the new disc at `(r, c)`.
+    *   It should count how many `player` discs are connected *including* the one just placed.
+    *   If any count reaches 4, return `True`.
+
+Let's refine `check_potential_win`. Instead of checking from `(r, c)` outwards for 4, it's more accurate to count `player`'s discs in lines *passing through* `(r, c)`.
+
+Example for `check_potential_win(board, r, c, player)`:
+
+*   **Horizontal:**
+    *   `count = 1` (for `(r, c)`)
+    *   Iterate `col_idx` from `c-1` down to `0`. If `board[r][col_idx] == player`, increment `count`. Else break.
+    *   Iterate `col_idx` from `c+1` up to `6`. If `board[r][col_idx] == player`, increment `count`. Else break.
+    *   If `count >= 4`, return `True`.
+
+*   **Vertical:**
+    *   `count = 1`
+    *   Iterate `row_idx` from `r+1` up to `5`. If `board[row_idx][c] == player`, increment `count`. Else break. (Only need to check downwards because disc drops from top).
+    *   If `count >= 4`, return `True`.
+
+*   **Diagonal (Top-Left to Bottom-Right):**
+    *   `count = 1`
+    *   Check up-left: `r-1, c-1`, `r-2, c-2`, ...
+    *   Check down-right: `r+1, c+1`, `r+2, c+2`, ...
+    *   If `count >= 4`, return `True`.
+
+*   **Diagonal (Top-Right to Bottom-Left):**
+    *   `count = 1`
+    *   Check up-right: `r-1, c+1`, ...
+    *   Check down-left: `r+1, c-1`, ...
+    *   If `count >= 4`, return `True`.
+
+This check needs to be done carefully with boundary conditions.
+
+A simpler `check_win` might be to just loop through all possible starting positions of 4-in-a-row and check if they are all the current player's discs. But this is less efficient if I only care about the *last placed disc* causing a win. My `check_potential_win` approach is better for move evaluation.
+
+Let's pre-define board dimensions for clarity.
+`ROWS = 6`, `COLS = 7`.
+
+**Edge Cases / Considerations:**
+*   What if the board is almost full and only one column is available? The `valid_cols` check handles this.
+*   What if no immediate win or block is possible? The strategy resorts to prioritizing center columns.
+*   What if a move sets up the opponent to win? This is a sophisticated problem (minimax search with deeper lookahead) and probably beyond the scope of a 1-second timeout for a full implementation. For now, I'll stick to a shallower lookahead (1 step for win/block, then heuristics).
+
+Let's organize the code structure:
+
+```python
+import copy # For simulating moves
+
+ROWS = 6
+COLS = 7
+
+# Helper function
+def get_next_open_row(board, col):
+    for r in range(ROWS - 1, -1, -1): # Check from bottom up
+        if board[r][col] == 0:
+            return r
+    return -1 # Column is full
+
+# Helper function
+def is_valid_move(board, col):
+    return 0 <= col < COLS and board[0][col] == 0 # Check top row (0 index)
+
+# Helper function
+def check_potential_win(board, r, c, player):
+    # Check horizontal
+    count = 0
+    for col_offset in range(-3, 4):
+        curr_c = c + col_offset
+        if 0 <= curr_c < COLS:
+            if board[r][curr_c] == player:
+                count += 1
+                if count >= 4: return True
+            else:
+                count = 0 # Reset count if different disc or empty
+    
+    # Check vertical
+    count = 0
+    for row_offset in range(-3, 4):
+        curr_r = r + row_offset
+        if 0 <= curr_r < ROWS:
+            if board[curr_r][c] == player:
+                count += 1
+                if count >= 4: return True
+            else:
+                count = 0
+    
+    # Check diagonal (positive slope) '/'
+    count = 0
+    for offset in range(-3, 4):
+        curr_r, curr_c = r - offset, c + offset
+        if 0 <= curr_r < ROWS and 0 <= curr_c < COLS:
+            if board[curr_r][curr_c] == player:
+                count += 1
+                if count >= 4: return True
+            else:
+                count = 0
+
+    # Check diagonal (negative slope) '\'
+    count = 0
+    for offset in range(-3, 4):
+        curr_r, curr_c = r + offset, c + offset
+        if 0 <= curr_r < ROWS and 0 <= curr_c < COLS:
+            if board[curr_r][curr_c] == player:
+                count += 1
+                if count >= 4: return True
+            else:
+                count = 0
+                
+    return False
+
+# Main policy function
+def policy(board: list[list[int]]) -> int:
+    my_player = 1
+    opp_player = -1
+
+    valid_cols = [col for col in range(COLS) if is_valid_move(board, col)]
+
+    # 1. Check for immediate win
+    for col in valid_cols:
+        temp_board = copy.deepcopy(board) # Simulate move
+        r = get_next_open_row(temp_board, col)
+        if r != -1: # Should always be true if col is valid
+            temp_board[r][col] = my_player
+            if check_potential_win(temp_board, r, col, my_player):
+                return col
+
+    # 2. Check for opponent's immediate win and block
+    for col in valid_cols:
+        temp_board = copy.deepcopy(board)
+        r = get_next_open_row(temp_board, col)
+        if r != -1:
+            temp_board[r][col] = opp_player # Simulate opponent's move
+            if check_potential_win(temp_board, r, col, opp_player):
+                return col # Block this move
+
+    # 3. Prioritize center columns and those that create threats (simplified)
+    # Heuristic for column order, favoring center
+    # This ordering also might implicitly create more threats by placing in central locations.
+    strategic_cols = [3, 2, 4, 1, 5, 0, 6]
+
+    # Filter strategic_cols to only include valid moves
+    prioritized_valid_cols = [col for col in strategic_cols if col in valid_cols]
+
+    if prioritized_valid_cols:
+        # Check for moves that create a "two-way" threat or connect 3
+        # For now, let's keep it simple and just pick the first valid strategic column.
+        # Adding more complex threat detection logic might take too long.
+        # However, a basic check for creating 3-in-a-row (open ended) would be good.
+        
+        # Let's try to add a simple check for creating 3-in-a-row
+        # This will be in addition to direct win/block.
+        best_threat_col = -1
+        max_threat_score = -1
+
+        for col in prioritized_valid_cols:
+            temp_board = copy.deepcopy(board)
+            r = get_next_open_row(temp_board, col)
+            if r != -1:
+                temp_board[r][col] = my_player
+                # Evaluate threat: how many lines of 3 or more does this create?
+                # This is a bit more complex than just checking for win.
+                # A simpler "threat" could be a 3-in-a-row for myself, not yet blocked.
+                # For example, look at check_potential_win. If it nearly wins, it's a threat.
+                # I might need a more general function to score positions.
+                
+                # For simplicity, let's just use the strategic_cols order if no immediate win/block
+                # The existing strategic_cols list will implicitly favor better positions.
+                
+                # A quick thought on simple threat scoring:
+                # Count sequences of `player, player, player, 0` or `0, player, player, player` through (r,c)
+                # But this gets complicated quickly for all directions and overlaps.
+                # Let's stick to the center preference for now to stay within time limits.
+                
+                # Another simple check: does this move prevent a future trap from the opponent?
+                # Again, for a simple policy, sticking to direct threats is better.
+                pass # No complex threat evaluation for now.
+
+        # Just pick the first prioritized valid column
+        return prioritized_valid_cols[0]
+
+
+    # Fallback: if somehow prioritized_valid_cols is empty (shouldn't happen if valid_cols is not empty)
+    # This part should ideally never be reached if there are valid moves.
+    if valid_cols:
+        return valid_cols[0]
+    
+    # If no valid columns (board is full - should not happen if called correctly in turn-based game)
+    return -1
+
+
+The `check_potential_win` function implementation needs careful review.
+The loop `for col_offset in range(-3, 4)` is good for horizontal, but it restarts `count` to 0. It should check lines *through* (r,c).
+
+Let's refine `check_potential_win` to count actual lines of 4.
+
+```python
+def check_potential_win(board, r, c, player):
+    # Check horizontal
+    for col_start in range(max(0, c - 3), min(COLS - 3, c + 1)):
+        if all(board[r][col_start + i] == player for i in range(4)):
+            return True
+
+    # Check vertical
+    for row_start in range(max(0, r - 3), min(ROWS - 3, r + 1)):
+        if all(board[row_start + i][c] == player for i in range(4)):
+            return True
+
+    # Check positive diagonal (top-left to bottom-right)
+    # Iterate through potential starting points of a 4-disc sequence
+    for offset in range(-3, 1): # -3 means r-3, c-3; 0 means r, c
+        start_r, start_c = r + offset, c + offset
+        if 0 <= start_r <= ROWS - 4 and 0 <= start_c <= COLS - 4:
+            if all(board[start_r + i][start_c + i] == player for i in range(4)):
+                return True
+
+    # Check negative diagonal (top-right to bottom-left)
+    # Iterate through potential starting points of a 4-disc sequence
+    for offset in range(-3, 1):
+        start_r, start_c = r + offset, c - offset
+        if 0 <= start_r <= ROWS - 4 and 3 <= start_c <= COLS - 1: # c-offset must be >= 3
+            if all(board[start_r + i][start_c - i] == player for i in range(4)):
+                return True
+
+    return False
+```
+This version of `check_potential_win` is more robust.
+It directly checks for a full line of 4 passing through the `(r,c)` position.
+The boundary conditions for `range` should ensure it checks all 4-in-a-row segments that could contain `(r,c)`.
+
+Let's double-check the diagonal logic:
+For positive diagonal (TL-BR), start_r and start_c should be (r-i, c-j). This means `start_r = r - k`, `start_c = c - k`.
+The `offset` should be for the relative position within a 4-in-a-row sequence.
+If `(r,c)` is part of a `4-in-a-row` sequence starting at `(rs, cs)`, then `r = rs + i` and `c = cs + i` for some `i` from 0 to 3.
+So `rs = r - i` and `cs = c - i`.
+The loop `for offset in range(-3, 1)` correctly sets `i` from 0 to 3 relative to `(r,c)`.
+`start_r = r + offset` effectively means `start_r = r - 3` through `r`.
+`start_c = c + offset` effectively means `start_c = c - 3` through `c`.
+This should cover all 4 positions `(r-3,c-3)` to `(r,c)`, `(r-2,c-2)` to `(r+1,c+1)`, etc.
+The bounds `0 <= start_r <= ROWS-4` and `0 <= start_c <= COLS-4` ensure the starting point is valid.
+
+For negative diagonal (TR-BL): If `(r,c)` is part of a `4-in-a-row` sequence starting at `(rs, cs)` (where `cs` is larger than `rs` in terms of column index), then `r = rs + i` and `c = cs - i` for some `i` from 0 to 3.
+So `rs = r - i` and `cs = c + i`.
+The loop for `offset` as `r + offset` `c - offset`
+`start_r = r + offset` means `start_r = r - 3` through `r`.
+`start_c = c - offset` means `start_c = c + 3` through `c`.
+Bounds: `0 <= start_r <= ROWS - 4` ensures room for 4 rows.
+`3 <= start_c <= COLS - 1` ensures room for 4 columns starting from `start_c - 3`. (Since we are decreasing column index).
+This needs adjustment: `start_c` is the top-rightmost point of the diagonal (highest column index for a given row index).
+`start_c` has to be at least `3` to allow `start_c - 0, start_c - 1, start_c - 2, start_c - 3`.
+`start_c` has to be at most `COLS - 1` to be on board.
+This looks correct.
+
+The `policy` function:
+The structure seems fine:
+1.  Win immediately.
+2.  Block immediate opponent win.
+3.  Choose a column from a strategic (center-weighted) list.
+
+This greedy approach is common for simple AI and should perform reasonably. It won't look several steps ahead to set up complex traps or avoid opponent traps, but it will handle the most critical immediate situations.
+
+Let's consider the `copy.deepcopy(board)` inside the loops. A `deepcopy` can be expensive. Since the board is small (6x7), it's probably acceptable within 1 second. Each iteration of `policy` will perform at most `COLS` deep copies, and each deep copy is 6x7 elements. This is very fast.
+
+Final check on the `policy` function's return value: it must be a valid column.
+*   If a direct win is found, `col` is valid.
+*   If a block move is found, `col` is valid.
+*   If `prioritized_valid_cols` has elements, `prioritized_valid_cols[0]` is valid.
+*   If `valid_cols` has elements (fallback), `valid_cols[0]` is valid.
+*   The only case it returns -1 is if `valid_cols` is empty, which implies the board is full. The game should have ended before this state. Okay.
+
+The code looks reasonably solid for a basic Connect 4 AI within the given constraints.
+One small optimization: `get_next_open_row` also simulates the move. I can combine this.
+No, `get_next_open_row` just finds the row. The `temp_board[r][col] = player` *is* the simulation. So that's fine.
+```python
+import copy
+
+# Define board dimensions
+ROWS = 6
+COLS = 7
+
+def get_next_open_row(board: list[list[int]], col: int) -> int:
+    """
+    Finds the next open row in the given column.
+    Returns the row index (0-indexed from top) or -1 if the column is full.
+    """
+    for r in range(ROWS - 1, -1, -1):  # Iterate from bottom row up
+        if board[r][col] == 0:
+            return r
+    return -1  # Column is full
+
+def is_valid_move(board: list[list[int]], col: int) -> bool:
+    """
+    Checks if a column is a valid place to drop a disc (i.e., not full and within bounds).
+    """
+    return 0 <= col < COLS and board[0][col] == 0  # Check if the top cell is empty
+
+def check_potential_win(board: list[list[int]], r: int, c: int, player: int) -> bool:
+    """
+    Checks if placing 'player's disc at (r, c) results in a win for 'player'.
+    """
+
+    # Check horizontal lines
+    # Iterate through all possible starting columns for a 4-in-a-row segment that includes 'c'
+    # For example, if c=3, check segments starting at c-3, c-2, c-1, c
+    for col_start in range(max(0, c - 3), min(COLS - 3, c) + 1):
+        if all(board[r][col_start + i] == player for i in range(4)):
+            return True
+
+    # Check vertical lines
+    # Iterate through all possible starting rows for a 4-in-a-row segment that includes 'r'
+    # Only need to check downwards because discs fall, so potential wins are below 'r'
+    for row_start in range(max(0, r - 3), min(ROWS - 3, r) + 1):
+        if all(board[row_start + i][c] == player for i in range(4)):
+            return True
+
+    # Check positive diagonal (top-left to bottom-right, /)
+    # Iterate through all possible (row,col) starting points for a 4-in-a-row segment that includes (r, c)
+    # A point (r,c) can be the 0th, 1st, 2nd, or 3rd disc in a 4-disc diagonal line.
+    for offset in range(-3, 1): # offset represents how far (r,c) is from the start of the 4-disc sequence
+        start_r, start_c = r + offset, c + offset # The starting point of the potential 4-in-a-row
+        # Check if the potential starting point is within board boundaries and allows for a 4-disc diagonal
+        if 0 <= start_r <= ROWS - 4 and 0 <= start_c <= COLS - 4:
+            if all(board[start_r + i][start_c + i] == player for i in range(4)):
+                return True
+
+    # Check negative diagonal (top-right to bottom-left, \)
+    # Similar logic for negative diagonal
+    for offset in range(-3, 1): # offset represents how far (r,c) is from the start of the 4-disc sequence
+        start_r, start_c = r + offset, c - offset # The starting point of the potential 4-in-a-row
+        # Check if the potential starting point satisfies row bounds AND column bounds for a 4-disc diagonal
+        if 0 <= start_r <= ROWS - 4 and 3 <= start_c <= COLS - 1: # start_c must be at least 3 to have 3 columns to its left
+            if all(board[start_r + i][start_c - i] == player for i in range(4)):
+                return True
+
+    return False
+
+
+def policy(board: list[list[int]]) -> int:
+    my_player = 1
+    opp_player = -1
+
+    # Find all columns that are not full
+    valid_cols = [col for col in range(COLS) if is_valid_move(board, col)]
+
+    # If no valid moves (board full), though this state should ideally not be reached
+    if not valid_cols:
+        return -1 # Or raise an error, depending on expected environment behavior
+
+    # 1. Check for immediate win: If I can win in this turn, do it.
+    for col in valid_cols:
+        r = get_next_open_row(board, col)
+        if r != -1: # This check is redundant because `col` is from `valid_cols`
+            temp_board = copy.deepcopy(board)
+            temp_board[r][col] = my_player
+            if check_potential_win(temp_board, r, col, my_player):
+                return col
+
+    # 2. Check for opponent's immediate win: If opponent can win next turn, block them.
+    for col in valid_cols:
+        r = get_next_open_row(board, col)
+        if r != -1:
+            temp_board = copy.deepcopy(board)
+            temp_board[r][col] = opp_player # Simulate opponent's move
+            if check_potential_win(temp_board, r, col, opp_player):
+                return col # Block this winning move
+
+    # 3. Heuristic: Prioritize columns, favoring the center.
+    # This also implicitly helps create more potential lines for future moves.
+    strategic_cols = [3, 2, 4, 1, 5, 0, 6]
+
+    # Filter strategic_cols to only include columns that are currently valid moves
+    prioritized_valid_cols = [col for col in strategic_cols if col in valid_cols]
+
+    # Return the first valid column from the prioritized list.
+    # This simple heuristic accounts for creating potential lines, as center columns
+    # offer more opportunities for 4-in-a-row in various directions.
+    if prioritized_valid_cols:
+        return prioritized_valid_cols[0]
+    
+    # Fallback: This case should logically be covered by the initial 'if not valid_cols' check,
+    # or by 'prioritized_valid_cols' not being empty if 'valid_cols' wasn't empty.
+    # It's an extra safety measure, though unreachable if valid_cols is not empty.
+    return valid_cols[0] # If all else fails, pick the first available valid column.
+```
+One final thought: the `range(max(0, c - 3), min(COLS - 3, c) + 1)` for horizontal and vertical checks.
+Let's consider `c=0`. `max(0, -3) = 0`. `min(COLS-3, 0)+1 = min(4,0)+1 = 1`. Range is `(0, 1)`, so `col_start = 0`. This means it checks `board[r][0]` through `board[r][3]`. Correct.
+Let's consider `c=3`. `max(0, 0) = 0`. `min(4, 3)+1 = 4`. Range `(0, 4)`. `col_start = 0, 1, 2, 3`. This correctly checks segments `(0-3)`, `(1-4)`, `(2-5)`, `(3-6)`. Correct.
+The `check_potential_win` logic seems solid.
+The policy itself is a classic greedy approach. Good for speed, decent for effectiveness.
+</thinking>
+```python
+import copy
+
+# Define board dimensions for clarity and reusability
+ROWS = 6
+COLS = 7
+
+def get_next_open_row(board: list[list[int]], col: int) -> int:
+    """
+    Finds the next open row in the given column.
+    Returns the row index (0-indexed from top) where a disc would land,
+    or -1 if the column is full.
+    """
+    for r in range(ROWS - 1, -1, -1):  # Iterate from the bottom row upwards
+        if board[r][col] == 0:
+            return r
+    return -1  # Indicates the column is full
+
+def is_valid_move(board: list[list[int]], col: int) -> bool:
+    """
+    Checks if a column is a valid place to drop a disc.
+    A move is valid if the column index is within bounds and the top cell
+    of that column is empty (meaning there's space).
+    """
+    return 0 <= col < COLS and board[0][col] == 0
+
+def check_potential_win(board: list[list[int]], r: int, c: int, player: int) -> bool:
+    """
+    Checks if placing 'player's disc at (r, c) creates a 4-in-a-row win for 'player'.
+    This function efficiently checks all four directions (horizontal, vertical,
+    and two diagonals) centered around the newly placed disc at (r, c).
+    """
+
+    # Check horizontal lines
+    # Iterate through all possible starting columns (col_start) for a 4-disc segment
+    # that could include the current column 'c' at row 'r'.
+    # A segment starts at col_start and ends at col_start + 3.
+    # The 'max/min' ensures we stay within board boundaries.
+    for col_start in range(max(0, c - 3), min(COLS - 3, c) + 1):
+        if all(board[r][col_start + i] == player for i in range(4)):
+            return True
+
+    # Check vertical lines
+    # Similar to horizontal, but checking rows. Since discs fall downwards,
+    # a vertical win will always involve cells at 'r' and below it.
+    for row_start in range(max(0, r - 3), min(ROWS - 3, r) + 1):
+        if all(board[row_start + i][c] == player for i in range(4)):
+            return True
+
+    # Check positive diagonal (top-left to bottom-right, looks like '/')
+    # Iterate through all possible (row,col) starting points for a 4-disc diagonal segment
+    # that includes the current (r, c).
+    # 'offset' represents how far (r,c) is from the top-left start of a 4-disc sequence (0-3).
+    for offset in range(-3, 1): # Example: if offset=-3, (r,c) is the 4th disc in the sequence.
+                               # if offset=0, (r,c) is the 1st disc in the sequence.
+        start_r, start_c = r + offset, c + offset
+        # Ensure the potential 4-disc segment is entirely within the board
+        if 0 <= start_r <= ROWS - 4 and 0 <= start_c <= COLS - 4:
+            if all(board[start_r + i][start_c + i] == player for i in range(4)):
+                return True
+
+    # Check negative diagonal (top-right to bottom-left, looks like '\')
+    # Similar logic for the other diagonal direction.
+    for offset in range(-3, 1):
+        start_r, start_c = r + offset, c - offset
+        # Ensure the potential 4-disc segment is entirely within the board.
+        # For this diagonal, start_c must be at least 3 to have 3 columns to its left.
+        if 0 <= start_r <= ROWS - 4 and 3 <= start_c <= COLS - 1:
+            if all(board[start_r + i][start_c - i] == player for i in range(4)):
+                return True
+
+    return False
+
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Implements a targeting policy for a Connect 4 AI.
+    The AI prioritizes:
+    1. Winning in the current turn.
+    2. Blocking the opponent from winning in their next turn.
+    3. Making a strategic move, favoring center columns.
+    """
+    my_player = 1
+    opp_player = -1
+
+    # Get a list of all columns that are currently valid moves
+    valid_cols = [col for col in range(COLS) if is_valid_move(board, col)]
+
+    # If, hypothetically, there are no valid moves left (board is full)
+    # this condition should ideally not be met in a normal game flow.
+    if not valid_cols:
+        # As a fallback, if no columns are available, return the first one (which implies an error)
+        # or raise an exception. For competitive arena, an int is expected.
+        # This implies a game over state, which the arena should handle.
+        return 3 # Return a central column, though it's invalid.
+
+    # --- Strategy Step 1: Check for immediate win opportunities ---
+    # Iterate through all possible moves (valid columns)
+    for col in valid_cols:
+        r = get_next_open_row(board, col)
+        if r != -1: # Ensure a valid row was found (should always be true for valid_cols)
+            # Simulate placing my disc in this column
+            temp_board = copy.deepcopy(board) # Create a deep copy to avoid modifying the actual board
+            temp_board[r][col] = my_player
+            # Check if this move results in a win for me
+            if check_potential_win(temp_board, r, col, my_player):
+                return col  # If I can win, take the win immediately!
+
+    # --- Strategy Step 2: Block opponent's immediate win opportunities ---
+    # Iterate through all possible moves again
+    for col in valid_cols:
+        r = get_next_open_row(board, col)
+        if r != -1:
+            # Simulate opponent placing their disc in this column
+            temp_board = copy.deepcopy(board)
+            temp_board[r][col] = opp_player # Simulate opponent's move
+            # Check if this move would result in a win for the opponent
+            if check_potential_win(temp_board, r, col, opp_player):
+                return col  # If opponent can win, block them!
+
+    # --- Strategy Step 3: Make a strategic move (heuristic-based) ---
+    # If no immediate wins or blocks are needed, choose a column based on a heuristic.
+    # Prioritizing center columns is generally a good strategy in Connect 4,
+    # as they offer more potential lines (horizontal, vertical, both diagonals).
+    strategic_cols = [3, 2, 4, 1, 5, 0, 6] # Order of preference for columns
+
+    # Filter the strategic columns to only include those that are currently valid moves.
+    prioritized_valid_cols = [col for col in strategic_cols if col in valid_cols]
+
+    # Return the first available column from the prioritized list.
+    # This acts as a good default move if no immediate threats or wins are present.
+    if prioritized_valid_cols:
+        return prioritized_valid_cols[0]
+    
+    # Fallback: This case should only be reached if `valid_cols` is empty,
+    # which is already handled above. It's a safety net.
+    return valid_cols[0] # Return the first valid column if prioritized_valid_cols is empty for some reason.
+
+```

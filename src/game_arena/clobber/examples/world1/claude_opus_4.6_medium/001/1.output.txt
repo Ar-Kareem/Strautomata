@@ -1,0 +1,147 @@
+My strategy uses alpha-beta minimax search with iterative deepening. The evaluation function considers mobility (number of legal moves available to each player), with the player having more moves being favored. I use move ordering to explore captures that maximize mobility first, improving pruning efficiency.
+
+<code>
+import numpy as np
+import time
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+    ROWS, COLS = 5, 6
+    
+    def get_moves(my, opp):
+        moves = []
+        for r in range(ROWS):
+            for c in range(COLS):
+                if my[r, c] == 1:
+                    for dr, dc, d in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and opp[nr, nc] == 1:
+                            moves.append((r, c, nr, nc, d))
+        return moves
+    
+    def count_moves(my, opp):
+        count = 0
+        for r in range(ROWS):
+            for c in range(COLS):
+                if my[r, c] == 1:
+                    for dr, dc, d in DIRS:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < ROWS and 0 <= nc < COLS and opp[nr, nc] == 1:
+                            count += 1
+        return count
+    
+    def evaluate(my, opp):
+        my_moves = count_moves(my, opp)
+        opp_moves = count_moves(opp, my)
+        if my_moves == 0:
+            return -1000
+        if opp_moves == 0:
+            return 1000
+        return my_moves - opp_moves
+    
+    def alphabeta(my, opp, depth, alpha, beta, maximizing, deadline):
+        if time.time() > deadline:
+            return evaluate(my, opp), None
+        
+        moves = get_moves(my, opp)
+        if not moves:
+            return -1000 if maximizing else 1000, None
+        
+        if depth == 0:
+            return evaluate(my, opp), None
+        
+        best_move = moves[0]
+        if maximizing:
+            value = -10000
+            for r, c, nr, nc, d in moves:
+                new_my = my.copy()
+                new_opp = opp.copy()
+                new_my[r, c] = 0
+                new_my[nr, nc] = 1
+                new_opp[nr, nc] = 0
+                v, _ = alphabeta(new_opp, new_my, depth - 1, -beta, -alpha, True, deadline)
+                v = -v
+                if v > value:
+                    value = v
+                    best_move = (r, c, nr, nc, d)
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+                if time.time() > deadline:
+                    break
+            return value, best_move
+        else:
+            value = 10000
+            for r, c, nr, nc, d in moves:
+                new_my = my.copy()
+                new_opp = opp.copy()
+                new_my[r, c] = 0
+                new_my[nr, nc] = 1
+                new_opp[nr, nc] = 0
+                v, _ = alphabeta(new_opp, new_my, depth - 1, -beta, -alpha, True, deadline)
+                v = -v
+                if v < value:
+                    value = v
+                    best_move = (r, c, nr, nc, d)
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+                if time.time() > deadline:
+                    break
+            return value, best_move
+    
+    # Negamax style - always maximizing from current player's perspective
+    def negamax(my, opp, depth, alpha, beta, deadline):
+        if time.time() > deadline:
+            return evaluate(my, opp), None
+        
+        moves = get_moves(my, opp)
+        if not moves:
+            return -1000, None
+        
+        if depth == 0:
+            return evaluate(my, opp), None
+        
+        best_move = moves[0]
+        value = -10000
+        for r, c, nr, nc, d in moves:
+            new_my = my.copy()
+            new_opp = opp.copy()
+            new_my[r, c] = 0
+            new_my[nr, nc] = 1
+            new_opp[nr, nc] = 0
+            v, _ = negamax(new_opp, new_my, depth - 1, -beta, -alpha, deadline)
+            v = -v
+            if v > value:
+                value = v
+                best_move = (r, c, nr, nc, d)
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+            if time.time() > deadline:
+                break
+        return value, best_move
+    
+    deadline = time.time() + 0.85
+    
+    moves = get_moves(you, opponent)
+    if len(moves) == 1:
+        r, c, nr, nc, d = moves[0]
+        return f"{r},{c},{d}"
+    
+    best_move = moves[0]
+    for depth in range(1, 20):
+        if time.time() > deadline:
+            break
+        v, move = negamax(you, opponent, depth, -10000, 10000, deadline)
+        if move is not None:
+            best_move = move
+        if abs(v) >= 1000:
+            break
+    
+    r, c, nr, nc, d = best_move
+    return f"{r},{c},{d}"
+</code>

@@ -1,0 +1,202 @@
+
+import numpy as np
+from typing import List, Tuple, Optional
+
+# Precompute all possible 4-cell windows (horizontal, vertical, diagonal)
+_WINDOWS: List[List[Tuple[int, int]]] = []
+
+# Horizontal
+for r in range(6):
+    for c in range(4):
+        _WINDOWS.append([(r, c + i) for i in range(4)])
+
+# Vertical
+for r in range(3):
+    for c in range(7):
+        _WINDOWS.append([(r + i, c) for i in range(4)])
+
+# Diagonal / (up-right)
+for r in range(3, 6):
+    for c in range(4):
+        _WINDOWS.append([(r - i, c + i) for i in range(4)])
+
+# Diagonal \ (down-right)
+for r in range(3):
+    for c in range(4):
+        _WINDOWS.append([(r + i, c + i) for i in range(4)])
+
+
+def _get_valid_moves(board: List[List[int]]) -> List[int]:
+    """Return list of non-full columns."""
+    return [c for c in range(7) if board[0][c] == 0]
+
+
+def _get_next_open_row(board: List[List[int]], col: int) -> int:
+    """Return the lowest empty row in column, or -1 if full."""
+    for r in range(5, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return -1
+
+
+def _check_win(board: List[List[int]], player: int) -> bool:
+    """Check if player has 4 in a row anywhere."""
+    for window in _WINDOWS:
+        if all(board[r][c] == player for r, c in window):
+            return True
+    return False
+
+
+def _evaluate_board(board: List[List[int]], player: int) -> float:
+    """Heuristic evaluation of board state from player's perspective."""
+    score = 0.0
+    
+    # Center column preference (column 3)
+    center_count = sum(1 for r in range(6) if board[r][3] == player)
+    score += center_count * 3
+    
+    # Evaluate all windows
+    for window in _WINDOWS:
+        cells = [board[r][c] for r, c in window]
+        player_count = cells.count(player)
+        empty_count = cells.count(0)
+        opp_count = cells.count(-player)
+        
+        if player_count == 4:
+            score += 100
+        elif player_count == 3 and empty_count == 1:
+            score += 5
+        elif player_count == 2 and empty_count == 2:
+            score += 2
+        
+        # Block opponent threats
+        if opp_count == 3 and empty_count == 1:
+            score -= 4
+            
+    return score
+
+
+def _minimax(
+    board: List[List[int]], 
+    depth: int, 
+    alpha: float, 
+    beta: float, 
+    maximizing: bool, 
+    player: int
+) -> Tuple[Optional[int], float]:
+    """
+    Minimax algorithm with alpha-beta pruning.
+    Returns (best_column, best_score).
+    """
+    valid_moves = _get_valid_moves(board)
+    
+    # Terminal states
+    is_win = _check_win(board, player)
+    is_loss = _check_win(board, -player)
+    is_draw = len(valid_moves) == 0
+    
+    if is_win:
+        return None, 1000000.0
+    if is_loss:
+        return None, -1000000.0
+    if is_draw:
+        return None, 0.0
+    if depth == 0:
+        return None, _evaluate_board(board, player)
+    
+    # Move ordering: center columns first for better pruning
+    valid_moves.sort(key=lambda x: abs(3 - x))
+    
+    if maximizing:
+        value = -float('inf')
+        best_col = valid_moves[0]
+        for col in valid_moves:
+            row = _get_next_open_row(board, col)
+            if row == -1:
+                continue
+            # Simulate move
+            board[row][col] = player
+            _, new_score = _minimax(board, depth - 1, alpha, beta, False, player)
+            # Undo move
+            board[row][col] = 0
+            
+            if new_score > value:
+                value = new_score
+                best_col = col
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return best_col, value
+    else:
+        value = float('inf')
+        best_col = valid_moves[0]
+        for col in valid_moves:
+            row = _get_next_open_row(board, col)
+            if row == -1:
+                continue
+            # Simulate opponent move
+            board[row][col] = -player
+            _, new_score = _minimax(board, depth - 1, alpha, beta, True, player)
+            # Undo move
+            board[row][col] = 0
+            
+            if new_score < value:
+                value = new_score
+                best_col = col
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return best_col, value
+
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Determine the best move for the current player (1).
+    """
+    # Handle numpy array input if provided
+    if isinstance(board, np.ndarray):
+        board = board.tolist()
+    
+    valid_moves = _get_valid_moves(board)
+    if not valid_moves:
+        return 0  # Should not happen in a valid game
+    
+    # 1. Check for immediate winning move
+    for col in valid_moves:
+        row = _get_next_open_row(board, col)
+        board[row][col] = 1
+        is_win = _check_win(board, 1)
+        board[row][col] = 0
+        if is_win:
+            return col
+    
+    # 2. Check for immediate opponent win (block)
+    for col in valid_moves:
+        row = _get_next_open_row(board, col)
+        board[row][col] = -1
+        is_opp_win = _check_win(board, -1)
+        board[row][col] = 0
+        if is_opp_win:
+            return col
+    
+    # 3. Use minimax with alpha-beta (depth 5 for 1-second constraint)
+    try:
+        best_col, _ = _minimax(board, 5, -float('inf'), float('inf'), True, 1)
+        if best_col is not None and best_col in valid_moves:
+            return best_col
+    except Exception:
+        pass
+    
+    # 4. Fallback: heuristic-based selection
+    best_score = -float('inf')
+    best_col = valid_moves[0]
+    for col in valid_moves:
+        row = _get_next_open_row(board, col)
+        board[row][col] = 1
+        score = _evaluate_board(board, 1)
+        board[row][col] = 0
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col

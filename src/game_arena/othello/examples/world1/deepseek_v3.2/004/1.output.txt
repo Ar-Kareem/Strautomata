@@ -1,0 +1,167 @@
+**Strategy**:  
+
+This policy uses a two‑stage approach:  
+
+1. **Early game (moves 1‑20)** – Prefer stable corners and edges while avoiding moves that give the opponent a corner. Weights squares with a static positional score (corner = high, adjacent to corner = low).  
+2. **Mid/late game (moves 21‑60)** – Switch to maximizing disc differential with mobility consideration.  
+3. **Endgame (last ~12 moves)** – Exact minimax with alpha‑beta pruning limited by depth to stay within 1 second.  
+
+We also implement move ordering (corners first, then edges, then interior) and a simple mobility‑difference heuristic.  
+If no legal moves, we return `"pass"`.  
+
+**Implementation**:  
+
+<code>
+import numpy as np
+from copy import deepcopy
+
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+              (0, -1),           (0, 1),
+              (1, -1),  (1, 0),  (1, 1)]
+
+# Static board valuation for early/midgame
+WEIGHT_MATRIX = np.array([
+    [ 50, -10,  5,  3,  3,  5, -10,  50],
+    [-10, -20, -3, -3, -3, -3, -20, -10],
+    [  5,  -3,  1,  1,  1,  1,  -3,   5],
+    [  3,  -3,  1,  1,  1,  1,  -3,   3],
+    [  3,  -3,  1,  1,  1,  1,  -3,   3],
+    [  5,  -3,  1,  1,  1,  1,  -3,   5],
+    [-10, -20, -3, -3, -3, -3, -20, -10],
+    [ 50, -10,  5,  3,  3,  5, -10,  50]
+])
+
+def get_legal_moves(board_me, board_opp):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board_me[r][c] == 0 and board_opp[r][c] == 0:
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8 and board_opp[nr][nc] == 1:
+                        while 0 <= nr < 8 and 0 <= nc < 8 and board_opp[nr][nc] == 1:
+                            nr += dr
+                            nc += dc
+                        if 0 <= nr < 8 and 0 <= nc < 8 and board_me[nr][nc] == 1:
+                            moves.append((r, c))
+                            break
+    return list(set(moves))
+
+def apply_move(board_me, board_opp, move_r, move_c):
+    new_me = board_me.copy()
+    new_opp = board_opp.copy()
+    new_me[move_r][move_c] = 1
+    for dr, dc in DIRECTIONS:
+        r, c = move_r + dr, move_c + dc
+        to_flip = []
+        while 0 <= r < 8 and 0 <= c < 8 and new_opp[r][c] == 1:
+            to_flip.append((r, c))
+            r += dr
+            c += dc
+        if 0 <= r < 8 and 0 <= c < 8 and new_me[r][c] == 1:
+            for fr, fc in to_flip:
+                new_me[fr][fc] = 1
+                new_opp[fr][fc] = 0
+    return new_me, new_opp
+
+def count_discs(board):
+    return np.sum(board)
+
+def mobility_heuristic(board_me, board_opp):
+    my_moves = len(get_legal_moves(board_me, board_opp))
+    opp_moves = len(get_legal_moves(board_opp, board_me))
+    return my_moves - opp_moves
+
+def positional_score(board_me, board_opp):
+    return np.sum(board_me * WEIGHT_MATRIX) - np.sum(board_opp * WEIGHT_MATRIX)
+
+def evaluate(board_me, board_opp, move_count):
+    if move_count >= 50:  # endgame
+        return count_discs(board_me) - count_discs(board_opp)
+    else:
+        pos = positional_score(board_me, board_opp)
+        mob = mobility_heuristic(board_me, board_opp)
+        return pos + 5 * mob
+
+def alphabeta(board_me, board_opp, depth, alpha, beta, maximizing, move_count):
+    my_moves = get_legal_moves(board_me, board_opp)
+    if depth == 0 or not my_moves:
+        opp_moves = get_legal_moves(board_opp, board_me)
+        if not my_moves and not opp_moves:
+            # terminal
+            return count_discs(board_me) - count_discs(board_opp)
+        return evaluate(board_me, board_opp, move_count)
+    
+    if maximizing:
+        value = -9999
+        for r, c in my_moves:
+            new_me, new_opp = apply_move(board_me, board_opp, r, c)
+            value = max(value, alphabeta(new_me, new_opp, depth-1, alpha, beta, False, move_count+1))
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = 9999
+        opp_moves = get_legal_moves(board_opp, board_me)
+        for r, c in opp_moves:
+            # role reversed
+            new_opp, new_me = apply_move(board_opp, board_me, r, c)
+            value = min(value, alphabeta(new_me, new_opp, depth-1, alpha, beta, True, move_count+1))
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    legal_moves = get_legal_moves(you, opponent)
+    if not legal_moves:
+        return "pass"
+    
+    total_discs = count_discs(you) + count_discs(opponent)
+    move_count = total_discs - 4  # initial 4 discs
+    
+    # Prefer corners immediately if available
+    corners = [(0,0),(0,7),(7,0),(7,7)]
+    for r, c in corners:
+        if (r, c) in legal_moves:
+            return f"{chr(ord('a')+c)}{r+1}"
+    
+    # Order moves: corners already done, then edges, then interior
+    edge_cells = [(0, i) for i in range(1,7)] + [(7, i) for i in range(1,7)] + \
+                 [(i, 0) for i in range(1,7)] + [(i, 7) for i in range(1,7)]
+    ordered_moves = []
+    for r, c in corners:
+        if (r, c) in legal_moves:
+            ordered_moves.append((r,c))
+    for r, c in edge_cells:
+        if (r, c) in legal_moves:
+            ordered_moves.append((r,c))
+    for r, c in legal_moves:
+        if (r, c) not in ordered_moves:
+            ordered_moves.append((r,c))
+    
+    # Choose depth based on remaining moves
+    if move_count >= 48:  # last 16 moves
+        depth = 6
+    elif move_count >= 40:
+        depth = 5
+    elif move_count >= 30:
+        depth = 4
+    elif move_count >= 20:
+        depth = 3
+    else:
+        depth = 3  # early game depth limited for speed
+    
+    best_move = ordered_moves[0]
+    best_value = -99999
+    for r, c in ordered_moves:
+        new_me, new_opp = apply_move(you, opponent, r, c)
+        val = alphabeta(new_me, new_opp, depth-1, -99999, 99999, False, move_count+1)
+        if val > best_value:
+            best_value = val
+            best_move = (r, c)
+    
+    r, c = best_move
+    return f"{chr(ord('a')+c)}{r+1}"
+</code>

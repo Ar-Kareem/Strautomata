@@ -1,0 +1,95 @@
+Here's a strategy for a chess policy that balances material advantage, piece activity, king safety, and basic tactical awareness:
+
+1. **Checkmate Detection**: First check if any move delivers checkmate, and play it immediately.
+
+2. **Material Evaluation**: Assign standard piece values (Queen=9, Rook=5, Bishop/Knight=3, Pawn=1) and prioritize capturing the highest-value opponent piece when possible.
+
+3. **Piece Activity**: Prefer moves that control the center and develop pieces when material is equal.
+
+4. **King Safety**: In the opening/middlegame, avoid moving the king unless castling is available. In endgames, centralize the king.
+
+5. **Basic Tactics**: Look for forks, pins, and discovered attacks by evaluating if a move attacks multiple pieces.
+
+6. **Pawn Structure**: Prefer advancing passed pawns and avoid creating isolated pawns when possible.
+
+Here's the implementation:
+
+<code>
+import numpy as np
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if color == 'w' else 'w'
+    
+    # Piece values
+    piece_values = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1, 'K': 0}
+    
+    def evaluate_move(move):
+        score = 0
+        
+        # Check for checkmate
+        if move.endswith('#'):
+            return 10000
+        
+        # Check for check
+        if move.endswith('+'):
+            score += 50
+        
+        # Capture evaluation
+        if 'x' in move:
+            captured_square = move.split('x')[1][:2]
+            if captured_square in pieces:
+                captured_piece = pieces[captured_square][1]
+                score += piece_values.get(captured_piece, 0) * 10
+        
+        # Promotion
+        if '=' in move:
+            promo_piece = move.split('=')[1][0]
+            score += piece_values.get(promo_piece, 0) * 5
+        
+        # Castling
+        if move in ('O-O', 'O-O-O'):
+            score += 30
+        
+        # Piece development (prefer moving pieces from back rank)
+        if len(move) >= 2:
+            if move[0] in 'QRBN' and move[1] in 'abcdefgh' and move[1] in '18':
+                score += 5
+        
+        # Center control for pawns
+        if move[0].islower() and len(move) >= 2:  # Pawn move
+            file, rank = move[0], move[1]
+            if file in 'de' and rank in '456':
+                score += 3
+        
+        # King safety (avoid moving king early)
+        if move[0] == 'K' and len(pieces) > 20:
+            score -= 10
+        
+        # Fork detection (simplified)
+        if len(move) >= 2 and move[0] in 'N':
+            score += 5  # Bonus for knight moves
+            
+        return score
+    
+    # Evaluate all moves and pick the best one
+    scored_moves = [(move, evaluate_move(move)) for move in legal_moves]
+    scored_moves.sort(key=lambda x: -x[1])
+    
+    # Return the move with highest score, with random choice among top 3 to avoid repetition
+    top_score = scored_moves[0][1]
+    best_moves = [m for m, s in scored_moves if s == top_score]
+    
+    # If multiple moves have same top score, prefer captures then checks then shorter notation
+    if len(best_moves) > 1:
+        captures = [m for m in best_moves if 'x' in m]
+        if captures:
+            best_moves = captures
+        checks = [m for m in best_moves if m.endswith('+')]
+        if checks:
+            best_moves = checks
+        # Prefer simpler notation among equals
+        best_moves.sort(key=lambda x: len(x))
+    
+    return best_moves[0]
+</code>

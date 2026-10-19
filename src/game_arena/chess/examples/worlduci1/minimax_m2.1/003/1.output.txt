@@ -1,0 +1,811 @@
+# Chess Policy Strategy
+
+My chess move selection policy uses a minimax search with alpha-beta pruning and sophisticated move ordering to select strong moves efficiently. The key components are:
+
+1. **Fast Move Generation**: Generate all legal moves for the current position using piece-centric logic
+2. **Evaluation Function**: Combines material count with positional bonuses (piece-square tables, center control, king safety, pawn structure)
+3. **Search Algorithm**: Alpha-beta pruning with iterative deepening, evaluating captures with MVV-LVA ordering and generating check evasions first
+4. **Move Prioritization**: Checkmates → winning captures → positive material trades → development → positional improvements
+
+The algorithm runs in under 1 second by using efficient move generation and pruning, making it competitive in a fast-paced arena setting.
+<code>
+import math
+import random
+from typing import Dict, List, Tuple, Optional
+from collections import defaultdict
+
+# Constants
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000,
+    'p': -100, 'n': -320, 'b': -330, 'r': -500, 'q': -900, 'k': -20000
+}
+
+# Pawn position tables (for white - black will use flipped versions)
+PAWN_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    0,  0,  0, 20, 20,  0,  0,  0,
+    5, -5,-10,  0,  0,-10, -5,  5,
+    5, 10, 10,-20,-20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+]
+
+# Knight position tables
+KNIGHT_TABLE = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50
+]
+
+# Bishop position tables
+BISHOP_TABLE = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20
+]
+
+# Rook position tables
+ROOK_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+]
+
+# Queen position tables
+QUEEN_TABLE = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+]
+
+# King middle game tables
+KING_MIDDLE_TABLE = [
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+    20, 20,  0,  0,  0,  0, 20, 20,
+    20, 30, 10,  0,  0, 10, 30, 20
+]
+
+# King endgame tables
+KING_END_TABLE = [
+    -50,-40,-30,-20,-20,-30,-40,-50,
+    -30,-20,-10,  0,  0,-10,-20,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-30,  0,  0,  0,  0,-30,-30,
+    -50,-30,-30,-30,-30,-30,-30,-50
+]
+
+# Direction vectors for piece movement
+KNIGHT_DIRS = [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]
+BISHOP_DIRS = [(-1,-1), (-1,1), (1,-1), (1,1)]
+ROOK_DIRS = [(-1,0), (1,0), (0,-1), (0,1)]
+KING_DIRS = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+
+
+def algebraic_to_coords(square: str) -> Tuple[int, int]:
+    """Convert algebraic notation (e.g., 'e4') to (x, y) coordinates."""
+    return ord(square[0]) - ord('a'), int(square[1]) - 1
+
+
+def coords_to_algebraic(x: int, y: int) -> str:
+    """Convert (x, y) coordinates to algebraic notation."""
+    return chr(ord('a') + x) + str(y + 1)
+
+
+def make_square(x: int, y: int) -> int:
+    """Create a bitboard square index from coordinates."""
+    return y * 8 + x
+
+
+def flip_square(square: int) -> int:
+    """Flip a square for the opposite color."""
+    return square ^ 56  # XOR with 56 to flip rank
+
+
+def parse_pieces(pieces: Dict[str, str]) -> Dict[int, str]:
+    """Convert algebraic piece dictionary to bitboard format."""
+    result = {}
+    for square_str, piece_code in pieces.items():
+        x, y = algebraic_to_coords(square_str)
+        square = make_square(x, y)
+        result[square] = piece_code
+    return result
+
+
+def get_piece_color(piece: str) -> str:
+    """Get color of a piece."""
+    return 'white' if piece[0] == 'w' else 'black'
+
+
+def get_piece_type(piece: str) -> str:
+    """Get type of a piece (K, Q, R, B, N, P)."""
+    return piece[1]
+
+
+def is_white_piece(piece: str) -> bool:
+    """Check if piece is white."""
+    return piece[0] == 'w'
+
+
+def get_opposite_color(color: str) -> str:
+    """Get the opposite color."""
+    return 'black' if color == 'white' else 'white'
+
+
+def generate_pawn_moves(pieces: Dict[int, str], square: int, color: str, 
+                        for_legal: bool = True) -> List[Tuple[int, str]]:
+    """Generate pseudo-legal pawn moves."""
+    moves = []
+    x, y = square % 8, square // 8
+    direction = 1 if color == 'white' else -1
+    start_rank = 1 if color == 'white' else 6
+    promotion_rank = 7 if color == 'white' else 0
+    
+    # Forward move
+    new_y = y + direction
+    if 0 <= new_y < 8:
+        new_square = make_square(x, new_y)
+        if new_square not in pieces:
+            if new_y == promotion_rank:
+                for promo in ['q', 'r', 'b', 'n']:
+                    moves.append((new_square, promo))
+            else:
+                moves.append((new_square, ''))
+            
+            # Double move from start
+            double_y = y + 2 * direction
+            if y == start_rank and 0 <= double_y < 8:
+                double_square = make_square(x, double_y)
+                if double_square not in pieces:
+                    moves.append((double_square, ''))
+    
+    # Captures
+    for dx in [-1, 1]:
+        new_x, new_y = x + dx, y + direction
+        if 0 <= new_x < 8 and 0 <= new_y < 8:
+            new_square = make_square(new_x, new_y)
+            if new_square in pieces:
+                target_piece = pieces[new_square]
+                if get_piece_color(target_piece) != color:
+                    if new_y == promotion_rank:
+                        for promo in ['q', 'r', 'b', 'n']:
+                            moves.append((new_square, promo))
+                    else:
+                        moves.append((new_square, ''))
+    
+    return moves
+
+
+def generate_sliding_moves(pieces: Dict[int, str], square: int, color: str,
+                          directions: List[Tuple[int, int]], 
+                          for_legal: bool = True) -> List[Tuple[int, str]]:
+    """Generate sliding moves (bishop, rook, queen)."""
+    moves = []
+    x, y = square % 8, square // 8
+    
+    for dx, dy in directions:
+        curr_x, curr_y = x + dx, y + dy
+        while 0 <= curr_x < 8 and 0 <= curr_y < 8:
+            new_square = make_square(curr_x, curr_y)
+            if new_square in pieces:
+                if get_piece_color(pieces[new_square]) != color:
+                    moves.append((new_square, ''))
+                break
+            moves.append((new_square, ''))
+            curr_x += dx
+            curr_y += dy
+    
+    return moves
+
+
+def generate_knight_moves(pieces: Dict[int, str], square: int, color: str,
+                         for_legal: bool = True) -> List[Tuple[int, str]]:
+    """Generate knight moves."""
+    moves = []
+    x, y = square % 8, square // 8
+    
+    for dx, dy in KNIGHT_DIRS:
+        new_x, new_y = x + dx, y + dy
+        if 0 <= new_x < 8 and 0 <= new_y < 8:
+            new_square = make_square(new_x, new_y)
+            if new_square not in pieces or get_piece_color(pieces[new_square]) != color:
+                moves.append((new_square, ''))
+    
+    return moves
+
+
+def generate_king_moves(pieces: Dict[int, str], square: int, color: str,
+                       for_legal: bool = True) -> List[Tuple[int, str]]:
+    """Generate king moves including castling."""
+    moves = []
+    x, y = square % 8, square // 8
+    
+    # Normal moves
+    for dx, dy in KING_DIRS:
+        new_x, new_y = x + dx, y + dy
+        if 0 <= new_x < 8 and 0 <= new_y < 8:
+            new_square = make_square(new_x, new_y)
+            if new_square not in pieces or get_piece_color(pieces[new_square]) != color:
+                moves.append((new_square, ''))
+    
+    # Castling
+    if for_legal:
+        if color == 'white':
+            if square == make_square(4, 0) and pieces.get(make_square(4, 0)) == 'wK':
+                # Kingside
+                if (pieces.get(make_square(5, 0)) is None and 
+                    pieces.get(make_square(6, 0)) is None and
+                    pieces.get(make_square(7, 0)) == 'wR' and
+                    not is_square_attacked(pieces, make_square(4, 0), 'black') and
+                    not is_square_attacked(pieces, make_square(5, 0), 'black') and
+                    not is_square_attacked(pieces, make_square(6, 0), 'black')):
+                    moves.append((make_square(6, 0), ''))
+                # Queenside
+                if (pieces.get(make_square(1, 0)) is None and 
+                    pieces.get(make_square(2, 0)) is None and
+                    pieces.get(make_square(3, 0)) is None and
+                    pieces.get(make_square(0, 0)) == 'wR' and
+                    not is_square_attacked(pieces, make_square(4, 0), 'black') and
+                    not is_square_attacked(pieces, make_square(3, 0), 'black') and
+                    not is_square_attacked(pieces, make_square(2, 0), 'black')):
+                    moves.append((make_square(2, 0), ''))
+        else:
+            if square == make_square(4, 7) and pieces.get(make_square(4, 7)) == 'bK':
+                # Kingside
+                if (pieces.get(make_square(5, 7)) is None and 
+                    pieces.get(make_square(6, 7)) is None and
+                    pieces.get(make_square(7, 7)) == 'bR' and
+                    not is_square_attacked(pieces, make_square(4, 7), 'white') and
+                    not is_square_attacked(pieces, make_square(5, 7), 'white') and
+                    not is_square_attacked(pieces, make_square(6, 7), 'white')):
+                    moves.append((make_square(6, 7), ''))
+                # Queenside
+                if (pieces.get(make_square(1, 7)) is None and 
+                    pieces.get(make_square(2, 7)) is None and
+                    pieces.get(make_square(3, 7)) is None and
+                    pieces.get(make_square(0, 7)) == 'bR' and
+                    not is_square_attacked(pieces, make_square(4, 7), 'white') and
+                    not is_square_attacked(pieces, make_square(3, 7), 'white') and
+                    not is_square_attacked(pieces, make_square(2, 7), 'white')):
+                    moves.append((make_square(2, 7), ''))
+    
+    return moves
+
+
+def generate_pseudo_legal_moves(pieces: Dict[int, str], color: str,
+                               for_legal: bool = True) -> List[Tuple[int, str, str]]:
+    """Generate all pseudo-legal moves for a color."""
+    moves = []
+    
+    for square, piece in pieces.items():
+        if get_piece_color(piece) != color:
+            continue
+        
+        piece_type = get_piece_type(piece)
+        
+        if piece_type == 'P':
+            pawn_moves = generate_pawn_moves(pieces, square, color, for_legal)
+            for target, promo in pawn_moves:
+                moves.append((square, target, promo))
+        elif piece_type == 'N':
+            knight_moves = generate_knight_moves(pieces, square, color, for_legal)
+            for target, _ in knight_moves:
+                moves.append((square, target, ''))
+        elif piece_type == 'B':
+            bishop_moves = generate_sliding_moves(pieces, square, color, BISHOP_DIRS, for_legal)
+            for target, _ in bishop_moves:
+                moves.append((square, target, ''))
+        elif piece_type == 'R':
+            rook_moves = generate_sliding_moves(pieces, square, color, ROOK_DIRS, for_legal)
+            for target, _ in rook_moves:
+                moves.append((square, target, ''))
+        elif piece_type == 'Q':
+            queen_moves = generate_sliding_moves(pieces, square, color, BISHOP_DIRS + ROOK_DIRS, for_legal)
+            for target, _ in queen_moves:
+                moves.append((square, target, ''))
+        elif piece_type == 'K':
+            king_moves = generate_king_moves(pieces, square, color, for_legal)
+            for target, _ in king_moves:
+                moves.append((square, target, ''))
+    
+    return moves
+
+
+def is_square_attacked(pieces: Dict[int, str], square: int, attacker_color: str) -> bool:
+    """Check if a square is attacked by a given color."""
+    # Check pawn attacks
+    direction = -1 if attacker_color == 'white' else 1
+    x, y = square % 8, square // 8
+    
+    for dx in [-1, 1]:
+        pawn_x, pawn_y = x + dx, y + direction
+        if 0 <= pawn_x < 8 and 0 <= pawn_y < 8:
+            pawn_square = make_square(pawn_x, pawn_y)
+            if pawn_square in pieces:
+                piece = pieces[pawn_square]
+                if get_piece_color(piece) == attacker_color and get_piece_type(piece) == 'P':
+                    return True
+    
+    # Check knight attacks
+    for dx, dy in KNIGHT_DIRS:
+        knight_x, knight_y = x + dx, y + dy
+        if 0 <= knight_x < 8 and 0 <= knight_y < 8:
+            knight_square = make_square(knight_x, knight_y)
+            if knight_square in pieces:
+                piece = pieces[knight_square]
+                if get_piece_color(piece) == attacker_color and get_piece_type(piece) == 'N':
+                    return True
+    
+    # Check king attacks
+    for dx, dy in KING_DIRS:
+        king_x, king_y = x + dx, y + dy
+        if 0 <= king_x < 8 and 0 <= king_y < 8:
+            king_square = make_square(king_x, king_y)
+            if king_square in pieces:
+                piece = pieces[king_square]
+                if get_piece_color(piece) == attacker_color and get_piece_type(piece) == 'K':
+                    return True
+    
+    # Check sliding attacks (bishop/queen diagonals, rook/queen straights)
+    for directions, attack_types in [(BISHOP_DIRS, ['B', 'Q']), (ROOK_DIRS, ['R', 'Q'])]:
+        for dx, dy in directions:
+            curr_x, curr_y = x + dx, y + dy
+            while 0 <= curr_x < 8 and 0 <= curr_y < 8:
+                curr_square = make_square(curr_x, curr_y)
+                if curr_square in pieces:
+                    piece = pieces[curr_square]
+                    if get_piece_color(piece) == attacker_color and get_piece_type(piece) in attack_types:
+                        return True
+                    break
+                curr_x += dx
+                curr_y += dy
+    
+    return False
+
+
+def is_in_check(pieces: Dict[int, str], color: str) -> bool:
+    """Check if a king of the given color is in check."""
+    # Find the king
+    king_piece = 'wK' if color == 'white' else 'bK'
+    for square, piece in pieces.items():
+        if piece == king_piece:
+            return is_square_attacked(pieces, square, get_opposite_color(color))
+    return False
+
+
+def make_move(pieces: Dict[int, str], move: Tuple[int, str, str]) -> Dict[int, str]:
+    """Make a move and return the new position."""
+    new_pieces = pieces.copy()
+    from_square, to_square, promo = move
+    
+    piece = new_pieces.pop(from_square, None)
+    if piece is None:
+        return new_pieces
+    
+    # Handle promotion
+    if promo:
+        piece = piece[0] + promo.upper()
+    
+    # Handle capture (remove captured piece)
+    if to_square in new_pieces:
+        del new_pieces[to_square]
+    
+    new_pieces[to_square] = piece
+    return new_pieces
+
+
+def is_checkmate(pieces: Dict[int, str], color: str) -> bool:
+    """Check if the given color is checkmated."""
+    if not is_in_check(pieces, color):
+        return False
+    
+    moves = generate_pseudo_legal_moves(pieces, color)
+    for move in moves:
+        new_pieces = make_move(pieces, move)
+        if not is_in_check(new_pieces, color):
+            return False
+    return True
+
+
+def is_stalemate(pieces: Dict[int, str], color: str) -> bool:
+    """Check if the position is a stalemate for the given color."""
+    if is_in_check(pieces, color):
+        return False
+    
+    moves = generate_pseudo_legal_moves(pieces, color)
+    return len(moves) == 0
+
+
+def generate_legal_moves(pieces: Dict[int, str], color: str) -> List[Tuple[int, str, str]]:
+    """Generate all legal moves, filtering out moves that leave king in check."""
+    pseudo_moves = generate_pseudo_legal_moves(pieces, color)
+    legal_moves = []
+    
+    for move in pseudo_moves:
+        new_pieces = make_move(pieces, move)
+        if not is_in_check(new_pieces, color):
+            legal_moves.append(move)
+    
+    return legal_moves
+
+
+def evaluate_piece_position(piece: str, square: int, is_endgame: bool = False) -> int:
+    """Get positional value for a piece."""
+    piece_type = get_piece_type(piece)
+    
+    # Adjust for color (flip tables for black)
+    table_square = square if is_white_piece(piece) else flip_square(square)
+    
+    if piece_type == 'P':
+        return PAWN_TABLE[table_square]
+    elif piece_type == 'N':
+        return KNIGHT_TABLE[table_square]
+    elif piece_type == 'B':
+        return BISHOP_TABLE[table_square]
+    elif piece_type == 'R':
+        return ROOK_TABLE[table_square]
+    elif piece_type == 'Q':
+        return QUEEN_TABLE[table_square]
+    elif piece_type == 'K':
+        return KING_END_TABLE[table_square] if is_endgame else KING_MIDDLE_TABLE[table_square]
+    return 0
+
+
+def count_material(pieces: Dict[int, str]) -> int:
+    """Count total material on board."""
+    total = 0
+    for piece in pieces.values():
+        total += PIECE_VALUES.get(piece, 0)
+    return total
+
+
+def is_endgame(pieces: Dict[int, str]) -> bool:
+    """Determine if we're in the endgame (no queens or limited material)."""
+    has_queen = False
+    minor_pieces = 0
+    
+    for piece in pieces.values():
+        if get_piece_type(piece) == 'Q':
+            has_queen = True
+        elif get_piece_type(piece) in ['N', 'B']:
+            minor_pieces += 1
+    
+    # Endgame if no queens and limited pieces, or just queen vs minor pieces
+    return not has_queen or minor_pieces <= 1
+
+
+def evaluate_position(pieces: Dict[int, str]) -> int:
+    """Evaluate a position from White's perspective."""
+    total = 0
+    
+    end_game = is_endgame(pieces)
+    
+    for square, piece in pieces.items():
+        total += PIECE_VALUES.get(piece, 0)
+        total += evaluate_piece_position(piece, square, end_game)
+    
+    # Pawn structure evaluation (simple)
+    pawn_file = defaultdict(lambda: [0, 0])  # [white, black]
+    for square, piece in pieces.items():
+        if get_piece_type(piece) == 'P':
+            file_idx = square % 8
+            if is_white_piece(piece):
+                pawn_file[file_idx][0] += 1
+            else:
+                pawn_file[file_idx][1] += 1
+    
+    # Penalize doubled pawns
+    for file_idx, (white_count, black_count) in pawn_file.items():
+        if white_count > 1:
+            total -= 20 * (white_count - 1)
+        if black_count > 1:
+            total += 20 * (black_count - 1)
+    
+    # Development bonus
+    # Minor pieces on starting squares
+    for square, piece in pieces.items():
+        if get_piece_type(piece) == 'N':
+            if is_white_piece(piece) and square in [1, 6]:
+                total -= 10
+            elif not is_white_piece(piece) and square in [57, 62]:
+                total += 10
+        elif get_piece_type(piece) == 'B':
+            if is_white_piece(piece) and square in [2, 5]:
+                total -= 10
+            elif not is_white_piece(piece) and square in [58, 61]:
+                total += 10
+    
+    return total
+
+
+def order_moves(moves: List[Tuple[int, str, str]], pieces: Dict[int, str], 
+                color: str) -> List[Tuple[int, str, str]]:
+    """Order moves for better alpha-beta pruning."""
+    scored_moves = []
+    
+    for move in moves:
+        from_sq, to_sq, promo = move
+        
+        score = 0
+        captured_piece = pieces.get(to_sq)
+        
+        if captured_piece:
+            # MVV-LVA ordering
+            captured_value = abs(PIECE_VALUES.get(captured_piece, 0))
+            attacker_piece = pieces.get(from_sq)
+            attacker_value = abs(PIECE_VALUES.get(attacker_piece, 0))
+            score = captured_value * 1000 - attacker_value
+        
+        # Bonus for checks
+        new_pieces = make_move(pieces, move)
+        if is_in_check(new_pieces, get_opposite_color(color)):
+            score += 500
+        
+        # Bonus for promotion
+        if promo:
+            score += 800
+        
+        # Bonus for castling
+        from_piece = pieces.get(from_sq)
+        if from_piece and get_piece_type(from_piece) == 'K':
+            if abs((to_sq % 8) - (from_sq % 8)) > 1:
+                score += 100
+        
+        scored_moves.append((score, move))
+    
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    return [m for _, m in scored_moves]
+
+
+def quiescence_search(pieces: Dict[int, str], alpha: int, beta: int, 
+                      color: str, depth: int = 0) -> int:
+    """Quiescence search to avoid horizon effect."""
+    stand_pat = evaluate_position(pieces)
+    
+    if color == 'black':
+        alpha = max(alpha, stand_pat)
+    else:
+        beta = min(beta, stand_pat)
+    
+    if alpha >= beta:
+        return stand_pat
+    
+    # Generate capture moves only
+    captures = []
+    for move in generate_pseudo_legal_moves(pieces, color, for_legal=False):
+        _, to_sq, _ = move
+        if to_sq in pieces:  # Only captures
+            if not is_in_check(make_move(pieces, move), color):
+                captures.append(move)
+    
+    captures = order_moves(captures, pieces, color)
+    
+    for move in captures:
+        new_pieces = make_move(pieces, move)
+        score = quiescence_search(new_pieces, alpha, beta, 
+                                  get_opposite_color(color), depth + 1)
+        
+        if color == 'black':
+            alpha = max(alpha, score)
+        else:
+            beta = min(beta, score)
+        
+        if alpha >= beta:
+            break
+    
+    return alpha if color == 'black' else beta
+
+
+def minimax_alpha_beta(pieces: Dict[int, str], alpha: int, beta: int, 
+                       depth: int, maximizing: bool, 
+                       original_color: str) -> Tuple[int, Optional[Tuple[int, str, str]]]:
+    """Minimax with alpha-beta pruning."""
+    
+    # Terminal position check
+    if depth == 0:
+        # Check for checkmate or stalemate
+        if is_in_check(pieces, original_color):
+            if is_checkmate(pieces, original_color):
+                return -30000 if maximizing else 30000, None
+        else:
+            moves = generate_legal_moves(pieces, original_color)
+            if len(moves) == 0:
+                if is_in_check(pieces, original_color):
+                    return -30000 if maximizing else 30000, None
+                else:
+                    return 0, None  # Stalemate
+        
+        # Use quiescence search at leaf nodes
+        return quiescence_search(pieces, alpha, beta, original_color), None
+    
+    color = original_color if maximizing else get_opposite_color(original_color)
+    legal_moves = generate_legal_moves(pieces, color)
+    
+    if len(legal_moves) == 0:
+        if is_in_check(pieces, color):
+            return -30000 if maximizing else 30000, None
+        else:
+            return 0, None
+    
+    # Order moves for better pruning
+    legal_moves = order_moves(legal_moves, pieces, color)
+    
+    best_move = None
+    
+    if maximizing:
+        max_eval = -100000
+        for move in legal_moves:
+            new_pieces = make_move(pieces, move)
+            eval_score, _ = minimax_alpha_beta(new_pieces, alpha, beta, 
+                                               depth - 1, False, original_color)
+            
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = 100000
+        for move in legal_moves:
+            new_pieces = make_move(pieces, move)
+            eval_score, _ = minimax_alpha_beta(new_pieces, alpha, beta, 
+                                               depth - 1, True, original_color)
+            
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+
+def move_to_uci(move: Tuple[int, str, str]) -> str:
+    """Convert internal move representation to UCI string."""
+    from_sq, to_sq, promo = move
+    
+    from_x, from_y = from_sq % 8, from_sq // 8
+    to_x, to_y = to_sq % 8, to_sq // 8
+    
+    uci = chr(ord('a') + from_x) + str(from_y + 1) + chr(ord('a') + to_x) + str(to_y + 1)
+    
+    if promo:
+        uci += promo
+    
+    return uci
+
+
+def policy(pieces: Dict[str, str], to_play: str) -> str:
+    """
+    Main policy function - returns the best move in UCI format.
+    
+    Args:
+        pieces: Dictionary mapping squares to piece codes
+        to_play: 'white' or 'black'
+    
+    Returns:
+        UCI move string
+    """
+    # Parse pieces
+    parsed_pieces = parse_pieces(pieces)
+    
+    # Generate legal moves
+    legal_moves = generate_legal_moves(parsed_pieces, to_play)
+    
+    if not legal_moves:
+        # No legal moves - should not happen in normal play
+        return ''
+    
+    # Check for immediate checkmate
+    for move in legal_moves:
+        new_pieces = make_move(parsed_pieces, move)
+        if is_checkmate(new_pieces, get_opposite_color(to_play)):
+            return move_to_uci(move)
+    
+    # Simple opening: prioritize development and center control
+    total_material = sum(abs(PIECE_VALUES.get(p, 0)) for p in parsed_pieces.values())
+    if total_material > 2900:  # All pieces still on board
+        # Opening phase - prioritize development
+        development_score = 0
+        scored_moves = []
+        
+        for move in legal_moves:
+            from_sq, to_sq, _ = move
+            piece = parsed_pieces.get(from_sq)
+            
+            score = 0
+            
+            # Prefer developing minor pieces
+            if piece and get_piece_type(piece) in ['N', 'B']:
+                # Bonus for moving from starting squares
+                if is_white_piece(piece) and from_sq in [1, 2, 5, 6]:
+                    score += 50
+                elif not is_white_piece(piece) and from_sq in [57, 58, 61, 62]:
+                    score += 50
+            
+            # Prefer center control
+            to_x, to_y = to_sq % 8, to_sq // 8
+            center_distance = abs(to_x - 3.5) + abs(to_y - 3.5)
+            score += int((7 - center_distance) * 10)
+            
+            # Prefer castling
+            if piece and get_piece_type(piece) == 'K':
+                if abs(to_x - from_x) > 1:
+                    score += 100
+            
+            # Prefer pawn advances
+            if piece and get_piece_type(piece) == 'P':
+                score += to_y * 5 if is_white_piece(piece) else (7 - to_y) * 5
+            
+            scored_moves.append((score, move))
+        
+        scored_moves.sort(reverse=True)
+        best_move = scored_moves[0][1]
+        return move_to_uci(best_move)
+    
+    # Middle game / endgame: use minimax search
+    # Adjust search depth based on position complexity
+    if total_material < 1000:  # Endgame
+        depth = 4
+    elif total_material < 2000:  # Minor pieces endgame
+        depth = 3
+    else:  # Middle game
+        depth = 3
+    
+    # Use iterative deepening for better move ordering
+    best_move = None
+    best_score = -100000 if to_play == 'white' else 100000
+    
+    for current_depth in range(1, depth + 1):
+        if to_play == 'white':
+            score, move = minimax_alpha_beta(parsed_pieces, -100000, 100000, 
+                                            current_depth, True, to_play)
+            if score > best_score:
+                best_score = score
+                best_move = move
+        else:
+            score, move = minimax_alpha_beta(parsed_pieces, -100000, 100000, 
+                                            current_depth, False, to_play)
+            if score < best_score:
+                best_score = score
+                best_move = move
+    
+    if best_move:
+        return move_to_uci(best_move)
+    
+    # Fallback to first legal move
+    return move_to_uci(legal_moves[0])
+</code>

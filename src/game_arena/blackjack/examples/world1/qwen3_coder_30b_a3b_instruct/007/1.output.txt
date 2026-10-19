@@ -1,0 +1,233 @@
+<thinking>
+Let me think through this step by step.
+
+First, I need to understand the rules:
+1. We have a deck with cards: A, 2, 3, 4, 5, 6, 7, 8, 9, 10, J, Q, K
+2. Card values: 2-10 = face value, J/Q/K = 10, A = 11 (if hand <= target) or 1 (if hand > target)
+3. Target T is randomly chosen between 10 and 30
+4. We return "HIT" or "STAY"
+5. If our hand exceeds target, we bust
+6. Opponent also plays and we compare final scores
+
+My strategy needs to consider:
+- Current hand value and whether we're close to or over target
+- The probabilistic nature of drawing cards
+- How likely we are to bust vs get closer to target
+
+Let me break this down:
+1. First I need to calculate the value of the current hand
+2. Then I need to determine if hitting makes sense
+3. The key insight is to assess risk vs reward
+
+Some basic heuristics:
+- If we're already at or above target, stay
+- If we're very close to target, we might want to stay
+- If we're far from target, we probably want to hit
+- If we're near target, we need to balance risk of busting vs potential gain
+
+Let me think of a more principled approach:
+- Calculate the hand value considering A's value
+- Determine the probability of busting if we hit
+- Consider if we're close enough to target where staying is good
+
+One clean strategy:
+1. If hand value > target: bust, so stay (but we know we bust if hit) - wait, actually we can't "stay" after busting, we simply lose. 
+2. Actually... we can only make one decision depending on current hand that won't bust
+3. The key is assessing risk of drawing cards
+
+Maybe a better idea:
+1. If hand value >= target: stay (since any hit will likely bust)  
+2. If hand value is very low (examining probability of getting to target): we want to hit
+3. If hand is between low and target: make a judgment call
+
+Let me take a more mathematical approach:
+- For any current hand, I can compute:
+  - The probability of busting if I hit
+  - The expected gain (how close we expect to get)
+
+But that gets complex. Simpler approach:
+1. If our current value is >= target, it's at least against the rules - we should stay (our hand is already over)
+2. But wait, if we're exactly at target, we win regardless, but we should still get another card to maximize chances
+3. Actually, if we're already at the target, we don't lose by hitting, but we might also miss it
+4. But since we're trying to get close to T, we should probably stay if we're at or over it.
+
+Actually re-reading the problem:
+- If hand sum > target, we immediately lose
+- So we want to keep our sum <= target
+- Strategy: Keep hitting while we're under target, but avoid the risk of busting
+
+Let me try: 
+- If hand value >= target, stay
+- Otherwise, hit if getting closer to T and not too risky
+
+Strategic approach:
+If current value is less than target:
+- If current value is close to target: maybe stay?
+- If current value is much less than target: hit  
+- The question is: how close are we?
+
+Let me make a sophisticated policy based on:
+1. Current hand value
+2. Value of cards that remain in deck (but that makes it too complex)
+3. Risk tolerance via thresholds
+
+If hand > target, then:
+- We're already busting, so returning "STAY" makes sense (can't hit anyway)
+If hand == target:
+- We can't improve but can keep trying (but should we?)
+If hand < target:
+- We want to get closer without going over
+- If we're already close to target, risk of busting is high
+- If we're far from target, we want the chance 
+
+Simple rule I could use: 
+- If current hand value >= target: STAY (we're busting or at target)
+- Otherwise compute a safety threshold based on remaining cards
+
+A practical approach:
+- If we're at or about to exceed target with next card (given the deck and our cards), STAY
+- But also consider value of new cards from distribution
+
+A simpler version:
+If the current hand is >= target, stay.
+If the current hand is < target:
+- If hand value is ≥ target - 4, probably should stay (less risk of busting)
+- Otherwise hit
+
+
+Actually the simplest logical approach:
+If we're already over target, we must STAY (since we'll lost).
+If we're at/within target: we want to approach it. The question is if we should hug the target (don't exceed) or get as close as possible without any real risk.
+Risk assessment: 
+If I'm 15 and target is 20, next card 10 means I'm 25 -> sure bust
+If I'm 15 and target is 20, next card 5 means I'm 20 -> great! 
+If I'm 15 and target is 20, next card 1 means I'm 16 -> okay
+If the sum of all outstanding cards we can draw that would cause us to go over can be non-negligible, we should probably bust first.
+
+Even simpler idea: 
+A conservative rule: If hand value >= target, STAY
+Else, if it's reasonably safe to hit (we won't go above target): HIT
+How to simplify this - if we're close to target, high chance of busting, so STAY
+
+Heuristic: 
+If current hand is >= target: STAY
+If current hand + 11 is > target, we'd have high risk hitting with highest card, so we should consider STAY
+If current hand < target and hand + 11 <= target: HIT (because 11 is max card we could get from other deck)
+If current hand is about to reach target (maybe a safe hit), then look for danger vs safety
+
+This is getting complex. Let me do a clean lightweight simple approach:
+```python
+def policy(hand: list[str], target: int) -> str:
+    # Calculate current hand value
+    def get_hand_value(cards):
+        value = 0
+        num_aces = 0
+        
+        for card in cards:
+            if card in ['J', 'Q', 'K']:
+                value += 10
+            elif card == 'A':
+                num_aces += 1
+                value += 11
+            else:
+                value += int(card)
+        
+        # Adjust aces from 11 to 1 if necessary to avoid busting
+        while value > target and num_aces > 0:
+            value -= 10
+            num_aces -= 1
+            
+        return value
+    
+    current_value = get_hand_value(hand)
+    
+    # If we already have a value exceeding target, we've already bust, 
+    # but still better to STAY.
+    # But since we're asked to decide whether to HIT or STAY in the current state,
+    # if current_value >= target: return STAY
+    
+    # But also consider that if we're at target, staying might help us achieve perfect?
+    # No, we need to approach target from below
+    
+    # Why is this approach unsound? Because when we haven't gone over yet, we'd want to hit
+    # only if we're not in immediate danger.
+    
+    # Let's just say: if current value is very close to target, STAY due to the risk of busting.
+    # If current value is not expected to go over by adding a card (which is that highest card is 11),
+    # then we probably want to HIT
+    
+    # But more importantly, if we are at or over the target, we should STAY (we lose right then!)
+    if current_value >= target:
+        return "STAY"
+    
+    # If we're not over target, and by our best play (assuming favorable cards) 
+    # we would still be under the target, we have reason to hit.
+    # So hitting is safe
+      
+    # A tolerance margin approach:
+    # If our current value gives us a low chance of going over T with any card, we can hit
+    # Most dangerous card we could draw is 11 (ace)
+    # So if current_value + 11 <= target, we won't bust on any draw -> hit
+    # If current_value + 11 > target, check if some cards could make us bust easily
+    # But even better approach:
+    # If we don't go over 21 (standard blackjack style) immediately, we should be safe to proceed
+    
+    # Clarification: our rules say if hand value > target we bust, we don't care about A = 1 vs 11 here yet.
+    # So: we can definitely bust. But our policy can only decide in current state.
+    
+    # As a cutoff: if we're fairly safe, hit.
+    # If we're hitting 21 with any card, then stay.
+    # Testing exact condition: if the current value is >= target - 11, and we expect to go over with favorable draw
+    # No - let's not go that deep.
+    
+    # Simpler rule: 
+    # If we're currently at or above target, we shouldn't hit, because it could bust us
+    # If we're currently below target by a safe margin, we can hit - we won't go over with any card draw
+    
+    # A common sense rule: 
+    # If we're below T - 11, then even the highest card won't push us over T, so we might wish to hit.
+    # If we're >= T - 11, maybe think about it more carefully.
+    # But even that's just rough
+    if current_value >= target - 11:
+        return "STAY"
+    else:
+        return "HIT"
+</thinking>
+<code>
+def policy(hand: list[str], target: int) -> str:
+    # Calculate current hand value
+    def get_hand_value(cards):
+        value = 0
+        num_aces = 0
+        
+        for card in cards:
+            if card in ['J', 'Q', 'K']:
+                value += 10
+            elif card == 'A':
+                num_aces += 1
+                value += 11
+            else:
+                value += int(card)
+        
+        # Adjust aces from 11 to 1 if necessary to avoid busting
+        while value > target and num_aces > 0:
+            value -= 10
+            num_aces -= 1
+            
+        return value
+    
+    current_value = get_hand_value(hand)
+    
+    # If we're already over target, we must STAY (because we'd lose immediately if we hit)
+    if current_value >= target:
+        return "STAY"
+    
+    # If we're very close to target, there's high chance of busting if we hit
+    # Rule of thumb: if the safe range to reach target is small, avoid hitting
+    # This is more conservative - we assume hitting when we're already within 5
+    if current_value >= target - 5:
+        return "STAY"
+    
+    # Otherwise, when we're well below target, it's usually safe to hit 
+    return "HIT"
+</code>

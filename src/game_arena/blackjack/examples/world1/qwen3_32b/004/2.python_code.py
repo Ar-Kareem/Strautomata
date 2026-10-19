@@ -1,0 +1,43 @@
+
+def policy(hand: list[str], target: int) -> str:
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    hand_set = set(hand)
+    
+    def compute_hand_value(hand_cards, target_val):
+        total = 0
+        aces = 0
+        for card in hand_cards:
+            if card in ['J', 'Q', 'K']:
+                total += 10
+            elif card == 'A':
+                total += 11
+                aces += 1
+            else:
+                total += int(card)
+        while total > target_val and aces > 0:
+            total -= 10
+            aces -= 1
+        return total
+    
+    current_sum = compute_hand_value(hand, target)
+    if current_sum > target:
+        return "STAY"
+    
+    current_D = target - current_sum
+    if current_D == 0:
+        return "STAY"
+    
+    available_cards = [card for card in all_cards if card not in hand_set]
+    if not available_cards:
+        return "STAY"
+    
+    for card in available_cards:
+        new_hand = hand + [card]
+        new_sum = compute_hand_value(new_hand, target)
+        if new_sum > target:
+            continue
+        new_D = target - new_sum
+        if new_D < current_D:
+            return "HIT"
+    
+    return "STAY"

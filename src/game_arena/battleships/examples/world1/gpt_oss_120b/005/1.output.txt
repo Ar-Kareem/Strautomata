@@ -1,0 +1,144 @@
+**Strategy Overview**
+
+The policy uses a classic *probability heat‑map* approach, which is one of the strongest deterministic strategies for Battleship:
+
+1. **Model all remaining ship placements**  
+   For each ship length (5, 4, 3, 3, 2) and each orientation (horizontal / vertical) we slide the ship over the 10 × 10 board.  
+   A placement is *legal* iff:
+   * none of its cells are known misses (`-1`);
+   * every known hit (`1`) lies inside the placement (so the placement can explain all hits seen so far).
+
+2. **Accumulate a heat map**  
+   Every time a legal placement is found, we add +1 to each cell that belongs to that placement.  
+   After scanning all ships the heat map value of a cell equals the number of ways a remaining ship could occupy it, given the current information.
+
+3. **Choose the best unknown cell**  
+   The algorithm selects an unknown cell (`board[r][c] == 0`) with the highest heat‑map value – i.e. the cell most likely to contain a ship piece.  
+   If several cells tie, one is chosen uniformly at random.
+
+4. **Fallback**  
+   If, for any reason, no legal placement exists (this can only happen when the board information is inconsistent), the policy simply returns the first unknown cell it finds.
+
+Because the heat map automatically concentrates probability around existing hits, the policy naturally switches from a “hunt” mode (searching the board) to a “target” mode (finishing a discovered ship) without any extra state.
+
+The whole computation touches at most  
+`5 ship lengths × 2 orientations × 10 × 10 ≈ 1000` placements, well within the time limit.
+
+---
+
+<code>
+import random
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Return the next shot (row, col) for Battleship.
+
+    board: 10x10 matrix with
+        0  – unknown,
+       -1  – miss,
+        1  – hit
+
+    The function builds a heat‑map of all possible remaining ship placements
+    consistent with the current knowledge and fires at the unknown cell with
+    the highest score.
+    """
+    n = 10
+    ship_lengths = [5, 4, 3, 3, 2]
+
+    # Pre‑compute positions of hits and misses for quick checks
+    hits = [(r, c) for r in range(n) for c in range(n) if board[r][c] == 1]
+    misses = {(r, c) for r in range(n) for c in range(n) if board[r][c] == -1}
+
+    # Heat map initialised to zero
+    heat = [[0 for _ in range(n)] for _ in range(n)]
+
+    # Helper: verify a placement of a ship of given length starting at (r,c)
+    # with given delta (dr, dc) (either (0,1) or (1,0))
+    def placement_is_legal(r: int, c: int, dr: int, dc: int, length: int) -> bool:
+        cells = []
+        for i in range(length):
+            rr = r + dr * i
+            cc = c + dc * i
+            # Out of board – should never happen because we check bounds before calling
+            if not (0 <= rr < n and 0 <= cc < n):
+                return False
+            if (rr, cc) in misses:
+                return False
+            cells.append((rr, cc))
+
+        # Every known hit must be covered by at least one ship placement.
+        # Since we may have multiple ships, we only need to ensure that the
+        # placement does not contradict hits: any hit not in this placement
+        # must be handled by some other ship, which is fine.
+        # However, if a hit lies within the placement, that's allowed.
+        # The crucial constraint: a placement cannot avoid a hit that lies on its line
+        # if that hit is already surrounded by misses such that only this ship could
+        # occupy it. The simple check we use is:
+        #   All hits that intersect the placement are fine.
+        #   Hits that are outside are irrelevant for this placement.
+        # Thus we only need to ensure that none of the cells conflict with hits.
+        # Actually we must ensure that the placement does not place a ship segment on a cell
+        # that we already know is a miss (already done) and that it does not miss a hit:
+        # i.e., any hit that lies on the line of the ship must be included.
+        # To enforce that, we check: for each hit, if it lies on the line defined by
+        # (r,c,dr,dc) and within the length, then it must be among cells.
+        # Simpler: if any hit is inside the bounding rectangle of the placement but not
+        # in cells, that would mean the placement skips a hit – impossible because ships are
+        # continuous. So we just verify that all hits that intersect the placement's line
+        # are included.
+        for hr, hc in hits:
+            # Check if hit is on the same line
+            if dr == 0:  # horizontal ship
+                if hr == r and c <= hc <= c + dc * (length - 1):
+                    if (hr, hc) not in cells:
+                        return False
+            else:       # vertical ship
+                if hc == c and r <= hr <= r + dr * (length - 1):
+                    if (hr, hc) not in cells:
+                        return False
+        return True
+
+    # Enumerate all possible placements and fill heat map
+    for length in ship_lengths:
+        for dr, dc in [(0, 1), (1, 0)]:  # horizontal, vertical
+            max_r = n - (dr * (length - 1))
+            max_c = n - (dc * (length - 1))
+            for r in range(max_r):
+                for c in range(max_c):
+                    # Quick reject: start cell cannot be a miss
+                    if (r, c) in misses:
+                        continue
+                    # Check legality
+                    if not placement_is_legal(r, c, dr, dc, length):
+                        continue
+                    # Legal placement – add its cells to heat map
+                    for i in range(length):
+                        rr = r + dr * i
+                        cc = c + dc * i
+                        heat[rr][cc] += 1
+
+    # Find the unknown cells with maximal heat
+    max_heat = -1
+    best_cells = []
+    for r in range(n):
+        for c in range(n):
+            if board[r][c] != 0:
+                continue  # already shot
+            score = heat[r][c]
+            if score > max_heat:
+                max_heat = score
+                best_cells = [(r, c)]
+            elif score == max_heat:
+                best_cells.append((r, c))
+
+    # If heat map gave no information (max_heat == 0) – fall back to any unknown cell
+    if not best_cells:
+        for r in range(n):
+            for c in range(n):
+                if board[r][c] == 0:
+                    return (r, c)
+
+    # Randomly pick among the best cells
+    return random.choice(best_cells)
+</code>

@@ -1,0 +1,220 @@
+The strategy for this policy is:
+
+1. **Always take a box immediately** if one is available, since captures give another turn.
+2. If no capture is available, play a **safe move**: an edge that does **not** create a 3-sided box for the opponent.
+3. Among safe moves, prefer moves that keep nearby boxes “low tension” and avoid building future chains.
+4. If there are **no safe moves**, choose the move that gives the opponent the **smallest forced capture run** on their next turn. This is estimated by simulating optimal capture-only continuations with memoization.
+5. If something unexpected happens, fall back to the first legal move so the policy always returns a legal action.
+
+<code>
+import numpy as np
+from functools import lru_cache
+
+# 4x4 boxes:
+# Horizontal edges: rows 0..4, cols 0..3
+# Vertical edges:   rows 0..3, cols 0..4
+
+BOX_N = 4
+
+
+def _legal_moves(horizontal: np.ndarray, vertical: np.ndarray):
+    moves = []
+    for r in range(BOX_N + 1):
+        for c in range(BOX_N):
+            if horizontal[r, c] == 0:
+                moves.append((r, c, 'H'))
+    for r in range(BOX_N):
+        for c in range(BOX_N + 1):
+            if vertical[r, c] == 0:
+                moves.append((r, c, 'V'))
+    return moves
+
+
+def _adjacent_boxes(move):
+    r, c, d = move
+    boxes = []
+    if d == 'H':
+        if r > 0 and c < BOX_N:
+            boxes.append((r - 1, c))
+        if r < BOX_N and c < BOX_N:
+            boxes.append((r, c))
+    else:  # 'V'
+        if c > 0 and r < BOX_N:
+            boxes.append((r, c - 1))
+        if c < BOX_N and r < BOX_N:
+            boxes.append((r, c))
+    return boxes
+
+
+def _box_edge_count(horizontal: np.ndarray, vertical: np.ndarray, br: int, bc: int) -> int:
+    return (
+        int(horizontal[br, bc] != 0)
+        + int(horizontal[br + 1, bc] != 0)
+        + int(vertical[br, bc] != 0)
+        + int(vertical[br, bc + 1] != 0)
+    )
+
+
+def _is_capture_move(horizontal: np.ndarray, vertical: np.ndarray, move) -> bool:
+    for br, bc in _adjacent_boxes(move):
+        if _box_edge_count(horizontal, vertical, br, bc) == 3:
+            return True
+    return False
+
+
+def _completed_boxes_after_move(horizontal: np.ndarray, vertical: np.ndarray, move) -> int:
+    count = 0
+    for br, bc in _adjacent_boxes(move):
+        if _box_edge_count(horizontal, vertical, br, bc) == 3:
+            count += 1
+    return count
+
+
+def _apply_move(horizontal: np.ndarray, vertical: np.ndarray, move):
+    h = horizontal.copy()
+    v = vertical.copy()
+    r, c, d = move
+    if d == 'H':
+        h[r, c] = 1
+    else:
+        v[r, c] = 1
+    return h, v
+
+
+def _is_safe_move(horizontal: np.ndarray, vertical: np.ndarray, move) -> bool:
+    # Captures are handled separately; here "safe" means no adjacent box becomes 3-sided.
+    if _is_capture_move(horizontal, vertical, move):
+        return False
+    for br, bc in _adjacent_boxes(move):
+        sides = _box_edge_count(horizontal, vertical, br, bc)
+        if sides == 2:
+            return False
+    return True
+
+
+def _safe_move_score(horizontal: np.ndarray, vertical: np.ndarray, move) -> float:
+    # Lower is better.
+    # Prefer keeping neighboring boxes with fewer sides after the move.
+    h2, v2 = _apply_move(horizontal, vertical, move)
+    score = 0.0
+
+    # Penalize adjacent box tension.
+    seen = set()
+    for br, bc in _adjacent_boxes(move):
+        if (br, bc) not in seen:
+            seen.add((br, bc))
+            s = _box_edge_count(h2, v2, br, bc)
+            score += s * s
+
+    # Small preference for border moves early, since they touch fewer boxes.
+    r, c, d = move
+    touches = len(_adjacent_boxes(move))
+    score += 0.1 * touches
+
+    # Mild centrality penalty so edge moves are slightly preferred when equally safe.
+    if d == 'H':
+        center_pen = abs(r - 2) + abs(c - 1.5)
+    else:
+        center_pen = abs(r - 1.5) + abs(c - 2)
+    score += 0.01 * center_pen
+
+    return score
+
+
+def _state_key(horizontal: np.ndarray, vertical: np.ndarray):
+    h_bits = tuple(int(horizontal[r, c] != 0) for r in range(BOX_N + 1) for c in range(BOX_N))
+    v_bits = tuple(int(vertical[r, c] != 0) for r in range(BOX_N) for c in range(BOX_N + 1))
+    return h_bits + v_bits
+
+
+def _arrays_from_key(key):
+    h = np.zeros((5, 5), dtype=int)
+    v = np.zeros((5, 5), dtype=int)
+    idx = 0
+    for r in range(BOX_N + 1):
+        for c in range(BOX_N):
+            h[r, c] = key[idx]
+            idx += 1
+    for r in range(BOX_N):
+        for c in range(BOX_N + 1):
+            v[r, c] = key[idx]
+            idx += 1
+    return h, v
+
+
+@lru_cache(maxsize=None)
+def _max_capture_run_from_key(key) -> int:
+    # Maximum boxes current player can capture in this uninterrupted turn
+    # assuming only capture moves are worth considering (turn ends when none exist).
+    h, v = _arrays_from_key(key)
+    best = 0
+    any_capture = False
+    for move in _legal_moves(h, v):
+        made = _completed_boxes_after_move(h, v, move)
+        if made > 0:
+            any_capture = True
+            h2, v2 = _apply_move(h, v, move)
+            total = made + _max_capture_run_from_key(_state_key(h2, v2))
+            if total > best:
+                best = total
+    return best if any_capture else 0
+
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # 1) Enumerate legal moves
+    moves = _legal_moves(horizontal, vertical)
+    if not moves:
+        # Should not happen in a valid nonterminal call, but keep output format valid.
+        return "0,0,H"
+
+    # 2) Take captures immediately
+    capture_moves = [m for m in moves if _is_capture_move(horizontal, vertical, m)]
+    if capture_moves:
+        # Prefer double-captures, then otherwise stable tie-break.
+        best = None
+        best_score = None
+        for m in capture_moves:
+            made = _completed_boxes_after_move(horizontal, vertical, m)
+            # More boxes now is better. Slightly prefer moves that keep more safe structure.
+            h2, v2 = _apply_move(horizontal, vertical, m)
+            local_tension = 0
+            for br, bc in _adjacent_boxes(m):
+                local_tension += _box_edge_count(h2, v2, br, bc)
+            score = (-made, local_tension)
+            if best is None or score < best_score:
+                best = m
+                best_score = score
+        r, c, d = best
+        return f"{r},{c},{d}"
+
+    # 3) Prefer safe moves
+    safe_moves = [m for m in moves if _is_safe_move(horizontal, vertical, m)]
+    if safe_moves:
+        best = min(safe_moves, key=lambda m: _safe_move_score(horizontal, vertical, m))
+        r, c, d = best
+        return f"{r},{c},{d}"
+
+    # 4) No safe move exists: minimize opponent's forced capture run next turn
+    best = None
+    best_score = None
+    for m in moves:
+        h2, v2 = _apply_move(horizontal, vertical, m)
+        opp_run = _max_capture_run_from_key(_state_key(h2, v2))
+
+        # Tie-breaks:
+        # - prefer giving away fewer immediate 3-sided opportunities around the move
+        # - prefer border-like moves slightly
+        touches = len(_adjacent_boxes(m))
+        score = (opp_run, touches)
+        if best is None or score < best_score:
+            best = m
+            best_score = score
+
+    if best is not None:
+        r, c, d = best
+        return f"{r},{c},{d}"
+
+    # 5) Fallback: always return a legal move
+    r, c, d = moves[0]
+    return f"{r},{c},{d}"
+</code>

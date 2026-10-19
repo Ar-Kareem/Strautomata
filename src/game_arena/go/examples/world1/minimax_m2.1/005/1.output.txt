@@ -1,0 +1,153 @@
+# Strategy: Smart Territory and Life/Death Bot
+
+The strategy for this Go bot focuses on several key principles:
+
+1. **Immediate Captures**: First priority is to capture opponent groups with no liberties (ko considerations not implemented for simplicity)
+2. **Self-Protection**: Avoid self-atari by checking if a move would result in our own group having no liberties
+3. **Group Life**: Protect our own groups that are in danger by adding liberties
+4. **Territory Development**: After handling urgent moves, play reasonable territorial moves near existing stones
+5. **Efficiency**: Uses a simple but effective board representation with flood-fill for liberty counting
+
+The bot balances defensive play with territorial expansion while always ensuring moves are legal and safe.
+<code>
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """
+    Smart Go bot for 19x19 board.
+    Priority: Captures > Self-Protection > Group Defense > Territory
+    """
+    # Create empty 19x19 board (0=empty, 1=me, 2=opponent)
+    board = [[0] * 20 for _ in range(20)]  # 1-indexed
+    
+    for r, c in me:
+        board[r][c] = 1
+    for r, c in opponent:
+        board[r][c] = 2
+    
+    def on_board(r, c):
+        return 1 <= r <= 19 and 1 <= c <= 19
+    
+    def get_liberties(r, c, color, visited):
+        """Count liberties of a group using flood-fill"""
+        if not on_board(r, c):
+            return 0
+        if board[r][c] != color:
+            return 0
+        if (r, c) in visited:
+            return 0
+        
+        visited.add((r, c))
+        liberties = 0
+        
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + c
+            if not on_board(nr, nc):
+                continue
+            if board[nr][nc] == 0:
+                liberties += 1
+            elif board[nr][nc] == color:
+                liberties += get_liberties(nr, nc, color, visited)
+        
+        return liberties
+    
+    def find_groups(color):
+        """Find all groups of given color and their liberties"""
+        visited = set()
+        groups = []
+        
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if board[r][c] == color and (r, c) not in visited:
+                    group_liberties = get_liberties(r, c, color, set())
+                    groups.append((group_liberties, r, c))
+                    visited.update(set())  # We already track visited in get_liberties
+        
+        return groups
+    
+    def would_be_captured(r, c, color):
+        """Check if placing stone at (r,c) would be immediately captured"""
+        if board[r][c] != 0:
+            return False
+        
+        # Temporarily place stone
+        board[r][c] = color
+        
+        # Check if this group has any liberties
+        group_liberties = get_liberties(r, c, color, set())
+        
+        # Restore board
+        board[r][c] = 0
+        
+        return group_liberties == 0
+    
+    def count_adjacent_empty(r, c):
+        """Count empty adjacent points"""
+        count = 0
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if on_board(nr, nc) and board[nr][nc] == 0:
+                count += 1
+        return count
+    
+    # Priority 1: Capture opponent groups with no liberties
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r][c] == 0:
+                # Check if this move captures any opponent group
+                board[r][c] = 1
+                opponent_groups = find_groups(2)
+                captured = any(liberties == 0 for liberties, _, _ in opponent_groups)
+                board[r][c] = 0
+                
+                if captured and not would_be_captured(r, c, 1):
+                    return (r, c)
+    
+    # Priority 2: Save our groups in atari (1 liberty)
+    our_groups = find_groups(1)
+    atari_groups = [(libs, r, c) for libs, r, c in our_groups if libs == 1]
+    
+    if atari_groups:
+        # Sort by number of stones in group (save larger groups first)
+        # We need to count stones in each group
+        for libs, r, c in sorted(atari_groups):
+            # Find empty neighbors of this group
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if on_board(nr, nc) and board[nr][nc] == 0:
+                    if not would_be_captured(nr, nc, 1):
+                        return (nr, nc)
+    
+    # Priority 3: Expand into empty areas near our stones (territory)
+    candidates = []
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r][c] == 0 and not would_be_captured(r, c, 1):
+                # Score based on adjacency to our stones and empty count
+                adjacent_ours = 0
+                adjacent_empty = 0
+                for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    nr, nc = r + dr, c + dc
+                    if on_board(nr, nc):
+                        if board[nr][nc] == 1:
+                            adjacent_ours += 1
+                        elif board[nr][nc] == 0:
+                            adjacent_empty += 1
+                
+                # Prefer moves adjacent to our stones, especially with multiple empty neighbors
+                if adjacent_ours > 0:
+                    score = adjacent_ours * 10 + adjacent_empty
+                    candidates.append((score, r, c))
+    
+    if candidates:
+        # Return the best candidate
+        candidates.sort(reverse=True)
+        return (candidates[0][1], candidates[0][2])
+    
+    # Priority 4: If no good moves, try any safe move or pass
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r][c] == 0 and not would_be_captured(r, c, 1):
+                return (r, c)
+    
+    # No safe moves, pass
+    return (0, 0)
+</code>

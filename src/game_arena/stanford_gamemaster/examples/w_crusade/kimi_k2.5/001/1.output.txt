@@ -1,0 +1,90 @@
+The strategy for this policy is to use a heuristic evaluation function to select the best knight move. The algorithm:
+
+1. **Parse** the state to build a board map of piece positions.
+2. **Generate** all legal knight moves (L-shapes) for the current role's pieces that land on empty squares or opponent pieces (captures).
+3. **Evaluate** each move with a scoring function:
+   - **+100** for capturing an opponent piece (primary objective).
+   - **+30** for moving to a safe square (not attacked by any opponent knight), encouraging piece preservation for future captures.
+   - **Advancement bonus**: +3 per rank advanced toward the enemy (toward rank 8 for White, rank 1 for Black).
+   - **Centrality bonus**: -1 per Manhattan distance from the center (d4/e4 area), encouraging central control.
+4. **Select** the highest-scoring move and convert it to Stanford syntax `move(from_file,from_rank,to_file,to_rank)`.
+
+This greedy approach prioritizes captures and safety while maintaining positional pressure toward the opponent.
+
+<code>
+def policy(state: list[list[object]], role: str) -> str:
+    # Parse board state: map (file_idx, rank_idx) -> owner
+    board = {}
+    for prop in state:
+        if isinstance(prop, list) and len(prop) == 4 and prop[0] == "cell":
+            f_idx = ord(prop[1]) - ord('a')  # a=0, b=1, ..., h=7
+            r_idx = int(prop[2]) - 1          # 1->0, 2->1, ..., 8->7
+            board[(f_idx, r_idx)] = prop[3]
+    
+    opponent = "black" if role == "white" else "white"
+    
+    # Knight move offsets (file_delta, rank_delta)
+    offsets = [(2, 1), (2, -1), (-2, 1), (-2, -1),
+               (1, 2), (1, -2), (-1, 2), (-1, -2)]
+    
+    # Collect positions
+    my_pieces = [pos for pos, owner in board.items() if owner == role]
+    opp_pieces = [pos for pos, owner in board.items() if owner == opponent]
+    
+    candidates = []  # (score, from_f, from_r, to_f, to_r)
+    
+    for f, r in my_pieces:
+        for df, dr in offsets:
+            nf, nr = f + df, r + dr
+            # Check bounds (0-7 for both file and rank)
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                target = board.get((nf, nr))
+                # Legal if empty or opponent piece (cannot capture own)
+                if target != role:
+                    is_capture = (target == opponent)
+                    
+                    # Determine if destination is safe (not attacked by opponent)
+                    is_safe = True
+                    for of, or_ in opp_pieces:
+                        if is_capture and (of, or_) == (nf, nr):
+                            continue  # Captured piece is removed, doesn't attack
+                        # Check knight attack: |dx|+|dy|==3 and both >=1
+                        if abs(of - nf) + abs(or_ - nr) == 3 and abs(of - nf) > 0 and abs(or_ - nr) > 0:
+                            is_safe = False
+                            break
+                    
+                    # Calculate heuristic score
+                    score = 0
+                    if is_capture:
+                        score += 100  # Priority: capture opponent pieces
+                    if is_safe:
+                        score += 30   # Preserve our pieces for future captures
+                    
+                    # Advancement toward enemy
+                    if role == "white":
+                        score += nr * 3  # Higher ranks (toward 8) are better
+                    else:
+                        score += (7 - nr) * 3  # Lower ranks (toward 1) are better
+                    
+                    # Centrality: prefer squares near center (3.5, 3.5)
+                    dist_center = abs(nf - 3.5) + abs(nr - 3.5)
+                    score -= dist_center
+                    
+                    candidates.append((score, f, r, nf, nr))
+    
+    # Select best move (highest score)
+    if not candidates:
+        # Fallback (should never happen in normal play)
+        return "move(a,1,b,3)"
+    
+    candidates.sort(key=lambda x: -x[0])
+    _, f, r, nf, nr = candidates[0]
+    
+    # Convert indices back to algebraic notation
+    from_file = chr(ord('a') + f)
+    from_rank = str(r + 1)
+    to_file = chr(ord('a') + nf)
+    to_rank = str(nr + 1)
+    
+    return f"move({from_file},{from_rank},{to_file},{to_rank})"
+</code>

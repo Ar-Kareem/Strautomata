@@ -1,0 +1,78 @@
+**Strategy**
+
+The policy scans the board for every piece of the given role.  
+* If a piece can jump over one of its own pieces and capture an opponent piece on the far side, the jump is taken immediately (capturing yields points).  
+* If no jump is possible, the policy looks for any legal move to an empty orthogonal neighbour.  When several moves exist it prefers moves that go **forward** (towards the opponent’s side): for `red` forward is upward (decreasing row), for `black` forward is downward (increasing row).  
+* If there are no legal moves at all, the policy issues a `tick` (a pass).
+
+This aggressive‑but‑simple heuristic favours captures, advances pieces, and never attempts an illegal action.
+
+<code>
+def policy(state, list[list[object]], role: str) -> str:
+    # Determine opponent colour
+    opponent = "black" if role == "red" else "red"
+
+    # Parse the board into a dictionary: (board, row, col) -> colour
+    board = {}
+    for fact in state:
+        if fact[0] == "cell":
+            _, b, r, c, colour = fact
+            board[(b, int(r), int(c))] = colour
+
+    # Orthogonal directions: up, down, left, right
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+    # ------------------------------------------------------------------
+    # 1) Look for all possible jumps (captures)
+    # ------------------------------------------------------------------
+    jumps = []
+    for (b, r, c), colour in board.items():
+        if colour != role:
+            continue
+        for dr, dc in directions:
+            over_r, over_c = r + dr, c + dc
+            land_r, land_c = r + 2 * dr, c + 2 * dc
+            # Check board limits
+            if not (1 <= over_r <= 4 and 1 <= over_c <= 4 and
+                    1 <= land_r <= 4 and 1 <= land_c <= 4):
+                continue
+            over_colour = board.get((b, over_r, over_c), "blank")
+            land_colour = board.get((b, land_r, land_c), "blank")
+            if over_colour == role and land_colour == opponent:
+                jumps.append((b, r, c, over_r, over_c, land_r, land_c))
+
+    # If any jump exists, perform the first one (any capture is equally good)
+    if jumps:
+        b, r, c, or_, oc, lr, lc = jumps[0]
+        return f"jump({b},{r},{c},{or_},{oc},{lr},{lc})"
+
+    # ------------------------------------------------------------------
+    # 2) No jumps – look for ordinary moves
+    # ------------------------------------------------------------------
+    # Forward direction for each role (red moves up, black moves down)
+    forward_dr = -1 if role == "red" else 1
+
+    moves = []
+    for (b, r, c), colour in board.items():
+        if colour != role:
+            continue
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if not (1 <= nr <= 4 and 1 <= nc <= 4):
+                continue
+            if board.get((b, nr, nc), "blank") == "blank":
+                # Score forward moves higher
+                forward_score = 1 if dr == forward_dr else 0
+                moves.append((forward_score, b, r, c, nr, nc))
+
+    if moves:
+        # Prefer forward moves; otherwise any move
+        moves.sort(key=lambda x: x[0], reverse=True)
+        _, b, r, c, nr, nc = moves[0]
+        return f"move({b},{r},{c},{nr},{nc})"
+
+    # ------------------------------------------------------------------
+    # 3) No legal action – pass
+    # ------------------------------------------------------------------
+    return "tick"
+</code>

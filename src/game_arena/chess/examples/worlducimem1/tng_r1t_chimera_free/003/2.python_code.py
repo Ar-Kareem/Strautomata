@@ -1,0 +1,172 @@
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Determine our color and enemy color
+    our_color = 'w' if to_play == 'white' else 'b'
+    enemy_color = 'b' if our_color == 'w' else 'w'
+    
+    # Piece values for evaluation
+    piece_values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    
+    # Initialize the board
+    board = [[None for _ in range(8)] for _ in range(8)]
+    for square, piece in pieces.items():
+        x = ord(square[0]) - ord('a')
+        y = int(square[1]) - 1
+        board[x][y] = piece
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    # Iterate through each of our pieces to generate moves
+    for square, piece in pieces.items():
+        if not piece.startswith(our_color):
+            continue
+        piece_type = piece[1]
+        current_file, current_rank = square[0], square[1]
+        x = ord(current_file) - ord('a')
+        y = int(current_rank) - 1
+        
+        moves = []
+        # Generate possible moves based on piece type
+        if piece_type == 'P':
+            # Pawn captures and promotions
+            direction = 1 if our_color == 'w' else -1
+            for dx in (-1, 1):
+                new_x = x + dx
+                new_y = y + direction
+                if 0 <= new_x < 8 and 0 <= new_y < 8:
+                    target = board[new_x][new_y]
+                    if target and target.startswith(enemy_color):
+                        # Handle promotion
+                        if (our_color == 'w' and new_y == 7) or (our_color == 'b' and new_y == 0):
+                            for promo in ['q', 'r', 'b', 'n']:
+                                move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}{promo}"
+                                moves.append((move, target))
+                        else:
+                            move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}"
+                            moves.append((move, target))
+            # Non-capture pawn moves (including two-step and promotion)
+            new_y = y + direction
+            if 0 <= new_y < 8 and not board[x][new_y]:
+                # Single step
+                if (our_color == 'w' and new_y == 7) or (our_color == 'b' and new_y == 0):
+                    for promo in ['q']:
+                        move = f"{current_file}{current_rank}{current_file}{new_y + 1}{promo}"
+                        moves.append((move, None))
+                else:
+                    move = f"{current_file}{current_rank}{current_file}{new_y + 1}"
+                    moves.append((move, None))
+                # Double step from starting position
+                if (our_color == 'w' and y == 1) or (our_color == 'b' and y == 6):
+                    new_y2 = y + 2*direction
+                    if 0 <= new_y2 < 8 and not board[x][new_y] and not board[x][new_y2]:
+                        move = f"{current_file}{current_rank}{current_file}{new_y2 + 1}"
+                        moves.append((move, None))
+        elif piece_type == 'N':
+            # Knight moves
+            deltas = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+            for dx, dy in deltas:
+                new_x, new_y = x + dx, y + dy
+                if 0 <= new_x < 8 and 0 <= new_y < 8:
+                    target = board[new_x][new_y]
+                    if not target or target.startswith(enemy_color):
+                        move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}"
+                        moves.append((move, target))
+        elif piece_type == 'B':
+            # Bishop moves
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+            for dx, dy in directions:
+                step = 1
+                while True:
+                    new_x, new_y = x + dx*step, y + dy*step
+                    if not (0 <= new_x < 8 and 0 <= new_y < 8):
+                        break
+                    target = board[new_x][new_y]
+                    if target:
+                        if target.startswith(enemy_color):
+                            move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}"
+                            moves.append((move, target))
+                        break
+                    move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}"
+                    moves.append((move, None))
+                    step += 1
+        elif piece_type == 'R':
+            # Rook moves
+            directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            for dx, dy in directions:
+                step = 1
+                while True:
+                    new_x, new_y = x + dx*step, y + dy*step
+                    if not (0 <= new_x < 8 and 0 <= new_y < 8):
+                        break
+                    target = board[new_x][new_y]
+                    if target:
+                        if target.startswith(enemy_color):
+                            move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}"
+                            moves.append((move, target))
+                        break
+                    move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}"
+                    moves.append((move, None))
+                    step += 1
+        elif piece_type == 'Q':
+            # Queen moves
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1), (-1, 0), (1, 0), (0, -1), (0, 1)]
+            for dx, dy in directions:
+                step = 1
+                while True:
+                    new_x, new_y = x + dx*step, y + dy*step
+                    if not (0 <= new_x < 8 and 0 <= new_y < 8):
+                        break
+                    target = board[new_x][new_y]
+                    if target:
+                        if target.startswith(enemy_color):
+                            move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}"
+                            moves.append((move, target))
+                        break
+                    move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}"
+                    moves.append((move, None))
+                    step += 1
+        elif piece_type == 'K':
+            # King moves
+            deltas = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+            for dx, dy in deltas:
+                new_x, new_y = x + dx, y + dy
+                if 0 <= new_x < 8 and 0 <= new_y < 8:
+                    target = board[new_x][new_y]
+                    if not target or target.startswith(enemy_color):
+                        move = f"{current_file}{current_rank}{chr(new_x + ord('a'))}{new_y + 1}"
+                        moves.append((move, target))
+        
+        # Evaluate each move
+        for move, target_piece in moves:
+            if target_piece:
+                # Capture move
+                score = piece_values.get(target_piece[1], 0) * 1000  # prioritize captures
+                # Subtract attacker value if under threat, simplified here
+                score -= piece_values.get(piece_type, 0)
+            else:
+                # Non-capture: prioritize piece development and position
+                new_x = ord(move[2]) - ord('a')
+                new_y = int(move[3]) - 1
+                if piece_type == 'P':
+                    # Advance pawns
+                    score = new_y if our_color == 'w' else (7 - new_y)
+                elif piece_type in ('N', 'B'):
+                    # Centralize knights and bishops
+                    center_score = (3.5 - abs(new_x - 3.5)) + (3.5 - abs(new_y - 3.5))
+                    score = center_score * 10
+                else:
+                    score = 0  # minimal score for other moves
+            
+            if score > best_score or (score == best_score and best_move is None):
+                best_score = score
+                best_move = move
+    
+    # Fallback to first legal move if none found (shouldn't happen)
+    if not best_move:
+        for square in pieces:
+            if pieces[square].startswith(our_color):
+                best_move = f"{square}{square}"  # invalid but ensures legality
+                break
+    
+    return best_move, memory

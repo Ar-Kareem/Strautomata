@@ -1,0 +1,228 @@
+```python
+import numpy as np
+from typing import List, Tuple
+import time
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Kalah move selection policy using minimax with alpha-beta pruning and heuristics.
+    Prioritizes extra moves, captures, and board control.
+    """
+    
+    def simulate_move(you_state: List[int], opp_state: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+        """Simulate a move and return new states and whether extra move was earned."""
+        if you_state[move] == 0:
+            return you_state[:], opp_state[:], False
+            
+        seeds = you_state[move]
+        new_you = you_state[:]
+        new_opp = opp_state[:]
+        new_you[move] = 0
+        
+        pos = move + 1
+        is_your_side = True
+        extra_move = False
+        
+        for _ in range(seeds):
+            if is_your_side:
+                if pos <= 6:  # include your store
+                    if pos == 6:  # landing in store
+                        new_you[pos] += 1
+                        if _ == seeds - 1:  # last seed
+                            extra_move = True
+                        pos = 0
+                        is_your_side = False
+                    else:  # landing in your house
+                        new_you[pos] += 1
+                        if _ == seeds - 1:  # last seed
+                            if pos < 6 and new_you[pos] == 1:  # was empty before
+                                opp_idx = 5 - pos
+                                if new_opp[opp_idx] > 0:  # opponent has seeds to capture
+                                    new_you[6] += 1 + new_opp[opp_idx]
+                                    new_you[pos] = 0
+                                    new_opp[opp_idx] = 0
+                        pos += 1
+                        if pos > 6:
+                            pos = 0
+                            is_your_side = False
+                else:
+                    pos = 0
+                    is_your_side = False
+                    new_opp[pos] += 1
+                    pos += 1
+            else:  # opponent's side
+                if pos <= 5:
+                    new_opp[pos] += 1
+                    pos += 1
+                    if pos > 5:
+                        pos = 0
+                        is_your_side = True
+                else:
+                    pos = 0
+                    is_your_side = True
+                    new_you[pos] += 1
+                    pos += 1
+        
+        return new_you, new_opp, extra_move
+    
+    def evaluate(you_state: List[int], opp_state: List[int]) -> float:
+        """Evaluate board state with a weighted heuristic."""
+        # Base score difference
+        score_diff = you_state[6] - opp_state[6]
+        
+        # Count movable seeds
+        your_movable = sum(1 for i in range(6) if you_state[i] > 0)
+        opp_movable = sum(1 for i in range(6) if opp_state[i] > 0)
+        mobility = your_movable - opp_movable
+        
+        # Seeds in position to score
+        your_scoring_position = sum(you_state[i] for i in range(6) if you_state[i] == 6-i)
+        opp_scoring_position = sum(opp_state[i] for i in range(6) if opp_state[i] == i+1)
+        scoring_potential = your_scoring_position - opp_scoring_position
+        
+        # Endgame consideration
+        your_remaining = sum(you_state[:6])
+        opp_remaining = sum(opp_state[:6])
+        endgame_factor = (your_remaining - opp_remaining) * 0.1
+        
+        return (score_diff * 3.0 + 
+                mobility * 0.5 + 
+                scoring_potential * 0.8 + 
+                endgame_factor)
+    
+    def minimax(you_state: List[int], opp_state: List[int], depth: int, alpha: float, beta: float, 
+                is_maximizing: bool, is_extra_move: bool) -> float:
+        """Minimax with alpha-beta pruning."""
+        # Terminal conditions or depth limit
+        if depth == 0 or (sum(you_state[:6]) == 0) or (sum(opp_state[:6]) == 0):
+            return evaluate(you_state, opp_state)
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            has_moves = False
+            
+            for i in range(6):
+                if you_state[i] > 0:
+                    has_moves = True
+                    new_you, new_opp, extra = simulate_move(you_state, opp_state, i)
+                    
+                    if extra:  # extra move - continue maximizing
+                        eval_score = minimax(new_you, new_opp, depth, alpha, beta, True, True)
+                    else:  # opponent's turn
+                        eval_score = minimax(new_opp, new_you, depth-1, alpha, beta, False, False)
+                    
+                    max_eval = max(max_eval, eval_score)
+                    alpha = max(alpha, eval_score)
+                    if beta <= alpha:
+                        break
+            
+            if not has_moves:
+                return evaluate(you_state, opp_state)
+            return max_eval
+        else:
+            min_eval = float('inf')
+            has_moves = False
+            
+            for i in range(6):
+                if opp_state[i] > 0:
+                    has_moves = True
+                    new_opp, new_you, extra = simulate_move(opp_state, you_state, i)
+                    
+                    if extra:  # opponent gets extra move - still their turn
+                        eval_score = minimax(new_you, new_opp, depth-1, alpha, beta, False, True)
+                    else:  # back to our turn
+                        eval_score = minimax(new_you, new_opp, depth-1, alpha, beta, True, False)
+                    
+                    min_eval = min(min_eval, eval_score)
+                    beta = min(beta, eval_score)
+                    if beta <= alpha:
+                        break
+            
+            if not has_moves:
+                return evaluate(you_state, opp_state)
+            return min_eval
+    
+    # First, check for immediate capturing moves or extra moves
+    capturing_moves = []
+    extra_move_moves = []
+    regular_moves = []
+    
+    for i in range(6):
+        if you[i] > 0:
+            # Simulate this move to check for special effects
+            new_you, new_opp, has_extra = simulate_move(you, opponent, i)
+            
+            # Check if it's a capture move
+            seed_landed_in_house = False
+            pos = i + 1
+            for _ in range(you[i]):
+                if pos <= 6:
+                    if pos == 6:
+                        pos = 0
+                    else:
+                        if _ == you[i] - 1:  # last seed
+                            seed_landed_in_house = True
+                            last_pos = pos
+                        pos += 1
+                        if pos > 6:
+                            pos = 0
+                else:
+                    pos += 1
+                    if pos > 5:
+                        pos = 0
+            
+            if has_extra:
+                extra_move_moves.append(i)
+            elif (seed_landed_in_house and last_pos < 6 and 
+                  you[last_pos] == 0 and  # was empty before sowing
+                  opponent[5 - last_pos] > 0):
+                capturing_moves.append(i)
+            else:
+                regular_moves.append(i)
+    
+    # Prioritize moves: extra moves > captures > others
+    if extra_move_moves:
+        if len(extra_move_moves) == 1:
+            return extra_move_moves[0]
+        # Evaluate extra move options more deeply
+        best_move = extra_move_moves[0]
+        best_score = float('-inf')
+        for move in extra_move_moves:
+            new_you, new_opp, _ = simulate_move(you, opponent, move)
+            score = minimax(new_you, new_opp, 2, float('-inf'), float('inf'), True, True)
+            if score > best_score:
+                best_score = score
+                best_move = move
+        return best_move
+        
+    elif capturing_moves:
+        if len(capturing_moves) == 1:
+            return capturing_moves[0]
+        # Evaluate capture options
+        best_move = capturing_moves[0]
+        best_score = float('-inf')
+        for move in capturing_moves:
+            new_you, new_opp, _ = simulate_move(you, opponent, move)
+            score = minimax(new_you, new_opp, 2, float('-inf'), float('inf'), False, False)
+            if score > best_score:
+                best_score = score
+                best_move = move
+        return best_move
+    
+    # For regular moves, use minimax with pruning
+    best_move = regular_moves[0]
+    best_score = float('-inf')
+    
+    # Use deeper search if few moves available
+    depth = 3 if len(regular_moves) <= 2 else 2
+    
+    for move in regular_moves:
+        new_you, new_opp, _ = simulate_move(you, opponent, move)
+        score = minimax(new_opp, new_you, depth-1, float('-inf'), float('inf'), False, False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+```

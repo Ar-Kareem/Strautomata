@@ -1,0 +1,173 @@
+
+import numpy as np
+
+# Predefined corners for a 15x15 Havannah board
+corners = [(0, 0), (0, 14), (7, 14), (14, 14), (14, 0), (7, 0)]
+
+def get_neighbors(r, c):
+    """Return hex neighboring cells (r, c format)."""
+    return [
+        (r-1, c),    # Up
+        (r+1, c),    # Down
+        (r, c-1),    # Left
+        (r, c+1),    # Right
+        (r-1, c-1),  # Up-Left
+        (r+1, c+1),  # Down-Right
+    ]
+
+def get_edges(r, c):
+    """Return set of edge names (excluding corners) the cell (r, c) belongs to."""
+    edges = set()
+    # Top edge (row 0, cols 1-13)
+    if r == 0 and 1 <= c <= 13:
+        edges.add('top')
+    # Bottom edge (row 14, cols 1-13)
+    if r == 14 and 1 <= c <= 13:
+        edges.add('bottom')
+    # Right-Top edge (col 14, rows 1-6)
+    if c == 14 and 1 <= r <= 6:
+        edges.add('right_top')
+    # Right-Bottom edge (col 14, rows 8-13)
+    if c == 14 and 8 <= r <= 13:
+        edges.add('right_bottom')
+    # Left-Top edge (col 0, rows 1-6)
+    if c == 0 and 1 <= r <= 6:
+        edges.add('left_top')
+    # Left-Bottom edge (col 0, rows 8-13)
+    if c == 0 and 8 <= r <= 13:
+        edges.add('left_bottom')
+    return edges
+
+def has_cycle(component):
+    """Check if the connected component has a cycle (for ring detection)."""
+    if len(component) < 6:
+        return False
+    # Build adjacency list
+    graph = {}
+    for stone in component:
+        r, c = stone
+        neighbors = []
+        for nr, nc in get_neighbors(r, c):
+            if (nr, nc) in component:
+                neighbors.append((nr, nc))
+        graph[stone] = neighbors
+    # Detect cycle via BFS with parent tracking
+    visited = set()
+    for node in graph:
+        if node not in visited:
+            queue = [(node, None)]
+            visited.add(node)
+            while queue:
+                current, parent = queue.pop(0)
+                for neighbor in graph[current]:
+                    if neighbor == parent:
+                        continue
+                    if neighbor in visited:
+                        return True
+                    visited.add(neighbor)
+                    queue.append((neighbor, current))
+    return False
+
+def is_win(stones):
+    """Check if given stones form a bridge, fork, or ring."""
+    if not stones:
+        return False
+    visited = set()
+    for stone in stones:
+        if stone in visited:
+            continue
+        # BFS for connected component
+        queue = [stone]
+        visited.add(stone)
+        component = []
+        comp_corners = []
+        comp_edges = set()
+        while queue:
+            r, c = queue.pop(0)
+            component.append((r, c))
+            # Check if current cell is a corner
+            if (r, c) in corners:
+                comp_corners.append((r, c))
+            # Get edges for current cell
+            comp_edges.update(get_edges(r, c))
+            # Explore neighbors
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in stones and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        # Bridge: connected at least two corners
+        if len(set(comp_corners)) >= 2:
+            return True
+        # Fork: connected three distinct edges
+        if len(comp_edges) >= 3:
+            return True
+        # Ring: has a cycle in the component
+        if has_cycle(component):
+            return True
+    return False
+
+def evaluate_move(move, me, opp, valid_mask):
+    """Heuristic to evaluate move quality."""
+    r, c = move
+    score = 0
+    # Adjacency to own stones
+    own_adj = 0
+    for nr, nc in get_neighbors(r, c):
+        if (nr, nc) in me:
+            own_adj += 1
+    score += own_adj * 2
+    
+    # Edge proximity bonus
+    edge_bonus = len(get_edges(r, c)) * 2
+    score += edge_bonus
+    
+    # Corner proximity (within 2 steps)
+    corner_bonus = 0
+    for cr, cc in corners:
+        if abs(r - cr) <= 2 and abs(c - cc) <= 2:
+            corner_bonus += 1
+    score += corner_bonus
+    
+    # Centrality (distance from center (7,7))
+    dist = abs(r - 7) + abs(c - 7)
+    score -= dist * 0.2
+    
+    # Blocking opponent stones
+    opp_adj = 0
+    for nr, nc in get_neighbors(r, c):
+        if (nr, nc) in opp:
+            opp_adj += 1
+    score += opp_adj * 1
+    
+    return score
+
+def policy(me, opp, valid_mask):
+    # Collect all valid moves
+    valid_moves = []
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c] and (r, c) not in me and (r, c) not in opp:
+                valid_moves.append((r, c))
+    if not valid_moves:
+        return (0, 0)  # fallback, though valid_mask should ensure
+    
+    # 1. Check for immediate win
+    for move in valid_moves:
+        new_me = me + [move]
+        if is_win(new_me):
+            return move
+    
+    # 2. Check if opponent has a winning move (to block)
+    opp_win_moves = []
+    for move in valid_moves:
+        new_opp = opp + [move]
+        if is_win(new_opp):
+            opp_win_moves.append(move)
+    if opp_win_moves:
+        # Choose the blocking move with highest heuristic
+        opp_win_moves.sort(key=lambda m: evaluate_move(m, me, opp, valid_mask), reverse=True)
+        return opp_win_moves[0]
+    
+    # 3. No immediate threats, use heuristic
+    best_move = max(valid_moves, key=lambda m: evaluate_move(m, me, opp, valid_mask))
+    return best_move

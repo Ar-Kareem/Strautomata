@@ -1,0 +1,116 @@
+# Strategy for Clobber AI
+
+This Clobber AI uses a combination of strategic principles to maximize its chances of winning:
+
+1. **Material Advantage**: First priority is capturing opponent pieces while preserving our own pieces.
+
+2. **Mobility**: Prefers moves that maintain our own mobility while restricting the opponent's options.
+
+3. **Central Control**: Favors central positions which offer more movement options.
+
+4. **Aggressive Play**: Actively seeks to capture opponent pieces rather than passive positioning.
+
+5. **Defensive Awareness**: Avoids moves that would leave our pieces isolated and easily captured.
+
+The implementation uses a heuristic evaluation function that considers:
+- Piece count difference
+- Mobility difference (number of available moves)
+- Central control bonus
+- Connectivity of pieces (avoiding isolated pieces)
+
+The AI performs a 1-ply lookahead to evaluate the immediate consequences of each possible move.
+
+<code>
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    you_arr = np.array(you)
+    opp_arr = np.array(opponent)
+    
+    # Get all possible legal moves
+    moves = []
+    for row in range(5):
+        for col in range(6):
+            if you_arr[row, col] == 1:
+                # Check all four directions
+                for dir, (dr, dc) in zip(['U', 'R', 'D', 'L'], [(-1,0), (0,1), (1,0), (0,-1)]):
+                    new_row, new_col = row + dr, col + dc
+                    if 0 <= new_row < 5 and 0 <= new_col < 6:
+                        if opp_arr[new_row, new_col] == 1:
+                            moves.append((row, col, dir))
+    
+    # If no moves available (shouldn't happen as per game rules)
+    if not moves:
+        return "0,0,U"  # fallback, though this would be an illegal move
+    
+    # Evaluate each move with a heuristic
+    best_score = -float('inf')
+    best_move = moves[0]
+    
+    for move in moves:
+        row, col, dir = move
+        dr, dc = {'U': (-1,0), 'R': (0,1), 'D': (1,0), 'L': (0,-1)}[dir]
+        new_row, new_col = row + dr, col + dc
+        
+        # Simulate the move
+        new_you = you_arr.copy()
+        new_opp = opp_arr.copy()
+        new_you[row, col] = 0
+        new_you[new_row, new_col] = 1
+        new_opp[new_row, new_col] = 0
+        
+        # Calculate heuristic score
+        score = 0
+        
+        # Material difference
+        your_pieces = np.sum(new_you)
+        opp_pieces = np.sum(new_opp)
+        score += (your_pieces - opp_pieces) * 10
+        
+        # Mobility difference
+        your_moves = count_moves(new_you, new_opp)
+        opp_moves = count_moves(new_opp, new_you)
+        score += (your_moves - opp_moves) * 2
+        
+        # Central control bonus
+        center_bonus = 0
+        for r in range(5):
+            for c in range(6):
+                if new_you[r, c] == 1:
+                    # Bonus for being near center
+                    center_dist = abs(r - 2) + abs(c - 2.5)
+                    center_bonus += (6 - center_dist) * 0.2
+        score += center_bonus
+        
+        # Connectivity bonus (avoid isolated pieces)
+        connectivity = 0
+        for r in range(5):
+            for c in range(6):
+                if new_you[r, c] == 1:
+                    # Check adjacent friendly pieces
+                    for dr, dc in [(-1,0), (0,1), (1,0), (0,-1)]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 5 and 0 <= nc < 6:
+                            if new_you[nr, nc] == 1:
+                                connectivity += 0.5
+        score += connectivity
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+def count_moves(player, opponent):
+    moves = 0
+    for row in range(5):
+        for col in range(6):
+            if player[row, col] == 1:
+                # Check all four directions
+                for dr, dc in [(-1,0), (0,1), (1,0), (0,-1)]:
+                    new_row, new_col = row + dr, col + dc
+                    if 0 <= new_row < 5 and 0 <= new_col < 6:
+                        if opponent[new_row, new_col] == 1:
+                            moves += 1
+    return moves
+</code>

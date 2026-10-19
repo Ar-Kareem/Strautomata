@@ -1,0 +1,44 @@
+
+def policy(state):
+    hole_card = state['private_cards'][0]
+    rank = hole_card['rank']
+    public_cards = state['public_cards']
+    to_call = state['to_call']
+    allowed_actions = state['allowed_actions']
+    
+    # Evaluate hand strength
+    hand_strength = evaluate_hand(rank, public_cards)
+    
+    # Check for strong hands (Ace-King or better)
+    if rank >= 10 and hand_strength >= 8:
+        return 'raise' if 'raise' in allowed_actions else 'all-in'
+    
+    # Check for medium hands (Queen-Jack or better)
+    if rank >= 8 and hand_strength >= 6:
+        return 'raise' if 'raise' in allowed_actions else 'call'
+    
+    # Check for weak hands (below Queen-Jack)
+    if rank < 8:
+        return 'fold' if 'fold' in allowed_actions else 'call'
+    
+    # Default action
+    return 'call' if 'call' in allowed_actions else 'fold'
+
+def evaluate_hand(rank, public_cards):
+    # Base strength from hole card
+    strength = rank / 14.0  # Normalize to 0-1 scale
+    
+    # Check for straight potential
+    ranks = sorted([card['rank'] for card in public_cards])
+    if len(ranks) >= 3:
+        # Check for consecutive sequences
+        for i in range(len(ranks) - 2):
+            if ranks[i+2] - ranks[i] == 2:
+                strength += 0.3  # Straight draw bonus
+    
+    # Check for flush potential
+    suits = [card['suit'] for card in public_cards]
+    if len(set(suits)) == 1:
+        strength += 0.2  # Flush draw bonus
+    
+    return min(strength, 1.0)  # Cap at 1.0

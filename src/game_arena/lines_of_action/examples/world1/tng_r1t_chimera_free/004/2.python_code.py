@@ -1,0 +1,114 @@
+
+def policy(board) -> str:
+    from copy import deepcopy
+
+    def generate_legal_moves(b):
+        moves = []
+        directions = [(0,1), (0,-1), (1,0), (-1,0), (1,1), (-1,-1), (1,-1), (-1,1)]
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == 1:
+                    for dr, dc in directions:
+                        line_type = None
+                        if dr == 0:
+                            line_type = 'row'
+                        elif dc == 0:
+                            line_type = 'col'
+                        elif dr == dc:
+                            line_type = 'main_diag'
+                        elif dr == -dc:
+                            line_type = 'anti_diag'
+                        else:
+                            continue  # should not happen
+                        
+                        count = 0
+                        if line_type == 'row':
+                            count = sum(abs(x) for x in b[r])
+                        elif line_type == 'col':
+                            count = sum(abs(b[i][c]) for i in range(8))
+                        elif line_type == 'main_diag':
+                            const = r - c
+                            for i in range(8):
+                                j = i - const
+                                if 0 <= j < 8:
+                                    count += abs(b[i][j])
+                        elif line_type == 'anti_diag':
+                            const = r + c
+                            for i in range(8):
+                                j = const - i
+                                if 0 <= j < 8:
+                                    count += abs(b[i][j])
+                        
+                        new_r = r + dr * count
+                        new_c = c + dc * count
+                        if 0 <= new_r < 8 and 0 <= new_c < 8:
+                            blocked = False
+                            for step in range(1, count + 1):
+                                curr_r = r + dr * step
+                                curr_c = c + dc * step
+                                if not (0 <= curr_r < 8 and 0 <= curr_c < 8):
+                                    blocked = True
+                                    break
+                                if step < count and b[curr_r][curr_c] == -1:
+                                    blocked = True
+                                    break
+                            if not blocked and b[new_r][new_c] != 1:
+                                moves.append(f"{r},{c}:{new_r},{new_c}")
+        return moves
+
+    def apply_move(b, move_str):
+        new_b = [row.copy() for row in b]
+        from_part, to_part = move_str.split(':')
+        fr, fc = map(int, from_part.split(','))
+        tr, tc = map(int, to_part.split(','))
+        new_b[fr][fc] = 0
+        new_b[tr][tc] = 1
+        return new_b
+
+    def count_connected_components(b, player):
+        visited = set()
+        components = 0
+        for r in range(8):
+            for c in range(8):
+                if b[r][c] == player and (r, c) not in visited:
+                    components += 1
+                    queue = [(r, c)]
+                    visited.add((r, c))
+                    while queue:
+                        cr, cc = queue.pop(0)
+                        for dr in [-1, 0, 1]:
+                            for dc in [-1, 0, 1]:
+                                if dr == 0 and dc == 0:
+                                    continue
+                                nr = cr + dr
+                                nc = cc + dc
+                                if 0 <= nr < 8 and 0 <= nc < 8:
+                                    if b[nr][nc] == player and (nr, nc) not in visited:
+                                        visited.add((nr, nc))
+                                        queue.append((nr, nc))
+        return components
+
+    def is_capture(b, move_str):
+        to_part = move_str.split(':')[1]
+        tr, tc = map(int, to_part.split(','))
+        return b[tr][tc] == -1
+
+    legal_moves = generate_legal_moves(board)
+    if not legal_moves:
+        return "0,0:0,0"  # fallback (shouldn't occur per rules)
+    
+    best_score = -float('inf')
+    best_move = legal_moves[0]
+
+    for move in legal_moves:
+        new_board = apply_move(board, move)
+        my_cc = count_connected_components(new_board, 1)
+        opp_cc = count_connected_components(new_board, -1)
+        capture = is_capture(board, move)
+        score = (opp_cc - my_cc) * 10 + (5 if capture else 0)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move

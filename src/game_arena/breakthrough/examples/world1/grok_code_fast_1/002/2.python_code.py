@@ -1,0 +1,64 @@
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    if not me:
+        # Fallback, though unlikely
+        return ((0,0), (1,0))
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    forward = 1 if color == 'w' else -1
+    legal_moves = []
+    
+    for r, c in me:
+        for dc in [-1, 0, 1]:
+            tr = r + forward
+            tc = c + dc
+            if 0 <= tr < 8 and 0 <= tc < 8:
+                to = (tr, tc)
+                if to not in me_set:
+                    if dc == 0:  # Straight forward
+                        if to not in opp_set:
+                            legal_moves.append(((r, c), to))
+                    else:  # Diagonal
+                        if to not in opp_set:
+                            legal_moves.append(((r, c), to))
+                        else:  # Capture
+                            legal_moves.append(((r, c), to))
+    
+    if not legal_moves:
+        # Should not occur, but provide a fallback
+        r, c = me[0]
+        tr = r + forward
+        if 0 <= tr < 8:
+            return ((r, c), (tr, c))  # Straight if possible
+    
+    # Evaluation function: sum of (7 - r) for my pieces if white, or sum of r if black, minus opponent's mirrored sums
+    def evaluate(my_list, opp_list, my_color):
+        my_sum = 0
+        for rr, cc in my_list:
+            dist = 7 - rr if my_color == 'w' else rr
+            my_sum += dist
+        opp_sum = 0
+        for rr, cc in opp_list:
+            # Opponent's "distance" is from their perspective
+            dist = rr if my_color == 'w' else 7 - rr
+            opp_sum += dist
+        return my_sum - opp_sum
+    
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        fr, to = move
+        new_me = me[:]
+        new_me.remove(fr)
+        new_me.append(to)
+        new_opp = opp[:]
+        if to in opp_set:
+            new_opp.remove(to)
+        new_score = evaluate(new_me, new_opp, color)
+        if new_score > best_score:
+            best_score = new_score
+            best_move = move
+    
+    return best_move

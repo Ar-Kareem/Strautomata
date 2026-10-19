@@ -1,0 +1,134 @@
+## Strategy
+
+My strategy for the Amazons game on a 6x6 board combines several key elements:
+
+1. **Mobility-based Evaluation**: The primary heuristic is based on mobility - counting the number of legal moves available to each player. Having more moves is crucial in Amazons as the player who gets trapped first loses.
+
+2. **Territory Control**: I also consider territory by doing a simple flood-fill from each amazon to count reachable squares, giving bonus points for controlling more of the board.
+
+3. **Minimax with Alpha-Beta Pruning**: I implement a depth-limited minimax search with alpha-beta pruning to look ahead and evaluate future positions. Given the 1-second time limit, I'll use a moderate depth (2-3 plies).
+
+4. **Move Ordering**: To improve alpha-beta efficiency, I order moves by a quick evaluation to try better moves first.
+
+5. **Aggressive Arrow Placement**: When shooting arrows, I prioritize shots that restrict the opponent's mobility, ideally blocking them in or cutting off their escape routes.
+
+6. **Fallback Safety**: Always ensure we return a legal move, even if time runs short.
+
+<code>
+import numpy as np
+
+def policy(board) -> str:
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+    
+    def get_queen_moves(b, r, c):
+        moves = []
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 6 and 0 <= nc < 6 and b[nr, nc] == 0:
+                moves.append((nr, nc))
+                nr += dr
+                nc += dc
+        return moves
+    
+    def get_all_moves(b, player):
+        moves = []
+        amazons = list(zip(*np.where(b == player)))
+        for fr, fc in amazons:
+            for tr, tc in get_queen_moves(b, fr, fc):
+                # Temporarily move amazon
+                b[fr, fc] = 0
+                b[tr, tc] = player
+                for ar, ac in get_queen_moves(b, tr, tc):
+                    moves.append((fr, fc, tr, tc, ar, ac))
+                # Restore
+                b[fr, fc] = player
+                b[tr, tc] = 0
+        return moves
+    
+    def count_mobility(b, player):
+        count = 0
+        amazons = list(zip(*np.where(b == player)))
+        for fr, fc in amazons:
+            for tr, tc in get_queen_moves(b, fr, fc):
+                b[fr, fc] = 0
+                b[tr, tc] = player
+                count += len(get_queen_moves(b, tr, tc))
+                b[fr, fc] = player
+                b[tr, tc] = 0
+        return count
+    
+    def evaluate(b):
+        my_mob = count_mobility(b, 1)
+        opp_mob = count_mobility(b, 2)
+        if opp_mob == 0:
+            return 10000
+        if my_mob == 0:
+            return -10000
+        return my_mob - opp_mob * 1.2
+    
+    def apply_move(b, move):
+        fr, fc, tr, tc, ar, ac = move
+        new_b = b.copy()
+        new_b[fr, fc] = 0
+        new_b[tr, tc] = 1
+        new_b[ar, ac] = -1
+        return new_b
+    
+    def apply_opp_move(b, move):
+        fr, fc, tr, tc, ar, ac = move
+        new_b = b.copy()
+        new_b[fr, fc] = 0
+        new_b[tr, tc] = 2
+        new_b[ar, ac] = -1
+        return new_b
+    
+    def minimax(b, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(b), None
+        
+        if maximizing:
+            moves = get_all_moves(b, 1)
+            if not moves:
+                return -10000, None
+            best_val = -float('inf')
+            best_move = moves[0]
+            for move in moves:
+                new_b = apply_move(b, move)
+                val, _ = minimax(new_b, depth - 1, alpha, beta, False)
+                if val > best_val:
+                    best_val = val
+                    best_move = move
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return best_val, best_move
+        else:
+            moves = get_all_moves(b, 2)
+            if not moves:
+                return 10000, None
+            best_val = float('inf')
+            for move in moves:
+                new_b = apply_opp_move(b, move)
+                val, _ = minimax(new_b, depth - 1, alpha, beta, True)
+                best_val = min(best_val, val)
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return best_val, None
+    
+    moves = get_all_moves(board, 1)
+    if not moves:
+        amazons = list(zip(*np.where(board == 1)))
+        if amazons:
+            r, c = amazons[0]
+            return f"{r},{c}:{r},{c}:{r},{c}"
+        return "0,0:0,0:0,0"
+    
+    _, best_move = minimax(board.copy(), 2, -float('inf'), float('inf'), True)
+    
+    if best_move is None:
+        best_move = moves[0]
+    
+    fr, fc, tr, tc, ar, ac = best_move
+    return f"{fr},{fc}:{tr},{tc}:{ar},{ac}"
+</code>

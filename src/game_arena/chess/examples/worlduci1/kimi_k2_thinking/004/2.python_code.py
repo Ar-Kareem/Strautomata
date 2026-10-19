@@ -1,0 +1,383 @@
+
+import math
+from typing import Dict, List, Tuple, Optional
+import random
+
+# Piece values for evaluation and move ordering
+PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 0}
+
+# Precomputed move vectors
+KNIGHT_OFFSETS = [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]
+KING_OFFSETS = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+SLIDING_DIRS = {
+    'B': [(1, 1), (-1, 1), (1, -1), (-1, -1)],
+    'R': [(1, 0), (-1, 0), (0, 1), (0, -1)],
+    'Q': [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)]
+}
+
+class SimpleBoard:
+    def __init__(self, pieces: Dict[str, str], to_play: str):
+        self.pieces = pieces.copy()
+        self.to_play = to_play
+        self.en_passant = None
+    
+    def copy(self):
+        b = SimpleBoard(self.pieces, self.to_play)
+        b.en_passant = self.en_passant
+        return b
+    
+    @staticmethod
+    def sq_to_coords(sq: str) -> Tuple[int, int]:
+        return ord(sq[0]) - 97, int(sq[1]) - 1
+    
+    @staticmethod
+    def coords_to_sq(file: int, rank: int) -> str:
+        return chr(file + 97) + str(rank + 1)
+    
+    def piece_at(self, sq: str) -> Optional[str]:
+        return self.pieces.get(sq)
+    
+    def is_attacked(self, sq: str, by_color: str) -> bool:
+        """Fast attack detection for king safety and legality checks"""
+        f, r = self.sq_to_coords(sq)
+        
+        # Pawn attacks
+        dir_ = 1 if by_color == 'w' else -1
+        for df in (-1, 1):
+            pf, pr = f + df, r - dir_
+            if 0 <= pf < 8 and 0 <= pr < 8:
+                if self.piece_at(self.coords_to_sq(pf, pr)) == by_color + 'P':
+                    return True
+        
+        # Knight attacks
+        for df, dr in KNIGHT_OFFSETS:
+            nf, nr = f + df, r + dr
+            if 0 <= nf < 8 and 0 <= nr < 8:
+                if self.piece_at(self.coords_to_sq(nf, nr)) == by_color + 'N':
+                    return True
+        
+        # King attacks
+        for df, dr in KING_OFFSETS:
+            kf, kr = f + df, r + dr
+            if 0 <= kf < 8 and 0 <= kr < 8:
+                if self.piece_at(self.coords_to_sq(kf, kr)) == by_color + 'K':
+                    return True
+        
+        # Sliding pieces (B, R, Q)
+        for df, dr in [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, 1), (1, -1), (-1, -1)]:
+            for i in range(1, 8):
+                nf, nr = f + i * df, r + i * dr
+                if not (0 <= nf < 8 and 0 <= nr < 8):
+                    break
+                piece = self.piece_at(self.coords_to_sq(nf, nr))
+                if piece:
+                    if piece[0] == by_color:
+                        ptype = piece[1]
+                        if (df, dr) in [(1, 0), (-1, 0), (0, 1), (0, -1)] and ptype in ['R', 'Q']:
+                            return True
+                        if (df, dr) in [(1, 1), (-1, 1), (1, -1), (-1, -1)] and ptype in ['B', 'Q']:
+                            return True
+                    break
+        return False
+    
+    def find_king(self, color: str) -> Optional[str]:
+        for sq, piece in self.pieces.items():
+            if piece == color + 'K':
+                return sq
+        return None
+    
+    def in_check(self, color: str) -> bool:
+        king_sq = self.find_king(color)
+        if not king_sq:
+            return False
+        opp_color = 'b' if color == 'w' else 'w'
+        return self.is_attacked(king_sq, opp_color)
+    
+    def generate_moves(self) -> List[str]:
+        """Generate pseudo-legal moves (may leave king in check)"""
+        color = self.to_play[0]
+        moves = []
+        
+        for sq, piece in self.pieces.items():
+            if piece[0] != color:
+                continue
+            
+            ptype = piece[1]
+            f, r = self.sq_to_coords(sq)
+            
+            if ptype == 'P':
+                moves.extend(self._pawn_moves(sq, f, r, color))
+            elif ptype == 'N':
+                moves.extend(self._knight_moves(sq, f, r, color))
+            elif ptype == 'B':
+                moves.extend(self._sliding_moves(sq, f, r, SLIDING_DIRS['B'], color))
+            elif ptype == 'R':
+                moves.extend(self._sliding_moves(sq, f, r, SLIDING_DIRS['R'], color))
+            elif ptype == 'Q':
+                moves.extend(self._sliding_moves(sq, f, r, SLIDING_DIRS['Q'], color))
+            elif ptype == 'K':
+                moves.extend(self._king_moves(sq, f, r, color))
+        
+        return moves
+    
+    def _pawn_moves(self, sq: str, f: int, r: int, color: str) -> List[str]:
+        moves = []
+        dir_ = 1 if color == 'w' else -1
+        start_rank = 1 if color == 'w' else 6
+        
+        # Single push
+        if 0 <= r + dir_ < 8:
+            target_sq = self.coords_to_sq(f, r + dir_)
+            if target_sq not in self.pieces:
+                # Promotion
+                if r + dir_ in (0, 7):
+                    for promo in 'qrbn':
+                        moves.append(f"{sq}{target_sq}{promo}")
+                else:
+                    moves.append(f"{sq}{target_sq}")
+                
+                # Double push
+                if r == start_rank:
+                    target_sq2 = self.coords_to_sq(f, r + 2 * dir_)
+                    if target_sq2 not in self.pieces:
+                        moves.append(f"{sq}{target_sq2}")
+        
+        # Captures
+        for df in (-1, 1):
+            target_f, target_r = f + df, r + dir_
+            if 0 <= target_f < 8 and 0 <= target_r < 8:
+                target_sq = self.coords_to_sq(target_f, target_r)
+                target_piece = self.piece_at(target_sq)
+                # Normal capture
+                if target_piece and target_piece[0] != color:
+                    if target_r in (0, 7):
+                        for promo in 'qrbn':
+                            moves.append(f"{sq}{target_sq}{promo}")
+                    else:
+                        moves.append(f"{sq}{target_sq}")
+                # En passant
+                elif target_sq == self.en_passant:
+                    moves.append(f"{sq}{target_sq}")
+        
+        return moves
+    
+    def _knight_moves(self, sq: str, f: int, r: int, color: str) -> List[str]:
+        moves = []
+        for df, dr in KNIGHT_OFFSETS:
+            target_f, target_r = f + df, r + dr
+            if 0 <= target_f < 8 and 0 <= target_r < 8:
+                target_sq = self.coords_to_sq(target_f, target_r)
+                target_piece = self.piece_at(target_sq)
+                if not target_piece or target_piece[0] != color:
+                    moves.append(f"{sq}{target_sq}")
+        return moves
+    
+    def _sliding_moves(self, sq: str, f: int, r: int, directions: List[Tuple[int, int]], color: str) -> List[str]:
+        moves = []
+        for df, dr in directions:
+            for i in range(1, 8):
+                target_f, target_r = f + i * df, r + i * dr
+                if not (0 <= target_f < 8 and 0 <= target_r < 8):
+                    break
+                
+                target_sq = self.coords_to_sq(target_f, target_r)
+                target_piece = self.piece_at(target_sq)
+                
+                if not target_piece:
+                    moves.append(f"{sq}{target_sq}")
+                else:
+                    if target_piece[0] != color:
+                        moves.append(f"{sq}{target_sq}")
+                    break
+        return moves
+    
+    def _king_moves(self, sq: str, f: int, r: int, color: str) -> List[str]:
+        moves = []
+        for df, dr in KING_OFFSETS:
+            target_f, target_r = f + df, r + dr
+            if 0 <= target_f < 8 and 0 <= target_r < 8:
+                target_sq = self.coords_to_sq(target_f, target_r)
+                target_piece = self.piece_at(target_sq)
+                if not target_piece or target_piece[0] != color:
+                    moves.append(f"{sq}{target_sq}")
+        return moves
+    
+    def make_move(self, move: str) -> 'SimpleBoard':
+        new_board = self.copy()
+        from_sq = move[:2]
+        to_sq = move[2:4]
+        promotion = move[4] if len(move) > 4 else None
+        
+        moving_piece = new_board.pieces[from_sq]
+        
+        # Handle castling (king moves two squares horizontally)
+        if moving_piece[1] == 'K' and abs(ord(from_sq[0]) - ord(to_sq[0])) == 2:
+            rank = from_sq[1]
+            if to_sq[0] == 'g':  # Kingside
+                rook_from = f'h{rank}'
+                rook_to = f'f{rank}'
+            else:  # Queenside
+                rook_from = f'a{rank}'
+                rook_to = f'd{rank}'
+            
+            if rook_from in new_board.pieces:
+                new_board.pieces[rook_to] = new_board.pieces[rook_from]
+                del new_board.pieces[rook_from]
+        
+        # Handle en passant capture
+        if moving_piece[1] == 'P' and to_sq == self.en_passant:
+            captured_pawn_sq = f"{to_sq[0]}{int(to_sq[1]) - (1 if moving_piece[0] == 'w' else -1)}"
+            if captured_pawn_sq in new_board.pieces:
+                del new_board.pieces[captured_pawn_sq]
+        
+        # Update en passant target square
+        if moving_piece[1] == 'P' and abs(int(from_sq[1]) - int(to_sq[1])) == 2:
+            dir_ = 1 if moving_piece[0] == 'w' else -1
+            new_board.en_passant = f"{from_sq[0]}{int(from_sq[1]) + dir_}"
+        
+        # Move the piece (handle promotion)
+        new_piece = moving_piece[0] + (promotion.upper() if promotion else moving_piece[1])
+        new_board.pieces[to_sq] = new_piece
+        del new_board.pieces[from_sq]
+        
+        # Switch turn
+        new_board.to_play = 'black' if self.to_play == 'white' else 'white'
+        
+        return new_board
+
+def get_legal_moves(board: SimpleBoard) -> List[str]:
+    """Filter pseudo-legal moves to only legal ones"""
+    pseudo_moves = board.generate_moves()
+    legal_moves = []
+    
+    for move in pseudo_moves:
+        new_board = board.make_move(move)
+        # Move is legal if our king is not in check after making it
+        if not new_board.in_check(board.to_play[0]):
+            legal_moves.append(move)
+    
+    return legal_moves
+
+def evaluate_position(board: SimpleBoard) -> float:
+    """Simple material evaluation from current player's perspective"""
+    score = 0
+    for piece in board.pieces.values():
+        value = PIECE_VALUES[piece[1]]
+        if piece[0] == 'w':
+            score += value
+        else:
+            score -= value
+    
+    # Flip perspective if black to move
+    if board.to_play == 'black':
+        score = -score
+    
+    # King safety bonus (keep kings off central squares early)
+    wk = board.find_king('w')
+    bk = board.find_king('b')
+    if wk:
+        wf, wr = board.sq_to_coords(wk)
+        if 2 <= wf <= 5 and 2 <= wr <= 5:
+            score -= 0.5
+    if bk:
+        bf, br = board.sq_to_coords(bk)
+        if 2 <= bf <= 5 and 2 <= br <= 5:
+            score += 0.5
+    
+    return score
+
+def alpha_beta_search(board: SimpleBoard, depth: int, alpha: float, beta: float, maximizing: bool) -> Tuple[float, Optional[str]]:
+    """Alpha-beta minimax with move ordering"""
+    if depth == 0:
+        return evaluate_position(board), None
+    
+    legal_moves = get_legal_moves(board)
+    if not legal_moves:
+        # Checkmate or stalemate
+        if board.in_check(board.to_play[0]):
+            return (-10000 if maximizing else 10000), None
+        return 0, None
+    
+    # Move ordering: prioritize captures for better pruning
+    scored_moves = []
+    for move in legal_moves:
+        captured_piece = board.piece_at(move[2:4])
+        if captured_piece:
+            # Prioritize high-value captures (MVV-LVA)
+            score = PIECE_VALUES.get(captured_piece[1], 0)
+            scored_moves.append((-score, move))  # Negative for descending sort
+        else:
+            scored_moves.append((0, move))
+    
+    scored_moves.sort()
+    
+    best_move = None
+    
+    if maximizing:
+        max_eval = -math.inf
+        for _, move in scored_moves:
+            new_board = board.make_move(move)
+            eval, _ = alpha_beta_search(new_board, depth - 1, alpha, beta, False)
+            if eval > max_eval:
+                max_eval, best_move = eval, move
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break  # Beta cutoff
+        return max_eval, best_move
+    else:
+        min_eval = math.inf
+        for _, move in scored_moves:
+            new_board = board.make_move(move)
+            eval, _ = alpha_beta_search(new_board, depth - 1, alpha, beta, True)
+            if eval < min_eval:
+                min_eval, best_move = eval, move
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break  # Alpha cutoff
+        return min_eval, best_move
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    """Main policy: Select best move using prioritized strategy"""
+    board = SimpleBoard(pieces, to_play)
+    legal_moves = get_legal_moves(board)
+    
+    if not legal_moves:
+        return ""  # Should never happen in valid positions
+    
+    # 1. Immediate checkmate detection
+    for move in legal_moves:
+        new_board = board.make_move(move)
+        opponent_legal_moves = get_legal_moves(new_board)
+        if not opponent_legal_moves and new_board.in_check(new_board.to_play[0]):
+            return move
+    
+    # 2. Capture opponent's queen if available
+    for move in legal_moves:
+        captured = board.piece_at(move[2:4])
+        if captured and captured[1] == 'Q':
+            return move
+    
+    # 3. Alpha-beta search (deeper in endgames)
+    piece_count = len(board.pieces)
+    search_depth = 3 if piece_count <= 10 else 2
+    
+    try:
+        _, best_move = alpha_beta_search(board, search_depth, -math.inf, math.inf, True)
+        if best_move:
+            return best_move
+    except Exception:
+        # Fallback if search fails
+        pass
+    
+    # 4. Fallback: return best capture or first move
+    best_capture = None
+    best_capture_value = -1
+    for move in legal_moves:
+        captured = board.piece_at(move[2:4])
+        if captured:
+            value = PIECE_VALUES.get(captured[1], 0)
+            if value > best_capture_value:
+                best_capture_value = value
+                best_capture = move
+    
+    return best_capture or legal_moves[0]

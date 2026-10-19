@@ -1,0 +1,590 @@
+<thinking>
+The user wants a Python function `policy(you, opponent)` that selects a move (an integer from 0 to 5) for a Kalah game. The policy should always return a legal move.
+
+Kalah is a game where good long-term planning and understanding of immediate gains are crucial. Since I'm limited to a single function call per move and a 1-second timeout, a complex search algorithm like Minimax with Alpha-Beta pruning is probably too slow for deep searches. However, a shallow search might be feasible.
+
+Let's break down the strategy:
+
+1.  **Immediate Gains:**
+    *   **Extra Move:** Prioritize moves that land the last seed in my store (`you[6]`). This gives me another turn, which is very powerful.
+    *   **Capture:** Prioritize moves that lead to a capture. This increases my score and decreases the opponent's potential score.
+
+2.  **Evaluating Board States (Heuristic):**
+    A simple heuristic for Kalah is `(your_store - opponent_store) + (sum_of_your_houses - sum_of_opponent_houses)`. This gives a rough idea of who is ahead. However, just the store difference is often sufficient for a quick evaluation, especially when considering immediate effects.
+
+3.  **Simulation:** To evaluate a move, I need to simulate its effect. This means implementing the game rules:
+    *   Sowing seeds.
+    *   Checking for extra moves.
+    *   Checking for captures.
+
+4.  **Search Depth:**
+    *   **Depth 1 (Immediate Move):** Evaluate all possible moves and pick the one that gives the best immediate outcome based on a heuristic.
+    *   **Depth 2 (Your Move -> Opponent's Best Counter):** This would involve simulating your move, then for each opponent's possible counter-move, simulating *that* move, and assuming the opponent picks the move that minimizes your gain or maximizes their own. This can get computationally expensive quickly.
+
+Given the time limit and the complexity of recursion in Python, a Depth 1 search with a good heuristic, possibly incorporating a "look-ahead" for extra moves, seems like the most robust approach.
+
+**Detailed Plan for `policy`:**
+
+1.  **Helper Function: `simulate_move(you, opponent, move_idx)`**
+    This function will take the current `you`, `opponent` states, and a `move_idx` (0-5), and return:
+    *   `new_you`: The state of `you` after the move.
+    *   `new_opponent`: The state of `opponent` after the move.
+    *   `got_extra_move`: A boolean indicating if an extra move was earned.
+    *   This function needs to perfectly implement the sowing, capture, and extra-move rules.
+
+2.  **Main `policy` Function:**
+    *   Initialize `best_score = -infinity` (or a very low number).
+    *   Initialize `best_move = -1`.
+    *   Create a list of legal moves (indices `i` where `you[i] > 0`).
+
+    *   **Iterate through each `possible_move_idx` in legal moves:**
+        *   Call `simulate_move(you, opponent, possible_move_idx)` to get `temp_you`, `temp_opponent`, `got_extra_move`.
+        *   **Calculate score for this move:**
+            *   `current_score = temp_you[6] - temp_opponent[6]` (store difference).
+            *   **Prioritize extra moves heavily:** If `got_extra_move` is true, add a large bonus to `current_score`. This is crucial. A bonus like `100` or `1000` would make it significantly better than any single capture or seed gain.
+            *   **Prioritize captures:** Captures are implicitly handled by the `current_score` calculation because seeds move to the store. However, we could add a slight explicit bonus if the `simulate_move` returns info about a capture. Let's make `simulate_move` return `captured_seeds` instead of just updating `temp_you[6]`.
+            *   **Consider number of seeds in own houses vs. opponent's:** Maybe `sum(temp_you[0:6]) - sum(temp_opponent[0:0])` is also relevant, but `temp_you[6] - temp_opponent[6]` is the direct objective.
+
+        *   **Update `best_score` and `best_move` if `current_score > best_score`.** If scores are equal, maybe choose the one that moves more seeds away from my side (draining my houses) or the one that sets up another good move. For now, just pick the first best.
+
+    *   Return `best_move`.
+
+**Refinement of `simulate_move`:**
+
+The simulation needs to be precise.
+*   Make deep copies of `you` and `opponent` to avoid modifying the original state.
+*   Implement the sowing loop carefully.
+*   Handle skipping `opponent[6]`.
+*   Check for the last seed's landing spot for extra moves and captures.
+
+Let's trace the sowing for `simulate_move`:
+
+```python
+def simulate_move(you_orig, opponent_orig, move_idx):
+    you = list(you_orig)  # Deep copy
+    opponent = list(opponent_orig) # Deep copy
+
+    seeds = you[move_idx]
+    you[move_idx] = 0
+    current_side = 'you' # or 'opponent'
+    current_idx = move_idx + 1
+
+    last_landed_house = -1 # to detect capture
+    last_landed_side = '' # to detect capture
+
+    while seeds > 0:
+        if current_side == 'you':
+            if current_idx <= 6: # you[0]..you[5], you[6]
+                you[current_idx] += 1
+                last_landed_house = current_idx
+                last_landed_side = 'you'
+                seeds -= 1
+                if seeds == 0: break
+                current_idx += 1
+            else: # Go to opponent's side
+                current_side = 'opponent'
+                current_idx = 0
+        elif current_side == 'opponent':
+            if current_idx <= 5: # opponent[0]..opponent[5]
+                opponent[current_idx] += 1
+                last_landed_house = current_idx
+                last_landed_side = 'opponent'
+                seeds -= 1
+                if seeds == 0: break
+                current_idx += 1
+            else: # Skip opponent's store, go back to your side
+                current_side = 'you'
+                current_idx = 0
+
+    # Check for special effects
+    got_extra_move = False
+    if last_landed_side == 'you' and last_landed_house == 6:
+        got_extra_move = True
+
+    # Capture logic
+    # The current house `m` of 'you' must be empty *before* the capture check, but the
+    # rules state "if the last seed lands in one of your houses you[i] (0..5)
+    # AND IT WAS EMPTY BEFORE THE DROP".
+    # This means `you[last_landed_house]` *after seeding* should be 1.
+    # And `you_orig[last_landed_house]` must have been 0.
+    # The actual rule is "AND IT WAS EMPTY BEFORE THE DROP" which means the house
+    # corresponding to `you_orig[last_landed_house]` right before the move.
+    # But for a capture, the house must still be your house `you[0..5]` *after* the seeding.
+    # So `you[last_landed_house]` will contain 1 seed after the last seed is dropped.
+    # If the house was empty *before* the drop, and `last_landed_house` is 0-5.
+    # We are checking `you_orig` for its state *before* the current move was made.
+    # The house `you[last_landed_house]` became 1 *because* the last seed landed there.
+    # So the value `you[last_landed_house]` in the *simulated* state would be 1.
+
+    if last_landed_side == 'you' and 0 <= last_landed_house <= 5:
+        if you[last_landed_house] == 1: # This house was empty before *this* last seed landed here
+            opponent_opposite_house_idx = 5 - last_landed_house
+            if opponent[opponent_opposite_house_idx] > 0:
+                # Perform capture
+                you[6] += you[last_landed_house]  # Capture the single seed from your house
+                you[last_landed_house] = 0
+                you[6] += opponent[opponent_opposite_house_idx] # Capture opponent's seeds
+                opponent[opponent_opposite_house_idx] = 0
+
+    return you, opponent, got_extra_move
+```
+
+**Considering End Game:**
+The game ends when one player has no seeds in all of their houses (`0..5` all zero). The other player moves all remaining seeds into their store.
+My current `simulate_move` does not check for game end. The `policy` function assumes it's never called when there are no legal moves, which means I always have seeds in at least one house. However, an opponent's move might clear their side. It's not strictly necessary for `simulate_move` to handle this, as the `policy` only cares about the current move's immediate effect. The game state passed to the *next* `policy` call will reflect the end-game rule application by the main game loop.
+
+**Heuristic Refinement:**
+
+A simple `you[6] - opponent[6]` might be sufficient.
+Adding a large constant for `got_extra_move` makes it the highest priority. Let's try `1000`.
+
+What if multiple moves yield an extra move?
+In that case, among those that give an extra move, I should choose the one that maximizes the store difference.
+
+What if no moves give an extra move?
+Then I should focus on maximizing `store_difference`. If store differences are equal, maybe try to maximize seeds in *my* houses or minimize seeds in *opponent's* houses, or a capture. A capture automatically increases my store difference. So, `store_difference` calculation implicitly prioritizes captures.
+
+Let's consider storing the initial state of the *current* house in `simulate_move` to correctly apply the capture rule. The rule says "if the last seed lands in one of your houses you[i] (0..5) and it was empty **before the drop**". This means `you_orig[last_landed_house]` must be 0.
+
+Corrected capture logic in `simulate_move`:
+
+```python
+    # Capture logic
+    # Check if the house was empty BEFORE the move started, *and* is one of ours (0-5),
+    # *and* the last seed landed there, *and* the opponent's opposite house has seeds.
+    if last_landed_side == 'you' and 0 <= last_landed_house <= 5:
+        # Check if it was empty *before* the move (before 'seeds' were picked up)
+        # However, the problem statement says "if you[i] (0..5) *and it was empty before the drop*".
+        # This implies checking the state of the board *after* picking up seeds from move_idx,
+        # but *before* dropping any.
+        # But this is tricky. Let's interpret "empty before the drop" to mean
+        # `you_orig[last_landed_house] == 0`.
+        # This is a common interpretation in Kalah implementations.
+        # If the house was empty before the move, and the last seed made it 1...
+        if you_orig[last_landed_house] == 0 and you[last_landed_house] == 1:
+            opponent_opposite_house_idx = 5 - last_landed_house
+            if opponent[opponent_opposite_house_idx] > 0:
+                # Perform capture
+                you[6] += you[last_landed_house]  # Capture the single seed from your house
+                you[last_landed_house] = 0
+                you[6] += opponent[opponent_opposite_house_idx] # Capture opponent's seeds
+                opponent[opponent_opposite_house_idx] = 0
+```
+This interpretation `you_orig[last_landed_house] == 0` is crucial. It means if you sow seeds and the last one lands in your empty house, *and* that house was empty to begin with, you capture.
+
+What if my `move_idx` *is* `last_landed_house`? If `you_orig[move_idx]` was the only house I chose, and the seeds ended up back there, it would still count `you_orig[move_idx]` as 0 after removal but before dropping. This seems fine.
+
+Let's consider an example: `you = [1,0,0,0,0,0,0]`, `opponent = [0,0,0,0,0,10,0]`. Move `you[0]`.
+`seeds = 1`, `you[0] = 0`.
+Drop in `you[1]`. `you = [0,1,0,0,0,0,0]`. `last_landed_house = 1`, `last_landed_side = 'you'`.
+Capture check: `last_landed_side == 'you'` and `1` is between 0-5.
+`you_orig[1]` was 0. `you[1]` is now 1. Both true.
+`opponent[5-1] = opponent[4]` is 0. No capture.
+
+Example for capture:
+`you = [0,0,5,0,0,0,0]`, `opponent = [0,0,0,0,1,0,0]`
+Move `you[2]` (5 seeds)
+`seeds = 5`, `you[2] = 0`.
+1. `you[3]+=1`
+2. `you[4]+=1`
+3. `you[5]+=1`
+4. `you[6]+=1` (My store!) --> Extra move.
+5. `opponent[0]+=1` --> last seed landed here. No capture. `last_landed_side='opponent'`, `last_landed_house=0`.
+
+This means the capture rule is typically for a short sow into an empty house on your side.
+E.g., `you = [0,0,1,0,0,0,0]`, `opponent = [0,0,0,0,0,5,0]`
+Move `you[2]` (1 seed)
+`seeds=1`, `you[2]=0`.
+Drop in `you[3]`. `you = [0,0,0,1,0,0,0]`. `last_landed_side='you'`, `last_landed_house=3`.
+Capture check:
+`you_orig[3]` was 0. `you[3]` is now 1. Both true.
+`opponent[5-3] = opponent[2]` is 0. No capture.
+
+Okay, let's re-read the capture rule VERY carefully:
+"If the last seed lands in one of your houses `you[i]` (`0..5`) and it was empty before the drop, and the opposite house `opponent[5 - i]` has seeds, then capture the seed in `you[i]` and all seeds from `opponent[5 - i]` and move them into `you[6]`"
+
+"Before the drop" seems to mean *before any new seeds are placed*. It doesn't mean "before the move started by taking seeds from `you[move_idx]`".
+This means we need to evaluate the state of `you[last_landed_house]` *just before* the last seed is placed there. This is complex to track in an iterative loop.
+
+Alternative interpretation: The state of `you[last_landed_house]` at the moment the last seed is placed there was 0. And then it became 1.
+If we use `you_current_state[last_landed_house] == 0` for the state just *before* the last seed, then `you[last_landed_house]` *after* the last seed will be 1. This is the common interpretation in online Kalah implementations.
+So the check `you[last_landed_house] == 1` combined with `last_landed_house` not being the house seeds were taken from, *or* if it was the house seeds were taken from, it became 1 because only 1 seed was taken.
+This implies we really need to track the *original* count of the house `last_landed_house` before the move and see if `last_landed_house` *currently* has zero seeds before the last drop.
+
+Let's simplify: "empty before the drop" means its current count at that specific moment (before the last seed is placed) is 0. Since the `simulate_move` function implements placing seeds one by one, when the last seed lands, `you[last_landed_house]` would be 1 *after* the drop *if* it was empty *before* that drop. So checking `you[last_landed_house] == 1` *after* the loop is correct for fulfilling the "last seed lands and makes it 1" condition.
+The additional condition is "it was empty before any seeds were placed there in this turn". This means comparing `you_orig[last_landed_house]` (the absolute start of the move) to 0.
+
+So `you_orig[last_landed_house] == 0` AND (implicitly `you[last_landed_house] == 1` after the loop) is correct.
+This prevents a scenario where you drop seeds in a house that wasn't empty, and it happens to end with 1 seed remaining, trying to capture.
+
+Consider the case where `last_landed_house` *is* `move_idx`. If `you_orig[move_idx]` was 1, then `you[move_idx]` becomes 0. If sowing is short, it could come back to `move_idx`. If `you_orig[move_idx]` was 1, and the last seed lands there, it becomes 1 again. But `you_orig[move_idx]` was not 0, so no capture. This interpretation works.
+
+**Finalized `simulate_move` structure:**
+
+```python
+def simulate_move(you_orig, opponent_orig, move_idx):
+    # Make deep copies to avoid modifying original game state
+    you = list(you_orig)
+    opponent = list(opponent_orig)
+
+    seeds_to_sow = you[move_idx]
+    you[move_idx] = 0 # Pick up seeds
+
+    # Variables to track last landed position
+    last_landed_idx = -1
+    last_landed_is_you_side = False
+
+    current_idx_on_your_side = move_idx + 1 # Start sowing from the next house
+    current_idx_on_opponent_side = 0
+
+    while seeds_to_sow > 0:
+        # Sowing on your side
+        while seeds_to_sow > 0 and current_idx_on_your_side < 7: # 0-5 houses, 6 store
+            you[current_idx_on_your_side] += 1
+            seeds_to_sow -= 1
+            last_landed_idx = current_idx_on_your_side
+            last_landed_is_you_side = True
+            current_idx_on_your_side += 1
+        if seeds_to_sow == 0: break # All seeds sown
+
+        # Reset for opponent's side, unless it's the end of a round
+        current_idx_on_your_side = 0 # Wrap around if more seeds
+
+        # Sowing on opponent's side
+        while seeds_to_sow > 0 and current_idx_on_opponent_side < 6: # 0-5 houses, skip opponent's store
+            opponent[current_idx_on_opponent_side] += 1
+            seeds_to_sow -= 1
+            last_landed_idx = current_idx_on_opponent_side
+            last_landed_is_you_side = False
+            current_idx_on_opponent_side += 1
+        if seeds_to_sow == 0: break # All seeds sown
+
+        # Reset for your side if more seeds
+        current_idx_on_opponent_side = 0
+
+    # Special effects check
+    got_extra_move = False
+    if last_landed_is_you_side and last_landed_idx == 6:
+        got_extra_move = True
+
+    # Capture check
+    # Last seed landed in one of your houses (0-5)
+    # AND that house was empty before the entire move (you_orig[last_landed_idx] == 0)
+    # AND that house currently has 1 seed (because the last seed landed there)
+    # AND the opposite opponent's house has seeds.
+
+    if last_landed_is_you_side and 0 <= last_landed_idx <= 5:
+        if you_orig[last_landed_idx] == 0 and you[last_landed_idx] == 1: # Was empty, last seed made it 1
+            opponent_opposite_house_idx = 5 - last_landed_idx
+            if opponent[opponent_opposite_house_idx] > 0:
+                # Perform capture
+                you[6] += you[last_landed_idx] # Capture the single seed
+                you[last_landed_idx] = 0
+                you[6] += opponent[opponent_opposite_house_idx] # Capture opponent's seeds
+                opponent[opponent_opposite_house_idx] = 0
+
+    return you, opponent, got_extra_move
+
+```
+
+This `simulate_move` looks more robust. The loop structure and variable naming are clearer.
+
+The maximum number of seeds in a house is not specified, but typically starts at 4-6. A house might hold ~50 seeds (`6 * 6 = 36` seeds, plus some more if stolen). Even with 50 seeds, the sowing loop would run 50 times. This is very fast.
+
+**Heuristic value:**
+
+*   `score = (your_store - opponent_store)`
+*   If `got_extra_move`: `score += HUGE_BONUS` (e.g., 1000)
+    This bonus should be larger than any possible store difference from a single move, to ensure extra moves are always preferred. A maximum difference could be `7*6*2` (all seeds) which is 84. So 1000 is a good choice.
+*   The overall goal is store differences, so this simple heuristic should work well for a greedy approach.
+
+**Edge cases:**
+
+*   Empty houses: `policy` is never called when no legal moves exist. So `you[i] > 0` is guaranteed for at least one `i`. My loop for `possible_moves` handles this.
+*   Game end: Not handled in simulation, but the main game loop will handle it. My policy just focuses on making the best current move.
+
+Since the problem is a single function that returns a move, I should put `simulate_move` inside `policy` or as a nested function to keep everything together in the same file.
+
+```python
+import math # For -infinity
+
+def policy(you: list[int], opponent: list[int]) -> int:
+
+    def simulate_move(you_orig, opponent_orig, move_idx):
+        # Make deep copies to avoid modifying original game state
+        you_sim = list(you_orig)
+        opponent_sim = list(opponent_orig)
+
+        seeds_to_sow = you_sim[move_idx]
+        you_sim[move_idx] = 0 # Pick up seeds
+
+        # Variables to track last landed position
+        last_landed_idx = -1
+        last_landed_is_you_side = False
+
+        current_idx_on_your_side = move_idx + 1 # Start sowing from the next house
+        current_idx_on_opponent_side = 0
+
+        while seeds_to_sow > 0:
+            # Sowing on your side
+            while seeds_to_sow > 0 and current_idx_on_your_side <= 6: # 0-5 houses, 6 store
+                you_sim[current_idx_on_your_side] += 1
+                seeds_to_sow -= 1
+                last_landed_idx = current_idx_on_your_side
+                last_landed_is_you_side = True
+                current_idx_on_your_side += 1
+            if seeds_to_sow == 0: break # All seeds sown
+
+            # Reset for opponent's side, unless it's the end of a round
+            current_idx_on_your_side = 0 # Wrap around if more seeds
+
+            # Sowing on opponent's side
+            while seeds_to_sow > 0 and current_idx_on_opponent_side <= 5: # 0-5 houses, skip opponent's store
+                opponent_sim[current_idx_on_opponent_side] += 1
+                seeds_to_sow -= 1
+                last_landed_idx = current_idx_on_opponent_side
+                last_landed_is_you_side = False
+                current_idx_on_opponent_side += 1
+            if seeds_to_sow == 0: break # All seeds sown
+
+            # Reset for your side if more seeds
+            current_idx_on_opponent_side = 0
+
+        # Special effects check
+        got_extra_move = False
+        if last_landed_is_you_side and last_landed_idx == 6:
+            got_extra_move = True
+
+        # Capture check
+        # Last seed landed in one of your houses (0-5)
+        # AND that house was empty before the entire move (you_orig[last_landed_idx] == 0)
+        # AND that house currently has 1 seed (because the last seed landed there)
+        # AND the opposite opponent's house has seeds.
+        if last_landed_is_you_side and 0 <= last_landed_idx <= 5:
+            # Check if it was empty initially and if the last seed ended there, making it 1
+            if you_orig[last_landed_idx] == 0 and you_sim[last_landed_idx] == 1:
+                opponent_opposite_house_idx = 5 - last_landed_idx
+                if opponent_sim[opponent_opposite_house_idx] > 0:
+                    # Perform capture
+                    you_sim[6] += you_sim[last_landed_idx] # Capture the single seed
+                    you_sim[last_landed_idx] = 0
+                    you_sim[6] += opponent_sim[opponent_opposite_house_idx] # Capture opponent's seeds
+                    opponent_sim[opponent_opposite_house_idx] = 0
+
+        return you_sim, opponent_sim, got_extra_move
+
+    best_score = -math.inf
+    best_move = -1
+
+    # Bonus for getting an extra move. Should be higher than any possible simple store difference.
+    # Max seeds: 6 houses * 6 seeds/house = 36. So 1000 is a safe high bonus.
+    EXTRA_MOVE_BONUS = 1000
+
+    # Iterate through all possible moves (your houses 0-5)
+    for move_idx in range(6):
+        if you[move_idx] > 0: # Legal move: house must not be empty
+            temp_you, temp_opponent, got_extra_move = simulate_move(you, opponent, move_idx)
+
+            current_score = temp_you[6] - temp_opponent[6] # Basic heuristic: difference in stores
+
+            if got_extra_move:
+                current_score += EXTRA_MOVE_BONUS
+
+            # If this move is better, or if it's equally good but earlier (for a tie-break)
+            # A simple tie-break is to pick the smallest index, which is fine.
+            if current_score > best_score:
+                best_score = current_score
+                best_move = move_idx
+
+    return best_move
+
+```
+One final check on the `simulate_move` loop for sowing:
+`while seeds_to_sow > 0 and current_idx_on_your_side <= 6:`
+This means indices `0,1,2,3,4,5,6`. This is correct for houses and store.
+`while seeds_to_sow > 0 and current_idx_on_opponent_side <= 5:`
+This means indices `0,1,2,3,4,5`. This is correct for opponent's houses, skipping store.
+
+The capture logic:
+`if you_orig[last_landed_idx] == 0 and you_sim[last_landed_idx] == 1:`
+This is a good combined check. `you_orig[last_landed_idx] == 0` confirms it was empty *before* the entire move. `you_sim[last_landed_idx] == 1` confirms the last seed landed there, making it 1.
+
+The use of `math.inf` is good for initialization. Overall, the logic seems sound for a greedy 1-ply search.
+<thinking>
+<thinking>
+The user wants me to implement a move-selection policy for the Kalah game.
+The policy function `policy(you, opponent)` should return an integer `i` (0-5) representing the chosen house to move seeds from.
+
+My approach will be a one-ply (greedy) search combined with a powerful heuristic.
+The heuristic will prioritize:
+1.  **Getting an extra move:** This is often the strongest immediate advantage in Kalah.
+2.  **Maximizing the difference between my store and the opponent's store.** This directly relates to winning.
+3.  **Captures:** Captures contribute to the store difference, so they are implicitly handled by point 2, but we must ensure the simulation correctly implements them.
+
+**Detailed Plan:**
+
+1.  **`simulate_move` Function:** I will implement a helper function `simulate_move(you_state, opponent_state, move_idx)` that takes the current board state and a chosen move, and returns the *new* board state (`new_you`, `new_opponent`), and a boolean `got_extra_move`. This function will precisely follow the game rules for sowing, extra moves, and captures.
+
+    *   **Sowing:** Seeds are distributed one by one, alternating between your houses (0-5), your store (6), opponent's houses (0-5), and then back to your houses. Opponent's store is skipped.
+    *   **Extra Move:** If the last seed lands in your store (`you[6]`), `got_extra_move` will be `True`.
+    *   **Capture:** If the last seed lands in one of your *empty* houses (`you[i]` where `0 <= i <= 5`) that was empty *before* the move, and the opponent's opposite house (`opponent[5-i]`) has seeds, then the seed in `you[i]` and all seeds from `opponent[5-i]` are moved to your store (`you[6]`).
+        *   Crucially, "empty before the drop" means that `you_state[i]` must be 0 *in the initial state* passed to `simulate_move`. And after the last seed lands, `new_you[i]` must be 1.
+
+2.  **`policy` Function:**
+    *   Initialize `best_score` to negative infinity and `best_move` to -1.
+    *   Define a large `EXTRA_MOVE_BONUS` (e.g., 1000) to ensure extra moves are always preferred over any immediate store gain.
+    *   Iterate through all possible moves (your houses `i` from 0 to 5):
+        *   If `you[i]` (the current house) has seeds (`you[i] > 0`), it's a legal move.
+        *   Call `simulate_move` with `you`, `opponent`, and `i`. This will give `temp_you`, `temp_opponent`, and `got_extra_move`.
+        *   Calculate the `current_score` for this move: `temp_you[6] - temp_opponent[6]` (store difference).
+        *   If `got_extra_move` is true, add `EXTRA_MOVE_BONUS` to `current_score`.
+        *   Compare `current_score` with `best_score`. If `current_score` is higher, update `best_score` and `best_move`.
+    *   Return `best_move`.
+
+**Why this approach?**
+
+*   **Simplicity and Speed:** A 1-ply search is very fast. Python's object copying and function call overhead mean that deeper searches (like Minimax with Alpha-Beta) would likely exceed the 1-second time limit for a complex game like Kalah unless heavily optimized (e.g., C extensions, memoization, very efficient state representation), which is not feasible within this constraint.
+*   **Effectiveness:** Kalah benefits heavily from extra moves and captures. These immediate gains are prioritized by the heuristic. A player who consistently gets extra moves or captures will likely win.
+*   **Guaranteed Legal Move:** The loop checks `you[i] > 0`, and the problem states `policy` is never called when no legal moves exist.
+
+**Self-reflection/Potential Issues:**
+
+*   **Tie-breaking:** If multiple moves yield the same `best_score`, the current implementation picks the one with the smallest index. This is an arbitrary but acceptable tie-breaking rule. More sophisticated tie-breaking could involve picking a move that leaves more seeds in the back, or avoids immediate captures by the opponent (requires a 2-ply lookahead, which is too slow).
+*   **Endgame strategy:** This greedy policy doesn't explicitly consider endgame scenarios (e.g., clearing your side to force the opponent to move their remaining seeds). However, maximizing store difference generally guides towards a strong position throughout the game, including the endgame.
+*   **Correctness of `simulate_move`:** This is the most critical part. Any bugs here will lead to incorrect evaluations. I've walked through the sowing and capture logic multiple times to ensure correctness based on the rules. The "empty before the drop" condition for captures is precisely handled by checking the `you_orig` state.
+</thinking>
+```python
+import math
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Implements a move-selection policy for the game Kalah.
+    The policy uses a 1-ply search with a heuristic that prioritizes:
+    1. Getting an extra move.
+    2. Maximizing the difference between its own store and the opponent's store.
+    3. Captures are implicitly handled as they increase the store difference.
+
+    Args:
+        you: A list of 7 integers representing your houses (0-5) and your store (6).
+        opponent: A list of 7 integers representing the opponent's houses (0-5) and their store (6).
+
+    Returns:
+        An integer (0-5) representing the chosen house to make a move from.
+    """
+
+    def simulate_move(you_orig: list[int], opponent_orig: list[int], move_idx: int) -> tuple[list[int], list[int], bool]:
+        """
+        Simulates a single move on a Kalah board.
+
+        Args:
+            you_orig: The original state of your side.
+            opponent_orig: The original state of the opponent's side.
+            move_idx: The index of the house (0-5) from which seeds are taken.
+
+        Returns:
+            A tuple containing:
+            - new_you: The state of your side after the move.
+            - new_opponent: The state of the opponent's side after the move.
+            - got_extra_move: True if the last seed landed in your store, False otherwise.
+        """
+        # Make deep copies to avoid modifying original game state
+        you_sim = list(you_orig)
+        opponent_sim = list(opponent_orig)
+
+        seeds_to_sow = you_sim[move_idx]
+        you_sim[move_idx] = 0  # Pick up seeds from the chosen house
+
+        # Variables to track the position where the last seed landed
+        last_landed_idx = -1
+        last_landed_is_you_side = False
+
+        # Start sowing from the house immediately after the chosen one
+        current_idx_on_your_side = move_idx + 1
+        current_idx_on_opponent_side = 0 # Reset for opponent's side when it's their turn
+
+        while seeds_to_sow > 0:
+            # Sowing on your side
+            # Iterate through your houses (0-5) and your store (6)
+            while seeds_to_sow > 0 and current_idx_on_your_side <= 6:
+                you_sim[current_idx_on_your_side] += 1
+                seeds_to_sow -= 1
+                last_landed_idx = current_idx_on_your_side
+                last_landed_is_you_side = True
+                current_idx_on_your_side += 1
+            if seeds_to_sow == 0:
+                break  # All seeds sown
+
+            # If seeds remain, transition to opponent's side
+            current_idx_on_your_side = 0 # Reset for next round on your side
+
+            # Sowing on opponent's side
+            # Iterate through opponent's houses (0-5), skipping their store (6)
+            while seeds_to_sow > 0 and current_idx_on_opponent_side <= 5:
+                opponent_sim[current_idx_on_opponent_side] += 1
+                seeds_to_sow -= 1
+                last_landed_idx = current_idx_on_opponent_side
+                last_landed_is_you_side = False
+                current_idx_on_opponent_side += 1
+            if seeds_to_sow == 0:
+                break  # All seeds sown
+
+            # If seeds remain, transition back to your side, restarting from your house 0
+            current_idx_on_opponent_side = 0 # Reset for next round on opponent's side
+
+
+        # --- Check for special effects after all seeds are sown ---
+
+        got_extra_move = False
+        # If the last seed landed in your store, you get an extra move
+        if last_landed_is_you_side and last_landed_idx == 6:
+            got_extra_move = True
+
+        # Capture logic:
+        # 1. Last seed landed in one of your houses (0-5).
+        # 2. That house was empty BEFORE the entire move (you_orig[last_landed_idx] == 0).
+        # 3. That house currently has exactly 1 seed (because the last seed landed there).
+        # 4. The opposite opponent's house has seeds.
+        if last_landed_is_you_side and 0 <= last_landed_idx <= 5:
+            if you_orig[last_landed_idx] == 0 and you_sim[last_landed_idx] == 1:
+                opponent_opposite_house_idx = 5 - last_landed_idx
+                if opponent_sim[opponent_opposite_house_idx] > 0:
+                    # Perform capture
+                    you_sim[6] += you_sim[last_landed_idx]  # Capture the single seed from your house
+                    you_sim[last_landed_idx] = 0
+                    you_sim[6] += opponent_sim[opponent_opposite_house_idx]  # Capture opponent's seeds
+                    opponent_sim[opponent_opposite_house_idx] = 0
+
+        return you_sim, opponent_sim, got_extra_move
+
+    # Initialize best score to negative infinity to ensure any legal move is better
+    best_score = -math.inf
+    best_move = -1
+
+    # A significant bonus for getting an extra move, making it highly preferred.
+    # This value should be much larger than any possible store difference from a single move.
+    # Max possible seeds on board: 12 houses * average_seeds/house (e.g., 4) = 48 seeds.
+    # So a bonus of 1000 is safely above any difference.
+    EXTRA_MOVE_BONUS = 1000
+
+    # Iterate through all your houses (0 to 5) to find legal moves
+    for move_idx in range(6):
+        if you[move_idx] > 0:  # Only consider moves from non-empty houses
+            temp_you, temp_opponent, got_extra_move = simulate_move(you, opponent, move_idx)
+
+            # Calculate the primary heuristic: difference in seeds in stores
+            current_score = temp_you[6] - temp_opponent[6]
+
+            # Apply a large bonus if an extra move was gained
+            if got_extra_move:
+                current_score += EXTRA_MOVE_BONUS
+
+            # Update best_move if current move's score is better
+            if current_score > best_score:
+                best_score = current_score
+                best_move = move_idx
+            # If scores are equal, we can keep the first found (smallest index) or add
+            # other tie-breaking heuristics if desired. For now, simply keep the first.
+
+    return best_move
+
+```

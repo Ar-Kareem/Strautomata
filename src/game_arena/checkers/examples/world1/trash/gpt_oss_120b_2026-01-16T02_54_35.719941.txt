@@ -1,0 +1,230 @@
+**Strategy Overview**
+
+The policy follows the official rules of Checkers – captures are mandatory and multi‑jumps are allowed.  
+
+1. **Generate all possible capture sequences** for every own piece (men and kings).  
+   * Men may capture forward and backward; kings capture in all four diagonal directions.  
+   * The search is recursive, removing captured opponent pieces temporarily to allow continuation of the jump chain.  
+   * The longest capture chain (most opponent pieces removed) is selected. When several chains have the same length, the one that moves the piece closest to promotion is chosen.
+
+2. **If no capture is available**, generate all ordinary moves:  
+   * Men move one step forward (downwards for black, upwards for white).  
+   * Kings move one step in any diagonal direction.  
+
+3. **Heuristic for non‑capture moves** – the move that brings a man closest to the promotion row and/or places the piece nearer to the centre of the board is preferred.  
+   * A simple scoring function: `score = advancement + centre_bonus – danger`.  
+   * “Danger” is a quick check whether the piece would be immediately capturable after the move; such moves are penalised.
+
+4. **Return the chosen move** as a tuple `((from_row, from_col), (to_row, to_col))`.  
+   The implementation is fully deterministic, fast, and always returns a legal move respecting the mandatory‑capture rule.
+
+```python
+<code>
+import itertools
+from copy import deepcopy
+
+# -------------------------------------------------------------
+# Helper functions
+# -------------------------------------------------------------
+def on_board(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def dark_square(r, c):
+    # (0,0) is a dark square according to the problem statement
+    return (r + c) % 2 == 0
+
+def opponent_pieces(opp_men, opp_kings):
+    return set(opp_men) | set(opp_kings)
+
+def my_all_pieces(my_men, my_kings):
+    return set(my_men) | set(my_kings)
+
+def promotion_row(color):
+    return 0 if color == 'b' else 7
+
+def forward_dirs(color):
+    """Diagonal forward directions for a man."""
+    return [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+
+def all_dirs():
+    """All four diagonal directions (for kings or captures)."""
+    return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+# -------------------------------------------------------------
+# Capture generation
+# -------------------------------------------------------------
+def generate_captures(pos, is_king, opp_set, my_set):
+    """
+    Return all capture sequences starting from `pos`.
+    Each sequence is a list of positions visited, including the start.
+    """
+    results = []
+
+    def recurse(cur_pos, cur_opp, path, visited):
+        found = False
+        for dr, dc in all_dirs():
+            mid_r, mid_c = cur_pos[0] + dr, cur_pos[1] + dc
+            landing_r, landing_c = cur_pos[0] + 2 * dr, cur_pos[1] + 2 * dc
+            if not (on_board(mid_r, mid_c) and on_board(landing_r, landing_c)):
+                continue
+            if (mid_r, mid_c) not in cur_opp:
+                continue
+            if (landing_r, landing_c) in my_set or (landing_r, landing_c) in cur_opp:
+                continue
+            if not dark_square(landing_r, landing_c):
+                continue
+
+            # perform capture
+            new_opp = cur_opp - {(mid_r, mid_c)}
+            new_path = path + [(landing_r, landing_c)]
+            # continue jumping from the landing square
+            recurse((landing_r, landing_c), new_opp, new_path, visited | {(mid_r, mid_c)})
+            found = True
+
+        if not found:
+            # no further captures – store the sequence
+            results.append(path)
+
+    recurse(pos, opp_set, [pos], set())
+    return results
+
+def best_capture(my_men, my_kings, opp_men, opp_kings, color):
+    opp_set = opponent_pieces(opp_men, opp_kings)
+    my_set = my_all_pieces(my_men, my_kings)
+
+    best_seq = None
+    best_from = None
+
+    # men
+    for piece in my_men:
+        seqs = generate_captures(piece, False, opp_set, my_set)
+        for seq in seqs:
+            if len(seq) < 2:
+                continue  # no capture
+            if (best_seq is None) or (len(seq) > len(best_seq)):
+                best_seq = seq
+                best_from = piece
+            elif len(seq) == len(best_seq):
+                # tie‑breaker: move nearer to promotion
+                cur_dist = abs(promotion_row(color) - seq[-1][0])
+                best_dist = abs(promotion_row(color) - best_seq[-1][0])
+                if cur_dist < best_dist:
+                    best_seq = seq
+                    best_from = piece
+
+    # kings
+    for piece in my_kings:
+        seqs = generate_captures(piece, True, opp_set, my_set)
+        for seq in seqs:
+            if len(seq) < 2:
+                continue
+            if (best_seq is None) or (len(seq) > len(best_seq)):
+                best_seq = seq
+                best_from = piece
+            elif len(seq) == len(best_seq):
+                cur_dist = abs(promotion_row(color) - seq[-1][0])
+                best_dist = abs(promotion_row(color) - best_seq[-1][0])
+                if cur_dist < best_dist:
+                    best_seq = seq
+                    best_from = piece
+
+    if best_seq is None:
+        return None  # no capture
+
+    # Return first jump of the best sequence as required by the API
+    return (best_from, best_seq[1])
+
+# -------------------------------------------------------------
+# Ordinary move generation
+# -------------------------------------------------------------
+def generate_simple_moves(my_men, my_kings, opp_men, opp_kings, color):
+    occupied = my_all_pieces(my_men, my_kings) | opponent_pieces(opp_men, opp_kings)
+    moves = []
+
+    # men moves (only forward)
+    dirs = forward_dirs(color)
+    for piece in my_men:
+        for dr, dc in dirs:
+            nr, nc = piece[0] + dr, piece[1] + dc
+            if not (on_board(nr, nc) and dark_square(nr, nc)):
+                continue
+            if (nr, nc) in occupied:
+                continue
+            moves.append((piece, (nr, nc)))
+
+    # king moves (all four diagonals)
+    for piece in my_kings:
+        for dr, dc in all_dirs():
+            nr, nc = piece[0] + dr, piece[1] + dc
+            if not (on_board(nr, nc) and dark_square(nr, nc)):
+                continue
+            if (nr, nc) in occupied:
+                continue
+            moves.append((piece, (nr, nc)))
+
+    return moves
+
+def score_move(move, color, opp_men, opp_kings):
+    """
+    Simple heuristic:
+    - advancement towards promotion
+    - centre proximity
+    - penalise if the destination square can be captured immediately
+    """
+    from_sq, to_sq = move
+    # advancement
+    adv = (from_sq[0]_sq[0]) if color == 'b' else (to_sq[0] - from_sq[0])
+
+    # centre bonus (columns 3 and 4 are the centre)
+    centre = -abs(to_sq[1] - 3.5)  # larger (less negative) when closer to centre
+
+    # danger: can opponent capture us next turn?
+    danger = 0
+    opp_set = opponent_pieces(opp_men, opp_kings)
+    my_set = {to_sq}
+    for dr, dc in all_dirs():
+        enemy_r, enemy_c = to_sq[0] + dr, to_sq[1] + dc
+        landing_r, landing_c = to_sq[0] - dr, to_sq[1] - dc
+        if (enemy_r, enemy_c) in opp_set and on_board(landing_r, landing_c):
+            if dark_square(landing_r, landing_c) and (landing_r, landing_c) not in my_set and (landing_r, landing_c) not in opp_set:
+                danger = -5  # noticeable penalty
+                break
+
+    return adv * 2 + centre + danger
+
+def best_simple_move(my_men, my_kings, opp_men, opp_kings, color):
+    moves = generate_simple_moves(my_men, my_kings, opp_men, opp_kings, color)
+    if not moves:
+        # No legal moves – return a dummy (should never happen in valid positions)
+        return ((0, 0), (0, 0))
+    scored = [(score_move(m, color, opp_men, opp_kings), m) for m in moves]
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return scored[0][1]
+
+# -------------------------------------------------------------
+# Main policy function
+# -------------------------------------------------------------
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Return a legal move for the current player.
+    Mandatory captures are respected; otherwise a simple heuristic is used.
+    """
+    # Convert input lists to tuples for consistency
+    my_men = [tuple(p) for p in my_men]
+    my_kings = [tuple(p) for p in my_kings]
+    opp_men = [tuple(p) for p in opp_men]
+    opp_kings = [tuple(p) for p in opp_kings]
+
+    # 1. Look for captures
+    cap_move = best_capture(my_men, my_kings, opp_men, opp_kings, color)
+    if cap_move is not None:
+        return cap_move
+
+    # 2. No captures – pick the best simple move
+    return best_simple_move(my_men, my_kings, opp_men, opp_kings, color)
+
+# -------------------------------------------------------------
+# End of policy
+# -------------------------------------------------------------
+</code>
+```

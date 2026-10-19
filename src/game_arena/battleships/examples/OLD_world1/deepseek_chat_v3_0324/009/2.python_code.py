@@ -1,0 +1,139 @@
+
+import numpy as np
+from collections import defaultdict
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    size = len(board)
+    prob_board = np.zeros((size, size), dtype=float)
+    
+    # Convert board to numpy array for easier manipulation
+    np_board = np.array(board)
+    
+    # Get all possible ship placements that match current hits/misses
+    ships_left = get_possible_ships(np_board)
+    
+    # If we have no ship information left, fall back to parity targeting
+    if not ships_left:
+        return parity_targeting(np_board)
+    
+    # Calculate probability for each cell based on possible ship placements
+    for ship in ships_left:
+        for (i, j) in ship['cells']:
+            prob_board[i][j] += 1
+    
+    # Zero out already shot cells
+    prob_board[np_board != 0] = 0
+    
+    # If we have hits, focus on adjacent cells
+    hit_positions = np.argwhere(np_board == 1)
+    if len(hit_positions) > 0:
+        # Prioritize finishing damaged ships
+        for (i, j) in hit_positions:
+            for di, dj in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                ni, nj = i + di, j + dj
+                if 0 <= ni < size and 0 <= nj < size and np_board[ni, nj] == 0:
+                    prob_board[ni, nj] *= 1.5
+        
+        # Check if we should pursue a particular direction
+        for (i, j) in hit_positions:
+            for direction in get_ship_directions(np_board, i, j):
+                ni, nj = i + direction[0], j + direction[1]
+                while 0 <= ni < size and 0 <= nj < size and np_board[ni, nj] == 1:
+                    ni += direction[0]
+                    nj += direction[1]
+                if 0 <= ni < size and 0 <= nj < size and np_board[ni, nj] == 0:
+                    prob_board[ni, nj] *= 2.0
+    
+    # If we still have no high-probability targets, fall back to parity
+    if np.sum(prob_board) < 0.1:
+        return parity_targeting(np_board)
+    
+    # Select cell with highest probability
+    max_prob = np.max(prob_board)
+    candidates = np.argwhere(prob_board == max_prob)
+    return tuple(candidates[0])
+
+def get_possible_ships(board):
+    size = board.shape[0]
+    ships = []
+    
+    # Original Battleship ship sizes
+    ship_lengths = [5, 4, 3, 3, 2]
+    for length in ship_lengths:
+        # Check horizontal placements
+        for i in range(size):
+            for j in range(size - length + 1):
+                cells = [(i, j + k) for k in range(length)]
+                if is_valid_ship_placement(board, cells):
+                    ships.append({'length': length, 'cells': cells})
+        
+        # Check vertical placements
+        for i in range(size - length + 1):
+            for j in range(size):
+                cells = [(i + k, j) for k in range(length)]
+                if is_valid_ship_placement(board, cells):
+                    ships.append({'length': length, 'cells': cells})
+    
+    return ships
+
+def is_valid_ship_placement(board, cells):
+    for (i, j) in cells:
+        # Must be unknown or hit (0 or 1)
+        if board[i, j] == -1:
+            return False
+        
+    # Check that all hits are in this ship
+    hit_cells = [(i, j) for (i, j) in cells if board[i, j] == 1]
+    if len(hit_cells) > 0:
+        # All hits must be contiguous in a straight line
+        rows = [i for (i, j) in hit_cells]
+        cols = [j for (i, j) in hit_cells]
+        
+        # Check if they form a straight line
+        if len(set(rows)) != 1 and len(set(cols)) != 1:
+            return False
+        
+        # Check if they are contiguous
+        if len(set(rows)) == 1:
+            min_col = min(cols)
+            max_col = max(cols)
+            if max_col - min_col + 1 > len(hit_cells):
+                return False
+        else:
+            min_row = min(rows)
+            max_row = max(rows)
+            if max_row - min_row + 1 > len(hit_cells):
+                return False
+    
+    return True
+
+def get_ship_directions(board, i, j):
+    directions = []
+    size = board.shape[0]
+    
+    for di, dj in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        ni, nj = i + di, j + dj
+        if 0 <= ni < size and 0 <= nj < size and board[ni, nj] == 1:
+            directions.append((di, dj))
+    
+    if not directions:
+        return [(0, 1), (1, 0)]  # default directions if no adjacent hits
+    return directions
+
+def parity_targeting(board):
+    size = board.shape[0]
+    checkerboard = np.zeros((size, size), dtype=bool)
+    
+    # Create checkerboard pattern (only target "even" cells)
+    for i in range(size):
+        for j in range(size):
+            checkerboard[i, j] = (i + j) % 2 == 0
+    
+    # Find all unknown even cells
+    candidates = np.argwhere((board == 0) & checkerboard)
+    
+    if len(candidates) == 0:
+        # If no even cells left, target any remaining unknown
+        candidates = np.argwhere(board == 0)
+    
+    return tuple(candidates[0])

@@ -1,0 +1,187 @@
+<section class="intro panel panel-primary">
+  <div class="intro-cards">
+    <button class="intro-card intro-card-link" type="button" (click)="openLeaderboard($event)">
+      <span class="intro-card-head">
+        <span class="intro-card-title">Median Elo across 20 games</span>
+        <span class="intro-card-cta">Leaderboard ▶</span>
+      </span>
+      <span class="lb" [style.--plot-h.px]="plotPx">
+        <span class="lb-plot">
+          @for (t of eloTicks(); track t.label) {
+            <span class="lb-grid" [style.bottom.%]="t.pct"><span class="lb-tick">{{ t.label }}</span></span>
+          }
+          <span class="lb-cols" #colsEl>
+            @for (c of columns(); track c.name; let i = $index) {
+              @if (c.kind === 'more') {
+                <span class="lb-col is-more">
+                  <span class="lb-more">+{{ c.count }} more</span>
+                </span>
+              } @else {
+                <span class="lb-col" [class.is-random]="c.kind === 'random'" [attr.data-model]="c.id" [title]="c.name + ': ' + (c.elo | number: '1.0-0')">
+                  <span class="lb-bar" [style.height.%]="c.pct" [style.--delay]="(i * 0.02) + 's'">
+                    <span class="lb-value">{{ c.elo.toFixed(0) }}</span>
+                    <span class="lb-name">{{ c.name }}</span>
+                  </span>
+                </span>
+              }
+            }
+          </span>
+        </span>
+        <span class="lb-logos">
+          @for (c of columns(); track c.name) {
+            <span class="lb-logo">
+              @if (c.kind === 'random') {
+                <i class="fa-solid fa-dice" aria-hidden="true"></i>
+              } @else if (c.kind === 'model' && c.logo) {
+                <img [src]="c.logo" alt="" />
+              }
+            </span>
+          }
+        </span>
+      </span>
+    </button>
+
+    <div class="intro-card">
+      <span class="intro-card-head">
+        <span class="intro-card-title">Benchmark alignment vs. cost</span>
+      </span>
+      @let box = plot();
+      <div class="pareto-wrap" (document:keydown.escape)="hidePoint()" (window:scroll)="hidePoint()" (window:resize)="hidePoint()">
+      <svg class="intro-chart intro-pareto" #pareto [attr.viewBox]="'0 0 ' + box.width + ' ' + box.height" role="group" aria-label="Benchmark alignment against the cost of evaluating two frontier models. Focus or hover over a point for details; activate it to visit the benchmark.">
+        <rect class="quality-region" [attr.x]="box.x0" [attr.y]="box.y0" [attr.width]="px(200) - box.x0" [attr.height]="py(0.6) - box.y0" />
+        @for (t of yTicks; track t.label) {
+          <line class="grid" [attr.x1]="box.x0" [attr.x2]="box.x1" [attr.y1]="t.y" [attr.y2]="t.y" />
+          <text class="tick" [attr.x]="box.x0 - 6" [attr.y]="t.y" text-anchor="end" dominant-baseline="middle">{{ t.label }}</text>
+        }
+        @for (t of xTicks(); track t.label) {
+          <line class="grid" [attr.x1]="t.x" [attr.x2]="t.x" [attr.y1]="box.y0" [attr.y2]="box.y1" />
+          <text class="tick" [attr.x]="t.x" [attr.y]="box.y1 + 16" text-anchor="middle">{{ t.label }}</text>
+        }
+        <text class="axis x-axis" [attr.x]="(box.x0 + box.x1) / 2" [attr.y]="box.height - 22" text-anchor="middle">
+          <tspan [attr.x]="(box.x0 + box.x1) / 2">GPT-6 Astra + Claude Fable 5.1</tspan>
+          <tspan [attr.x]="(box.x0 + box.x1) / 2" dy="14">(USD total cost, log)</tspan>
+        </text>
+        <g class="y-axis-label" [attr.transform]="'translate(12 ' + (box.y0 + box.y1) / 2 + ') rotate(-90)'">
+          <text class="axis" x="-10" text-anchor="middle" dominant-baseline="central">Alignment (Kendall τ)</text>
+          <a class="alignment-help" href="https://arxiv.org/abs/2407.13696" target="_blank" rel="noopener noreferrer" tabindex="0" aria-label="How is alignment measured? Read the BenchBench paper on arXiv in a new tab" [attr.aria-describedby]="activeLegend()?.kind === 'alignment' ? 'pareto-legend-tooltip' : null" transform="translate(77 0)" (pointerenter)="showLegend(alignmentHelp, $event)" (pointerleave)="scheduleHidePoint()" (focus)="showLegend(alignmentHelp, $event)" (blur)="hidePoint()">
+            <circle class="help-hit" r="12" />
+            <circle class="help-outline" r="8" />
+            <text text-anchor="middle" dominant-baseline="central">?</text>
+          </a>
+        </g>
+
+        <text class="quality-label" [attr.x]="(box.x0 + px(200)) / 2" [attr.y]="box.y0 + 14" [style.font-size.px]="box.width < 360 ? 10 : 12" text-anchor="middle">
+          <tspan [attr.x]="(box.x0 + px(200)) / 2">high quality benchmark</tspan>
+          <tspan [attr.x]="(box.x0 + px(200)) / 2" dy="14">for &lt;$200</tspan>
+        </text>
+
+        @let front = frontier();
+        <polyline class="frontier" [attr.points]="front.points" />
+        @if (front.label; as l) {
+          <text class="frontier-label" [attr.transform]="'translate(' + l.x + ' ' + l.y + ') rotate(' + l.angle + ')'" text-anchor="middle">Pareto frontier</text>
+        }
+
+        @for (p of visiblePoints(); track p.name + p.cost) {
+          <a class="benchmark-point" [attr.href]="p.ours ? paperUrl || null : p.url" target="_blank" rel="noopener noreferrer" [attr.role]="p.ours && !paperUrl ? 'link' : null" [attr.aria-disabled]="p.ours && !paperUrl ? 'true' : null" [attr.aria-label]="pointTitle(p) + (p.ours && !paperUrl ? '; paper link coming soon' : '; open benchmark in a new tab')" [attr.aria-describedby]="activePoint() === p ? 'pareto-point-tooltip' : null" tabindex="0" (pointerenter)="showPoint(p)" (pointerleave)="scheduleHidePoint()" (focus)="showPoint(p)" (blur)="hidePoint()">
+          <circle class="point-hit" [attr.cx]="px(p.cost)" [attr.cy]="py(p.tau)" r="8" />
+          @if (p.ours) {
+            <g class="pt-ours">
+              <polygon class="halo" [attr.points]="triangle(p, 15)" />
+              <polygon [attr.points]="triangle(p, 8)" />
+              <text [attr.x]="px(p.cost) + 12" [attr.y]="py(p.tau) + 16">Strautomata (ours)</text>
+            </g>
+          } @else if (p.arena) {
+            <polygon class="pt" [class.is-saturated]="p.saturated" [attr.points]="triangle(p, p.saturated ? 3.5 : 5.5)" />
+          } @else {
+            <circle class="pt" [class.is-saturated]="p.saturated" [attr.cx]="px(p.cost)" [attr.cy]="py(p.tau)" [attr.r]="p.saturated ? 2.5 : 4.5" />
+          }
+          </a>
+        }
+      </svg>
+      @if (tooltip(); as tip) {
+        <div #paretoTooltip id="pareto-point-tooltip" class="pareto-tooltip" popover="manual" role="tooltip" [style.left.px]="tip.left" [style.top.px]="tip.top" [style.width.px]="tip.width" [style.max-height.px]="tip.maxHeight" (pointerenter)="keepTooltip()" (pointerleave)="scheduleHidePoint()">
+          <strong class="tooltip-name">{{ tip.point.name }}</strong>
+          <span class="tooltip-kind">{{ tip.point.arena ? 'Arena / pairwise' : 'Individual evaluation' }}</span>
+          <dl class="tooltip-metrics">
+            <div><dt>Alignment (Kendall τ)</dt><dd>{{ tip.point.tau | number: '1.3-3' }}</dd></div>
+            <div><dt>Paired API cost</dt><dd>${{ tip.point.cost | number: '1.2-2' }}</dd></div>
+            <div><dt>Models compared</dt><dd>{{ tip.point.models }}</dd></div>
+          </dl>
+          <div class="tooltip-model"><span>GPT-6 Astra<small>Effort: {{ tip.point.astraEffort }}</small></span><b>${{ tip.point.astraCost | number: '1.2-2' }}</b></div>
+          <div class="tooltip-model"><span>Claude Fable 5.1<small>Effort: {{ tip.point.fableEffort }}</small></span><b>${{ tip.point.fableCost | number: '1.2-2' }}</b></div>
+          @if (tip.point.saturated) {
+            <p class="tooltip-note">Observed saturation; excluded from the Pareto frontier.</p>
+          }
+          <span class="tooltip-hint">{{ tip.point.ours && !paperUrl ? 'Paper link coming soon' : 'Click to open' }}</span>
+        </div>
+      }
+      </div>
+      <ul class="pareto-legend" aria-label="Benchmark marker legend">
+        @for (entry of legend; track entry.kind) {
+          <li>
+            <button type="button" [attr.aria-describedby]="activeLegend()?.kind === entry.kind ? 'pareto-legend-tooltip' : null" (pointerenter)="showLegend(entry, $event)" (pointerleave)="scheduleHidePoint()" (focus)="showLegend(entry, $event)" (blur)="hidePoint()" (click)="showLegend(entry, $event)">
+              <svg viewBox="0 0 14 14" aria-hidden="true" focusable="false">
+                @if (entry.kind === 'arena') {
+                  <polygon class="legend-marker" points="7,2 12.2,11 1.8,11" />
+                } @else {
+                  <circle [class.legend-marker]="entry.kind === 'individual'" [class.legend-saturated]="entry.kind === 'saturated'" cx="7" cy="7" [attr.r]="entry.kind === 'saturated' ? 2.5 : 4.5" />
+                }
+              </svg>{{ entry.label }}
+            </button>
+          </li>
+        }
+      </ul>
+      @if (activeLegend(); as tip) {
+        <div #legendTooltip id="pareto-legend-tooltip" class="pareto-tooltip" popover="manual" role="tooltip" [style.left.px]="tip.left" [style.top.px]="tip.top" [style.width.px]="tip.width" [style.max-height.px]="tip.maxHeight" (pointerenter)="keepTooltip()" (pointerleave)="scheduleHidePoint()">
+          <strong class="tooltip-name">{{ tip.label }}</strong>
+          <p class="legend-explanation">{{ tip.description }}</p>
+          @if (tip.note) {
+            <p class="legend-note">{{ tip.note }}</p>
+          }
+        </div>
+      }
+    </div>
+  </div>
+
+  <div class="intro-about">
+    <p class="intro-lead">
+      Useful intelligence builds tools that keep working indefinitely. <em>Strautomata</em> measures a model by the autonomous
+      programs it builds, not by how it talks.
+    </p>
+    <div class="intro-pillars">
+      <div class="intro-pillar">
+        <i class="fa-solid fa-code" aria-hidden="true"></i>
+        <div>
+          <h3>Build Automata</h3>
+          <p>
+            Each LLM is asked (in one batch) to create
+            <automata-term>automata</automata-term>
+            (Python programs) that play a board game strategically.
+          </p>
+          <a class="intro-cta" [href]="paperUrl" target="_blank" rel="noopener noreferrer">
+            <i class="fa-solid fa-file-lines" aria-hidden="true"></i>
+            Read the paper
+            <span class="intro-cta-arrow" aria-hidden="true">▶</span>
+          </a>
+        </div>
+      </div>
+      <div class="intro-pillar">
+        <i class="fa-solid fa-chess-board" aria-hidden="true"></i>
+        <div>
+          <h3>Compete offline</h3>
+          <p>The automata face each other in round-robin tournaments across 20 games. A model's Elo is the strength of what it built.</p>
+        </div>
+      </div>
+      <div class="intro-pillar">
+        <i class="fa-solid fa-box-archive" aria-hidden="true"></i>
+        <div>
+          <h3>Cheap, Accurate, and Indefinite</h3>
+          <p class="is-point">Matches cost nothing to replay, so ranking frontier models takes only ~$100.</p>
+          <p class="is-point">Cheap enough to serve as a training signal, not just evaluation.</p>
+          <p class="is-point">On the Pareto Frontier of benchmark alignment vs cost.</p>
+          <p class="is-point">Frozen automata let released and discontinued models years apart meet and compete against each other directly.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>

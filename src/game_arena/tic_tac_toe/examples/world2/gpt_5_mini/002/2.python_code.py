@@ -1,0 +1,183 @@
+
+from functools import lru_cache
+from typing import List, Tuple
+
+# 4x4 Tic-Tac-Toe policy: returns (row, col) in 0..3
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Flatten board to tuple of length 16
+    flat = tuple(cell for row in board for cell in row)
+
+    # Precompute lines (as indices in flat)
+    LINES = []
+    # rows
+    for r in range(4):
+        LINES.append(tuple(4 * r + c for c in range(4)))
+    # cols
+    for c in range(4):
+        LINES.append(tuple(r * 4 + c for r in range(4)))
+    # diagonals
+    LINES.append(tuple(i * 5 for i in range(4)))  # 0,5,10,15
+    LINES.append(tuple((i + 1) * 3 for i in range(4)))  # 3,6,9,12
+
+    # For each cell index, which lines include it
+    CELL_LINES = [[] for _ in range(16)]
+    for li, line in enumerate(LINES):
+        for idx in line:
+            CELL_LINES[idx].append(line)
+
+    # Determine whose turn based on counts: if our_count <= opp_count -> our turn (1)
+    our_count = flat.count(1)
+    opp_count = flat.count(-1)
+    next_player = 1 if our_count <= opp_count else -1
+
+    # Quick helper to check terminal state
+    def check_winner(board_flat: Tuple[int, ...]) -> int:
+        # return 1 if us win, -1 if opponent win, 0 otherwise
+        for line in LINES:
+            s = board_flat[line[0]] + board_flat[line[1]] + board_flat[line[2]] + board_flat[line[3]]
+            if s == 4:
+                return 1
+            if s == -4:
+                return -1
+        return 0
+
+    # If it's not our turn, just return first empty (shouldn't normally happen)
+    if next_player != 1:
+        for i, v in enumerate(flat):
+            if v == 0:
+                return (i // 4, i % 4)
+        # no moves
+        return (0, 0)
+
+    # Minimax with alpha-beta and caching
+    @lru_cache(maxsize=None)
+    def minimax(board_flat: Tuple[int, ...], player: int, alpha: int, beta: int) -> int:
+        # Check terminal
+        winner = check_winner(board_flat)
+        if winner != 0:
+            return winner  # 1 or -1
+        if 0 not in board_flat:
+            return 0  # draw
+
+        # Generate moves
+        empties = [i for i, v in enumerate(board_flat) if v == 0]
+
+        # Move ordering heuristic: prefer moves that increase player's influence
+        move_scores = []
+        for idx in empties:
+            score = 0
+            for line in CELL_LINES[idx]:
+                s = sum(board_flat[pos] for pos in line)
+                score += s * player  # positive is good for player
+            move_scores.append((score, idx))
+        # Sort moves: descending for maximizing player, ascending for minimizing
+        move_scores.sort(reverse=(player == 1))
+        ordered_moves = [idx for _, idx in move_scores]
+
+        if player == 1:
+            value = -2  # worse than worst
+            for idx in ordered_moves:
+                # immediate win pruning
+                new_board = list(board_flat)
+                new_board[idx] = player
+                new_t = tuple(new_board)
+                if check_winner(new_t) == 1:
+                    return 1
+                score = minimax(new_t, -player, alpha, beta)
+                if score > value:
+                    value = score
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+                # early exit if guaranteed win found
+                if value == 1:
+                    break
+            return value
+        else:
+            value = 2
+            for idx in ordered_moves:
+                new_board = list(board_flat)
+                new_board[idx] = player
+                new_t = tuple(new_board)
+                if check_winner(new_t) == -1:
+                    return -1
+                score = minimax(new_t, -player, alpha, beta)
+                if score < value:
+                    value = score
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+                if value == -1:
+                    break
+            return value
+
+    # Top-level: choose best move for player 1
+    best_score = -2
+    best_move = None
+
+    # Gather empties and order them similarly
+    empties = [i for i, v in enumerate(flat) if v == 0]
+    move_scores = []
+    for idx in empties:
+        score = 0
+        for line in CELL_LINES[idx]:
+            s = sum(flat[pos] for pos in line)
+            score += s  # since player == 1
+        move_scores.append((score, idx))
+    move_scores.sort(reverse=True)
+    ordered_moves = [idx for _, idx in move_scores]
+
+    # First check immediate winning moves
+    for idx in ordered_moves:
+        new_board = list(flat)
+        new_board[idx] = 1
+        new_t = tuple(new_board)
+        if check_winner(new_t) == 1:
+            return (idx // 4, idx % 4)
+
+    # Then block opponent immediate wins if necessary (if opponent could win next)
+    # If opponent has immediate win on some cell, we try those cells first to block
+    opp_wins = set()
+    for idx in ordered_moves:
+        new_board = list(flat)
+        new_board[idx] = -1
+        new_t = tuple(new_board)
+        if check_winner(new_t) == -1:
+            opp_wins.add(idx)
+    if opp_wins:
+        # choose any blocking move that also is best according to ordering
+        for idx in ordered_moves:
+            if idx in opp_wins:
+                return (idx // 4, idx % 4)
+        # fallback: choose first empty
+        idx = ordered_moves[0]
+        return (idx // 4, idx % 4)
+
+    # Otherwise run minimax on ordered moves
+    for idx in ordered_moves:
+        new_board = list(flat)
+        new_board[idx] = 1
+        new_t = tuple(new_board)
+        score = minimax(new_t, -1, -2, 2)
+        if score > best_score or (score == best_score and (best_move is None or idx < best_move)):
+            best_score = score
+            best_move = idx
+        # immediate win
+        if best_score == 1:
+            break
+
+    if best_move is None:
+        # no move (shouldn't happen) -> pick first empty
+        for i, v in enumerate(flat):
+            if v == 0:
+                return (i // 4, i % 4)
+        return (0, 0)
+
+    return (best_move // 4, best_move % 4)
+
+
+# If run as script, provide a simple example for manual testing (not executed by the judge)
+if __name__ == "__main__":
+    # Example: empty board
+    bd = [[0]*4 for _ in range(4)]
+    print(policy(bd))

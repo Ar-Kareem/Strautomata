@@ -1,0 +1,460 @@
+<thinking>
+The user wants a Python function `policy(board)` that, given a 10x10 Battleship board, returns `(row, col)` for the next shot. The board contains `0` (unknown), `-1` (miss), or `1` (hit). The goal is to sink all opponent ships.
+
+Here's my thought process for developing a good targeting policy:
+
+1.  **Understand the Goal:** Sink all ships. This means finding all 17 ship cells (5+4+3+3+2 = 17).
+
+2.  **Basic Strategy - Two Phases:**
+    *   **Hunting Phase:** When no ship segments are currently hit and unsunk, we need to find new ship segments.
+    *   **Targeting/Sinking Phase:** When we've hit a ship segment, we want to try and sink that ship as quickly as possible.
+
+3.  **Hunting Phase Strategy:**
+    *   **Why checkerboard?** A checkerboard pattern (e.g., shooting at every other square) is a common strategy. If you hit a square, any ship segment adjacent to it would be revealed. For ships of length 2 or more, you're guaranteed to hit one eventually.
+    *   **Density/Probability:** Ships are 2-5 units long. A checkerboard pattern guarantees that a ship of length 2 or more will be hit. For optimal coverage, a "skip 3" pattern (shooting every 4th square) is sometimes considered for larger ships, but a standard checkerboard (skip 1) is usually a good balance for all ship sizes. Let's start with a simple checkerboard.
+    *   **Prioritize central areas?** Maybe, but a uniform checkerboard covering the whole board is simpler and often just as effective initially.
+    *   **Avoiding already shot cells:** Crucial. We only want to shoot at `0` cells.
+
+4.  **Targeting/Sinking Phase Strategy:**
+    *   **Identify currently hit segments:** Scan the board for `1`s.
+    *   **If multiple `1`s are connected:** This means we've hit a ship multiple times. We need to extend along the established direction.
+        *   Example: If we hit `(r, c)` and `(r, c+1)`, the ship is horizontal. Our next shot should be `(r, c-1)` or `(r, c+2)`.
+        *   **Prioritize extending:** Try to extend in both directions from the known segment `(r, c)`: `(r+1, c)`, `(r-1, c)`, `(r, c+1)`, `(r, c-1)`.
+        *   **Heuristic for direction:** If we have two adjacent hits `(r, c)` and `(r, c+1)`, then the ship is horizontal. We should prioritize `(r, c-1)` and `(r, c+2)`. If a miss `(-1)` occurs, we know that direction is blocked.
+    *   **If only a single `1` is hit:** We don't know the ship's orientation yet. We should try adjacent cells in a priority order (e.g., right, down, left, up) until we get another hit or a miss.
+    *   **Important: Don't shoot at non-0 cells.** Only target `0` cells.
+    *   **Handling "sunk" ships:** A tricky part. We don't *know* a ship is sunk until all its segments are hit and the remaining length is accounted for.
+        *   One common way to handle this is to assume a ship is sunk if all its potential adjacent squares (and the squares it's currently on) are either hits or misses. This is hard to implement perfectly without knowing the ship lengths.
+        *   Better: Just focus on extending from *any* `1` until all surrounding possible cells are `(-1)` or out of bounds. Once a `1` has all its neighbors explored (hit or miss), we can move on.
+        *   **A more robust approach for sinking:**
+            *   Keep a list or set of "active hits" (`(r, c)` tuples where `board[r][c] == 1`).
+            *   When `policy` is called:
+                *   If `active_hits` is not empty:
+                    *   Try to find a good shot from `active_hits`.
+                    *   Prefer shots that extend a known direction.
+                    *   If no direction is known (single hit), probe neighbors.
+                    *   Remove `1`s from `active_hits` if they are fully "surrounded" by `(-1)`s or other `1`s in a way that suggests the ship is complete. This is still difficult to be perfectly accurate without knowing ship lengths.
+                *   If `active_hits` is empty, go to hunting phase.
+
+5.  **Refining the Sinking Phase:**
+    *   To simplify, let's keep a list of *all* `(r, c)` coordinates that are `1`.
+    *   When we have `1`s, we want to try to extend them.
+    *   **Strategy:** Find the "oldest" hit (or simply iterate through them). For each `1` at `(r, c)`:
+        *   Check `(r, c+1)`, `(r, c-1)`, `(r+1, c)`, `(r-1, c)`.
+        *   If `board[neighbor] == 0`, that's a prime candidate.
+        *   **Prioritization:**
+            1.  If there are two *adjacent* `1`s (e.g., `(r,c)` and `(r,c+1)`), then try to extend `(r, c-1)` or `(r, c+2)`. This is the strongest signal.
+            2.  If only one `1` at `(r,c)`, try its neighbors `(r, c+1)`, `(r, c-1)`, `(r+1, c)`, `(r-1, c)` in a specific order (e.g., right, down, left, up).
+
+6.  **Data Structure for Sinking:**
+    *   A simple way: Iterate through all `(r,c)` on the board.
+    *   If `board[r][c] == 1`:
+        *   Check for adjacent `1`s.
+        *   If `(r, c+1) == 1`: We have a horizontal segment. Try `(r, c-1)` or `(r, c+2)`.
+        *   If `(r+1, c) == 1`: We have a vertical segment. Try `(r-1, c)` or `(r+2, c)`.
+        *   If `(r,c)` is an isolated `1`: Try `(r, c+1)`, `(r, c)` then its other neighbors.
+
+7.  **Implementation Details:**
+    *   **Global state:** The `policy` function is called repeatedly. It needs to maintain state across calls. A simple way is to use global variables or create a class with the policy as a method. For this format, global variables for `last_shot`, `hunting_pattern_index` are common.
+    *   **Checkerboard pattern:** A common checkerboard pattern could be cells where `(row + col) % 2 == 0`. We need to iterate through these until we find a `0`.
+    *   **Avoiding redundant checks:** When iterating neighbors, make sure `(r_neighbor, c_neighbor)` is within board bounds and `board[r_neighbor][c_neighbor] == 0`.
+
+8.  **Refined Policy Design:**
+
+    *   **Hunting Phase:**
+        *   Iterate through the board using a "skip 1" (checkerboard) pattern: `(r, c)` where `(r + c) % 2 == 0`.
+        *   Shot in order: `(0,0), (0,2), ..., (1,1), (1,3), ...`
+        *   If `board[r][c] == 0`, return `(r, c)`.
+        *   If all checkerboard cells are hit/missed, switch to the other checkerboard pattern `(r + c) % 2 == 1`.
+        *   If all cells are hit/missed, there's a problem (shouldn't happen).
+
+    *   **Sinking Phase:**
+        *   **Find active `1`s:** Iterate through the board to find any `(r, c)` where `board[r][c] == 1`.
+        *   For each such `(r, c)`:
+            *   **Check for known orientation:**
+                *   If `(r, c+1)` is `1` (and `c+1 < 10`): Ship is horizontal.
+                    *   Try `(r, c-1)` if `c-1 >= 0` and `board[r][c-1] == 0`.
+                    *   Try `(r, c+2)` if `c+2 < 10` and `board[r][c+2] == 0`.
+                    *   If a shot is found, return it.
+                *   If `(r+1, c)` is `1` (and `r+1 < 10`): Ship is vertical.
+                    *   Try `(r-1, c)` if `r-1 >= 0` and `board[r-1][c] == 0`.
+                    *   Try `(r+2, c)` if `r+2 < 10` and `board[r+2][c] == 0`.
+                    *   If a shot is found, return it.
+            *   **If orientation unknown (isolated `1` or starting a new segment):**
+                *   Try `(r, c+1)`. If valid and `0`, return.
+                *   Try `(r, c-1)`. If valid and `0`, return.
+                *   Try `(r+1, c)`. If valid and `0`, return.
+                *   Try `(r-1, c)`. If valid and `0`, return.
+
+    *   **Priority:** Sinking phase always takes precedence over hunting.
+
+9.  **Edge cases and refinements:**
+    *   Need functions `is_valid(r, c)` to check bounds.
+    *   Make sure to only fire at `0` cells.
+    *   The "order" of checking neighbors matters. Maybe right, left, up, down is fine. Or just iterate all potential neighbors.
+    *   What if a ship is surrounded by misses, and we *think* it's sunk, but it's not (e.g. L-shaped ship in a variant)? Not relevant for standard Battleship where ships are straight.
+    *   What if we hit an extension, and *that* cell was part of an already-known segment? The logic should still correctly try to extend.
+    *   The `active_hits` approach is actually better than just iterating the board for `1`s every time, as it could preserve some state (like "this `1` has been fully explored around, no need to check its neighbors again unless a new `1` appears"). However, for simplicity and to avoid complex state management, re-scanning the board for `1`s on each call is acceptable and robust.
+
+10. **Global state handling for Python function:**
+    Since `policy` is a function, not a class method, I'll use global variables, but encapsulate them within the function's scope by using `nonlocal` if inside a nested function, or just defining them globally. For a single file, global is fine.
+
+    ```python
+    # hunting index for checkerboard
+    _hunting_idx_parity = 0 # 0 for (r+c)%2 == 0, 1 for (r+c)%2 == 1
+    _hunting_idx_row = 0
+    _hunting_idx_col = 0
+    ```
+    This needs to be reset/managed if ships are actually sunk. But we don't know *when* a ship is sunk. The safest approach is to restart hunting scan from `(0,0)` every time we are in hunting mode, to ensure we don't miss anything.
+
+    Revised hunting approach:
+    Iterate `r` from 0 to 9, `c` from 0 to 9.
+    If `(r+c)%2 == _hunting_idx_parity` and `board[r][c] == 0`, return `(r,c)`.
+    If no such cell found, flip `_hunting_idx_parity` and scan again. This ensures we cover all 'even' checkerboard cells, then all 'odd' checkerboard cells.
+
+11. **Final check on the sinking logic:**
+    If `board[r][c] == 1`, let's define `get_valid_unknown_neighbors(r, c, board)`:
+    ```python
+    def get_valid_unknown_neighbors(r, c, board):
+        neighbors = []
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                neighbors.append((nr, nc))
+        return neighbors
+    ```
+    And `get_hit_neighbors(r, c, board)` (similar, but for `1`s).
+
+    **Revised Sinking Logic (more robust):**
+    1.  Scan the board to find all `(r, c)` where `board[r][c] == 1`. Let this be `hit_cells`.
+    2.  If `hit_cells` is empty, go to hunting.
+    3.  Iterate through `hit_cells`:
+        For each `(r, c)`:
+        *   Check for horizontal ship:
+            *   If `(r, c+1)` is `1`:
+                *   Try `(r, c-1)` if valid and `0`. Return it.
+                *   Try `(r, c+2)` if valid and `0`. Return it.
+            *   If `(r, c-1)` is `1`: (Already covered by `(r,c+1)` check if we always check one specific direction, e.g. `(r,c)` with `(r,c+1)`). Let's be explicit and check both sides:
+                *   Find the "extremes" of the horizontal segment: `c_min = min(c for _, c in hit_cells_in_row_r if _ == r)`, `c_max = max(c for _, c in hit_cells_in_row_r if _ == r)`.
+                *   Try `(r, c_min - 1)` if valid and `0`. Return.
+                *   Try `(r, c_max + 1)` if valid and `0`. Return.
+        *   Check for vertical ship:
+            *   Similar logic for `r_min`, `r_max`.
+            *   Try `(r_min - 1, c)` if valid and `0`. Return.
+            *   Try `(r_max + 1, c)` if valid and `0`. Return.
+    4.  If no extension shot found for any known segment:
+        *   Shoot an adjacent square to an isolated `1`. Iterate through `hit_cells` again.
+        *   For each `(r, c)`:
+            *   `neighbors = get_valid_unknown_neighbors(r, c, board)`.
+            *   If `neighbors` is not empty, pick one (e.g., the first one after sorting) and return it.
+
+    This "find extremes" for known segments is more robust than just checking `(r,c+1)` and `(r,c-1)` from an arbitrary `(r,c)` hit.
+
+    Let's refine the sinking state:
+    `policy` needs to return a valid move *always*.
+    The `_active_hits` global variable could store hits currently being resolved. This simplifies the logic by not re-scanning the board for hits in each call, but rather only for newly hit `1`s.
+
+    No, that's not good. `_active_hits` would need to be updated with new `1`s/removed `1`s (due to sinking or surrounding by misses). The `board` itself is the 'state'. Re-scanning the board for `1`s every time is simpler and correct, as the `board` *is* the authoritative source of truth.
+
+    So, the "find all 1s" approach:
+
+    ```python
+    def policy(board: list[list[int]]) -> tuple[int, int]:
+        # Helper for boundary checks
+        def is_valid(r, c):
+            return 0 <= r < 10 and 0 <= c < 10
+
+        # SINKING PHASE
+        hit_cells = []
+        for r_check in range(10):
+            for c_check in range(10):
+                if board[r_check][c_check] == 1:
+                    hit_cells.append((r_check, c_check))
+
+        if hit_cells:
+            # First, try to extend established lines
+            for r, c in hit_cells:
+                # Check horizontally
+                if is_valid(r, c + 1) and board[r][c + 1] == 1: # Found a horizontal segment
+                    potential_targets = []
+                    # Find min/max c for this horizontal segment
+                    min_c = c
+                    while is_valid(r, min_c - 1) and board[r][min_c - 1] == 1:
+                        min_c -= 1
+                    max_c = c
+                    while is_valid(r, max_c + 1) and board[r][max_c + 1] == 1:
+                        max_c += 1
+
+                    if is_valid(r, min_c - 1) and board[r][min_c - 1] == 0:
+                        return r, min_c - 1
+                    if is_valid(r, max_c + 1) and board[r][max_c + 1] == 0:
+                        return r, max_c + 1
+
+                # Check vertically
+                # Make sure we don't double count if we find a vertical segment that's also a '1' we already processed horizontally
+                # To prevent double checking: only check 'up' from (r,c) to prevent re-processing vertical lines from their lower points
+                if is_valid(r + 1, c) and board[r + 1][c] == 1: # Found a vertical segment
+                    potential_targets = []
+                    # Find min/max r for this vertical segment
+                    min_r = r
+                    while is_valid(min_r - 1, c) and board[min_r - 1][c] == 1:
+                        min_r -= 1
+                    max_r = r
+                    while is_valid(max_r + 1, c) and board[max_r + 1][c] == 1:
+                        max_r += 1
+
+                    if is_valid(min_r - 1, c) and board[min_r - 1][c] == 0:
+                        return min_r - 1, c
+                    if is_valid(max_r + 1, c) and board[max_r + 1][c] == 0:
+                        return max_r + 1, c
+
+            # If no obvious extension, try neighbors of single hits (or end of known segment)
+            for r, c in hit_cells:
+                # Prioritize directions, e.g., right, down, left, up
+                for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                    nr, nc = r + dr, c + dc
+                    if is_valid(nr, nc) and board[nr][nc] == 0:
+                        return nr, nc
+
+        # HUNTING PHASE
+        # Use a global counter for the hunting pattern
+        # The global name mangling with `_` is a common Python convention for "internal use"
+        # We need to ensure these globals persist across calls.
+
+        # Ensure globals are defined initially or reset for a new game
+        global _hunting_idx_parity
+        global _hunting_idx_row
+        global _hunting_idx_col
+
+        # If these haven't been initialized (e.g., first call or testing)
+        if '_hunting_idx_parity' not in globals():
+            _hunting_idx_parity = 0
+            _hunting_idx_row = 0
+            _hunting_idx_col = 0
+        
+        # This part of global management is tricky in a single function
+        # A class would be cleaner
+
+        # Temporarily use local variables that get updated and returned as state
+        # The prompt implies a single function, so implicit global state is the way to go.
+        # But this means the global state lives outside the function, which is fine.
+
+        # The global variables should be initialized in the source file directly.
+        # So I will define them outside the function.
+
+        # Hunting pattern: Checkerboard
+        # Try cells where (r+c) % 2 == _hunting_idx_parity
+        # Iterate from last known position to find the next valid shot
+        start_row, start_col = _hunting_idx_row, _hunting_idx_col
+        
+        # Check current parity
+        for r in range(start_row, 10):
+            for c in range(start_col if r == start_row else 0, 10):
+                if (r + c) % 2 == _hunting_idx_parity:
+                    if board[r][c] == 0:
+                        _hunting_idx_row, _hunting_idx_col = r, c + 1 # Update state for next call
+                        if _hunting_idx_col == 10:
+                            _hunting_idx_col = 0
+                            _hunting_idx_row += 1
+                        return r, c
+
+        # If no unknown cells found for current parity, switch parity and search from beginning
+        _hunting_idx_parity = 1 - _hunting_idx_parity # Flip 0 to 1, or 1 to 0
+        _hunting_idx_row = 0
+        _hunting_idx_col = 0
+        
+        # Search again with the new parity
+        for r in range(10):
+            for c in range(10):
+                if (r + c) % 2 == _hunting_idx_parity:
+                    if board[r][c] == 0:
+                        _hunting_idx_row, _hunting_idx_col = r, c + 1
+                        if _hunting_idx_col == 10:
+                            _hunting_idx_col = 0
+                            _hunting_idx_row += 1
+                        return r, c
+
+        # Fallback: In case all cells are found (should not happen if game is not over)
+        for r in range(10):
+            for c in range(10):
+                if board[r][c] == 0:
+                    return r, c
+        
+        # If absolutely nothing is left (game over), return dummy value (e.g., (0,0))
+        return 0, 0
+    ```
+
+    The global variables for hunting need to be initialized *outside* the function scope to truly persist across calls without extra checks.
+
+    Let's clean up the hunting phase global state management.
+
+    ```python
+    # GLOBAL STATE FOR HUNTING PHASE
+    _hunting_idx_parity = 0
+    _hunting_idx_row = 0
+    _hunting_idx_col = 0
+
+    def policy(board: list[list[int]]) -> tuple[int, int]:
+        # ... (rest of the function)
+        global _hunting_idx_parity
+        global _hunting_idx_row
+        global _hunting_idx_col
+
+        # ... hunting logic ...
+    ```
+    This looks better. The current `_hunting_idx_row`, `_hunting_idx_col` and `_hunting_idx_parity` are used to resume the search pattern. If an entire parity run completes, it flips the parity and resets the row/col.
+
+    Consider the time complexity.
+    *   Sinking phase: Two nested loops `10x10` to find hits. Then another loop over hits (max 17). Inside, min/max for segment can take `O(BOARD_SIZE)`. Total sinking phase: `O(BOARD_SIZE^2) + O(NUM_HITS * BOARD_SIZE)`. This is fine: `100 + 17*10 = 270` operations.
+    *   Hunting phase: Two nested loops `10x10` to find a `0`. Total `O(BOARD_SIZE^2)`. This is fine: `100` operations.
+
+    The logic seems okay. The "find min/max c/r" for extending lines is strong. The subsequent "check isolated hits" is a fallback. And the hunting phase is a robust checkerboard. This combination should be effective.
+    One small potential issue with the min/max C finding for horizontal: if you have `1 0 1`, it will find two separate segments `1` and `1`. The current code will correctly try to extend `1` (if `board[r][c+1]==1`) or `1` from the other side.
+    My `min_c/max_c` logic is specific to a *contiguous* segment of ones. So `1 1 0 1` -> detects `1 1`. The `(r, c+1) == 1` ensures we're starting to track from the left-most or a middle hit. It will correctly find the full contiguous segment `1 1`. Then it attempts to shoot at `r, min_c-1` or `r, max_c+1`. This is good.
+
+    Final check for hunting:
+    What if I shoot `(0,0)`, it's a miss `(-1)`. Next turn, `policy` is called.
+    `_hunting_idx_parity = 0`, `_hunting_idx_row = 0`, `_hunting_idx_col = 0`.
+    `r=0, c=0`: `(0+0)%2 == 0`, `board[0][0]` is `-1`, so skip.
+    `c=1`: (1+0)%2 != 0. Skip due to parity.
+    `c=2`: `(0+2)%2 == 0`. If `board[0][2] == 0`, return `(0,2)`. Update `_hunting_idx_row=0, _hunting_idx_col=3`. This works.
+    Eventually, if *all* `(r+c)%2 == 0` cells are hit/missed, the first `for` block for hunting will complete without returning. Then `_hunting_idx_parity` flips, and the second `for` block (from `0,0`) will process the other parity. This covers all cells. The `start_row/start_col` optimization is useful.
+
+    Edge case: What if the board is completely empty (no 0s left)? The second hunting loop would also complete. The final fallback `for r in range(10): ...` would search for any remaining `0`s. If none, it returns `(0,0)`, indicating the game is likely over. This seems robust enough.
+    </thinking>
+```python
+import random
+
+# Global state for the hunting phase
+# _hunting_idx_parity: 0 for (row+col) % 2 == 0, 1 for (row+col) % 2 == 1
+# _hunting_idx_row, _hunting_idx_col: last checked position in the hunting pattern
+_hunting_idx_parity = 0
+_hunting_idx_row = 0
+_hunting_idx_col = 0
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Implements a targeting policy for a Battleship-like game.
+
+    Args:
+        board: A 10x10 list of lists representing the current knowledge of the opponent's grid.
+               0 -> unknown cell
+               -1 -> miss (fired here and hit water)
+               1 -> hit (fired here and hit a ship cell)
+
+    Returns:
+        A tuple (row, col) indicating the next cell to fire at.
+    """
+
+    # Helper function to check if coordinates are within board bounds
+    def is_valid(r, c):
+        return 0 <= r < 10 and 0 <= c < 10
+
+    # Phase 1: Sinking (prioritize sinking already hit ships)
+    # Collect all currently hit ship segments
+    hit_cells = []
+    for r_check in range(10):
+        for c_check in range(10):
+            if board[r_check][c_check] == 1:
+                hit_cells.append((r_check, c_check))
+
+    if hit_cells:
+        # First, try to extend established ship lines
+        for r, c in hit_cells:
+            # Check horizontally
+            # If we find a hit cell that has an adjacent hit cell horizontally (to its right)
+            # This indicates a horizontal segment. Find its extremes and try to extend.
+            if is_valid(r, c + 1) and board[r][c + 1] == 1:
+                min_c = c
+                while is_valid(r, min_c - 1) and board[r][min_c - 1] == 1:
+                    min_c -= 1
+                max_c = c
+                while is_valid(r, max_c + 1) and board[r][max_c + 1] == 1:
+                    max_c += 1
+
+                # Try to shoot at the ends of the segment
+                if is_valid(r, min_c - 1) and board[r][min_c - 1] == 0:
+                    return r, min_c - 1
+                if is_valid(r, max_c + 1) and board[r][max_c + 1] == 0:
+                    return r, max_c + 1
+
+            # Check vertically
+            # If we find a hit cell that has an adjacent hit cell vertically (below it)
+            # This indicates a vertical segment. Find its extremes and try to extend.
+            if is_valid(r + 1, c) and board[r + 1][c] == 1:
+                min_r = r
+                while is_valid(min_r - 1, c) and board[min_r - 1][c] == 1:
+                    min_r -= 1
+                max_r = r
+                while is_valid(max_r + 1, c) and board[max_r + 1][c] == 1:
+                    max_r += 1
+                
+                # Try to shoot at the ends of the segment
+                if is_valid(min_r - 1, c) and board[min_r - 1][c] == 0:
+                    return min_r - 1, c
+                if is_valid(max_r + 1, c) and board[max_r + 1][c] == 0:
+                    return max_r + 1, c
+
+        # If no obvious extension, try immediate neighbors of any isolated or endpoint hit
+        # This covers cases where a ship has been hit but no clear line is established yet
+        # or if the extensions were already blocked by misses.
+        random.shuffle(hit_cells) # Randomize to avoid always hitting same side if multiple isolated hits
+        for r, c in hit_cells:
+            # Prioritize directions around the hit, can be randomized or fixed (e.g., right, down, left, up)
+            for dr, dc in random.sample([(0, 1), (1, 0), (0, -1), (-1, 0)], k=4):
+                nr, nc = r + dr, c + dc
+                if is_valid(nr, nc) and board[nr][nc] == 0:
+                    return nr, nc
+
+    # Phase 2: Hunting (no active hits, search for new ships)
+    global _hunting_idx_parity
+    global _hunting_idx_row
+    global _hunting_idx_col
+
+    # Store the initial position for this search attempt
+    start_row, start_col = _hunting_idx_row, _hunting_idx_col
+    current_parity = _hunting_idx_parity
+
+    # Search through the board using the current checkerboard pattern
+    # Resume from the last checked position to save computation
+    for r in range(start_row, 10):
+        for c in range(start_col if r == start_row else 0, 10):
+            if (r + c) % 2 == current_parity:
+                if board[r][c] == 0:
+                    # Update global state for the next call
+                    _hunting_idx_row, _hunting_idx_col = r, c + 1
+                    if _hunting_idx_col == 10: # Move to next row if end of column
+                        _hunting_idx_col = 0
+                        _hunting_idx_row += 1
+                    return r, c
+
+    # If no unknown cells found for the current parity, switch parity and search from the beginning
+    _hunting_idx_parity = 1 - _hunting_idx_parity # Flip 0 to 1, or 1 to 0
+    _hunting_idx_row = 0
+    _hunting_idx_col = 0
+    
+    # Search again with the new parity, starting from (0,0)
+    for r in range(10):
+        for c in range(10):
+            if (r + c) % 2 == _hunting_idx_parity:
+                if board[r][c] == 0:
+                    # Update global state for the next call
+                    _hunting_idx_row, _hunting_idx_col = r, c + 1
+                    if _hunting_idx_col == 10:
+                        _hunting_idx_col = 0
+                        _hunting_idx_row += 1
+                    return r, c
+
+    # Fallback: If no ships are found in either checkerboard pattern (should only happen if game is over)
+    # This also acts as a final sweep for any very small ships that might have been missed by strict checkerboard
+    # (e.g., a single-cell ship, though not in this game variant) or just to wrap up.
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return r, c
+    
+    # Should not be reached in a normal game. All cells must be known.
+    # Return a dummy value in case of an unforeseen scenario (e.g., board full)
+    return 0, 0
+
+```

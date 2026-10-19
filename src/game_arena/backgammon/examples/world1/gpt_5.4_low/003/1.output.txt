@@ -1,0 +1,340 @@
+The strategy for this policy is:
+
+- Enumerate all legal move sequences consistent with the dice and order rules.
+- Enforce Backgammon requirements:
+  - enter from bar first,
+  - use both dice if possible,
+  - if only one die can be played, prefer the higher die when required,
+  - allow bearing off only when all checkers are in the home board.
+- Simulate each legal candidate move and score the resulting position.
+- Prefer moves that:
+  - bear off checkers,
+  - hit opponent blots,
+  - reduce pip count,
+  - avoid leaving blots,
+  - make points, especially in the home board,
+  - keep opponent on the bar,
+  - create useful anchors.
+
+This gives a robust one-ply heuristic policy while always returning a legal move string.
+
+<code>
+from typing import List, Tuple, Dict, Any
+
+# Backgammon policy API
+def policy(state: dict) -> str:
+    candidates = generate_legal_actions(state)
+
+    # Safety fallback: should never happen, but always return a valid-form string.
+    if not candidates:
+        return "H:P,P"
+
+    best_action = None
+    best_score = None
+
+    for action_str, new_state, meta in candidates:
+        score = evaluate_position(state, new_state, meta)
+        # Deterministic tie-break on action string
+        key = (score, action_str)
+        if best_score is None or key > best_score:
+            best_score = key
+            best_action = action_str
+
+    return best_action
+
+
+# ---------- Move generation ----------
+
+def generate_legal_actions(state: Dict[str, Any]):
+    dice = list(state.get("dice", []))
+
+    if len(dice) == 0:
+        return [("H:P,P", clone_state(state), {"moves_used": 0, "hit": 0})]
+
+    if len(dice) == 1:
+        d = dice[0]
+        moves = legal_single_moves(state, d)
+        out = []
+        if not moves:
+            out.append(("H:P,P", clone_state(state), {"moves_used": 0, "hit": 0}))
+        else:
+            for src in moves:
+                st2, hit = apply_single_move(state, src, d)
+                out.append((f"H:{src_to_token(src)},P", st2, {"moves_used": 1, "hit": hit}))
+        return dedup_actions(out)
+
+    d1, d2 = dice[0], dice[1]
+    hi, lo = (d1, d2) if d1 >= d2 else (d2, d1)
+
+    actions = []
+    actions.extend(enumerate_order(state, hi, lo, "H"))
+    # If equal dice, H/L are equivalent in this 2-move interface; keep only H.
+    if hi != lo:
+        actions.extend(enumerate_order(state, lo, hi, "L"))
+
+    if not actions:
+        return [("H:P,P", clone_state(state), {"moves_used": 0, "hit": 0})]
+
+    # Enforce "use both if possible"
+    max_used = max(meta["moves_used"] for _, _, meta in actions)
+    actions = [x for x in actions if x[2]["moves_used"] == max_used]
+
+    # Enforce "if only one die can be played, use higher die when possible"
+    if max_used == 1 and hi != lo:
+        high_die_actions = []
+        for action_str, st2, meta in actions:
+            order = action_str[0]
+            froms = action_str.split(":")[1].split(",")
+            if order == "H":
+                # Slot 1 uses high die
+                uses_high = froms[0] != "P"
+            else:
+                # Slot 2 uses high die
+                uses_high = froms[1] != "P"
+            if uses_high:
+                high_die_actions.append((action_str, st2, meta))
+        if high_die_actions:
+            actions = high_die_actions
+
+    return dedup_actions(actions)
+
+
+def enumerate_order(state: Dict[str, Any], die1: int, die2: int, order_label: str):
+    actions = []
+
+    first_moves = legal_single_moves(state, die1)
+
+    if first_moves:
+        for src1 in first_moves:
+            st1, hit1 = apply_single_move(state, src1, die1)
+            second_moves = legal_single_moves(st1, die2)
+            if second_moves:
+                for src2 in second_moves:
+                    st2, hit2 = apply_single_move(st1, src2, die2)
+                    act = f"{order_label}:{src_to_token(src1)},{src_to_token(src2)}"
+                    actions.append((act, st2, {"moves_used": 2, "hit": hit1 + hit2}))
+            else:
+                act = f"{order_label}:{src_to_token(src1)},P"
+                actions.append((act, st1, {"moves_used": 1, "hit": hit1}))
+    else:
+        second_moves = legal_single_moves(state, die2)
+        if second_moves:
+            for src2 in second_moves:
+                st2, hit2 = apply_single_move(state, src2, die2)
+                act = f"{order_label}:P,{src_to_token(src2)}"
+                actions.append((act, st2, {"moves_used": 1, "hit": hit2}))
+        else:
+            act = f"{order_label}:P,P"
+            actions.append((act, clone_state(state), {"moves_used": 0, "hit": 0}))
+
+    return actions
+
+
+def legal_single_moves(state: Dict[str, Any], die: int):
+    my_pts = state["my_pts"]
+    opp_pts = state["opp_pts"]
+    my_bar = state["my_bar"]
+
+    moves = []
+
+    # Must enter from bar first
+    if my_bar > 0:
+        dest = 24 - die
+        if 0 <= dest <= 23 and opp_pts[dest] < 2:
+            moves.append("B")
+        return moves
+
+    home_ready = all_in_home(state)
+
+    for i in range(24):
+        if my_pts[i] <= 0:
+            continue
+
+        dest = i - die
+        if dest >= 0:
+            if opp_pts[dest] < 2:
+                moves.append(i)
+        else:
+            if home_ready and can_bear_off_from(state, i, die):
+                moves.append(i)
+
+    return moves
+
+
+def can_bear_off_from(state: Dict[str, Any], i: int, die: int) -> bool:
+    # Point i has distance i+1 from bear-off.
+    dist = i + 1
+    if die == dist:
+        return True
+    if die > dist:
+        # Oversize bear-off only if no checker on higher points.
+        my_pts = state["my_pts"]
+        for j in range(i + 1, 24):
+            if my_pts[j] > 0:
+                return False
+        return True
+    return False
+
+
+def all_in_home(state: Dict[str, Any]) -> bool:
+    if state["my_bar"] > 0:
+        return False
+    my_pts = state["my_pts"]
+    for i in range(6, 24):
+        if my_pts[i] > 0:
+            return False
+    return True
+
+
+def apply_single_move(state: Dict[str, Any], src, die: int):
+    st = clone_state(state)
+    hit = 0
+
+    if src == "B":
+        st["my_bar"] -= 1
+        dest = 24 - die
+    else:
+        st["my_pts"][src] -= 1
+        dest = src - die
+
+    if dest < 0:
+        st["my_off"] += 1
+        return st, hit
+
+    # Hit blot if present
+    if st["opp_pts"][dest] == 1:
+        st["opp_pts"][dest] = 0
+        st["opp_bar"] += 1
+        hit = 1
+
+    st["my_pts"][dest] += 1
+    return st, hit
+
+
+def clone_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "my_pts": list(state["my_pts"]),
+        "opp_pts": list(state["opp_pts"]),
+        "my_bar": int(state["my_bar"]),
+        "opp_bar": int(state["opp_bar"]),
+        "my_off": int(state["my_off"]),
+        "opp_off": int(state["opp_off"]),
+        "dice": list(state.get("dice", [])),
+    }
+
+
+def src_to_token(src) -> str:
+    return "B" if src == "B" else f"A{src}"
+
+
+def dedup_actions(actions):
+    best = {}
+    for action_str, st, meta in actions:
+        # Exact action string uniqueness is enough.
+        if action_str not in best:
+            best[action_str] = (action_str, st, meta)
+    return list(best.values())
+
+
+# ---------- Evaluation ----------
+
+def evaluate_position(old_state: Dict[str, Any], new_state: Dict[str, Any], meta: Dict[str, Any]) -> float:
+    my_pts = new_state["my_pts"]
+    opp_pts = new_state["opp_pts"]
+
+    my_bar = new_state["my_bar"]
+    opp_bar = new_state["opp_bar"]
+    my_off = new_state["my_off"]
+    opp_off = new_state["opp_off"]
+
+    my_pip = pip_count_my(new_state)
+    opp_pip = pip_count_opp(new_state)
+
+    my_blots = sum(1 for x in my_pts if x == 1)
+    opp_blots = sum(1 for x in opp_pts if x == 1)
+
+    my_points_made = sum(1 for x in my_pts if x >= 2)
+    home_points_made = sum(1 for i in range(6) if my_pts[i] >= 2)
+    advanced_anchors = sum(1 for i in range(18, 24) if my_pts[i] >= 2)
+
+    # Extra penalty for blots exposed in opponent attack zone.
+    exposed_blots = 0
+    for i in range(24):
+        if my_pts[i] == 1:
+            # crude exposure: opponent checker behind us within 6 pips or on bar
+            danger = 0
+            if opp_bar > 0 and i >= 18:
+                danger = 1
+            else:
+                lo = max(0, i - 6)
+                for j in range(lo, i):
+                    if opp_pts[j] > 0:
+                        danger = 1
+                        break
+            exposed_blots += danger
+
+    score = 0.0
+
+    # Primary terms
+    score += 120.0 * my_off
+    score -= 120.0 * opp_off
+    score -= 7.0 * my_pip
+    score += 7.0 * opp_pip
+    score -= 30.0 * my_bar
+    score += 35.0 * opp_bar
+
+    # Structural terms
+    score -= 9.0 * my_blots
+    score += 4.0 * opp_blots
+    score += 6.0 * my_points_made
+    score += 8.0 * home_points_made
+    score += 4.0 * advanced_anchors
+    score -= 10.0 * exposed_blots
+
+    # Tactical bonus
+    score += 18.0 * meta.get("hit", 0)
+    score += 3.0 * meta.get("moves_used", 0)
+
+    # Small preference for improving from previous state
+    score += 15.0 * (new_state["my_off"] - old_state["my_off"])
+    score += 12.0 * (new_state["opp_bar"] - old_state["opp_bar"])
+
+    # Race mode tweak: if no contact, prioritize pure pip/off.
+    if is_race(new_state):
+        score += 2.0 * (opp_pip - my_pip)
+        score += 20.0 * my_off
+        score -= 4.0 * my_blots
+
+    return score
+
+
+def pip_count_my(state: Dict[str, Any]) -> int:
+    total = 25 * state["my_bar"]
+    for i, n in enumerate(state["my_pts"]):
+        total += n * (i + 1)
+    return total
+
+
+def pip_count_opp(state: Dict[str, Any]) -> int:
+    # Opponent moves from 0 -> 23, so distance to bear off is 24 - i.
+    total = 25 * state["opp_bar"]
+    for i, n in enumerate(state["opp_pts"]):
+        total += n * (24 - i)
+    return total
+
+
+def is_race(state: Dict[str, Any]) -> bool:
+    # No contact if all my checkers are strictly ahead of all opponent checkers
+    # after passing, or vice versa. Since I move high->low and opp moves low->high,
+    # contact exists when some opponent checker is behind one of mine.
+    my_positions = [i for i, n in enumerate(state["my_pts"]) if n > 0]
+    opp_positions = [i for i, n in enumerate(state["opp_pts"]) if n > 0]
+
+    if not my_positions or not opp_positions:
+        return True
+
+    my_back = max(my_positions)   # farthest from home for me
+    opp_back = min(opp_positions) # farthest from home for opp
+
+    return my_back < opp_back
+</code>

@@ -1,0 +1,580 @@
+The strategy for this policy is to score every provided legal move using a fast chess heuristic: always take immediate checkmate if available; otherwise strongly prefer promotions, winning captures (by captured piece value), and giving check. It then simulates each move on the internal board and applies safety penalties if the moved piece (or capture square) is left under-defended versus opponent attackers. A small set of positional bonuses (castling, center occupation, development) is included. The move with the highest score is returned, always guaranteed to be one of the given legal moves.
+
+<code>
+import re
+from typing import Dict, List, Tuple, Optional
+
+
+PIECE_VALUES = {"P": 100, "N": 320, "B": 330, "R": 500, "Q": 900, "K": 0}
+FILES = "abcdefgh"
+RANKS = "12345678"
+CENTER_SQUARES = {"d4", "e4", "d5", "e5"}
+EXT_CENTER = {
+    "c3", "d3", "e3", "f3",
+    "c4", "d4", "e4", "f4",
+    "c5", "d5", "e5", "f5",
+    "c6", "d6", "e6", "f6",
+}
+
+
+def policy(pieces: Dict[str, str], to_play: str, legal_moves: List[str]) -> str:
+    # Must always return a legal move.
+    if not legal_moves:
+        return ""  # should not happen in arena
+
+    my_color = "w" if to_play == "white" else "b"
+    opp_color = "b" if my_color == "w" else "w"
+
+    # 1) Forced mate if SAN contains '#'
+    mates = [m for m in legal_moves if "#" in m]
+    if mates:
+        # If multiple mates, pick deterministically (shortest then lexicographic)
+        mates.sort(key=lambda x: (len(x), x))
+        return mates[0]
+
+    base_material = material_balance(pieces, my_color)
+
+    best_move = legal_moves[0]
+    best_score = -10**18
+
+    for mv in legal_moves:
+        try:
+            new_board, info = apply_san_move(pieces, my_color, mv)
+            score = score_move_san(mv, pieces, new_board, my_color, opp_color, base_material, info)
+        except Exception:
+            # If anything goes wrong, still remain legal by giving it a very low score.
+            score = -10**15
+
+        if score > best_score or (score == best_score and tie_break(mv, best_move)):
+            best_score = score
+            best_move = mv
+
+    # Safety net
+    if best_move not in legal_moves:
+        return legal_moves[0]
+    return best_move
+
+
+def tie_break(a: str, b: str) -> bool:
+    """Deterministic tie-break: prefer checks, then captures, then shorter SAN, then lexicographic."""
+    a_check = ("+" in a)
+    b_check = ("+" in b)
+    if a_check != b_check:
+        return a_check and not b_check
+    a_cap = ("x" in a)
+    b_cap = ("x" in b)
+    if a_cap != b_cap:
+        return a_cap and not b_cap
+    if len(a) != len(b):
+        return len(a) < len(b)
+    return a < b
+
+
+def material_balance(board: Dict[str, str], my_color: str) -> int:
+    s = 0
+    for _, pc in board.items():
+        c, t = pc[0], pc[1]
+        v = PIECE_VALUES.get(t, 0)
+        s += v if c == my_color else -v
+    return s
+
+
+def score_move_san(
+    mv: str,
+    old_board: Dict[str, str],
+    new_board: Dict[str, str],
+    my_color: str,
+    opp_color: str,
+    base_material: int,
+    info: Dict,
+) -> int:
+    # Base: resulting material balance
+    mat = material_balance(new_board, my_color)
+    score = 5 * (mat - base_material)
+
+    # SAN-based tactical bonuses
+    if "+" in mv:
+        score += 80
+
+    # Promotions
+    if info.get("promotion"):
+        promo = info["promotion"]
+        score += 800 + (PIECE_VALUES[promo] - PIECE_VALUES["P"])
+
+    # Captures bonus by value
+    captured = info.get("captured_type")
+    if captured:
+        score += 12 * PIECE_VALUES.get(captured, 0)
+
+    # Castling
+    if info.get("castle"):
+        score += 60
+
+    # Center / extended center occupation
+    to_sq = info.get("to_sq")
+    moved_type = info.get("moved_type")
+    if to_sq:
+        if to_sq in CENTER_SQUARES:
+            score += 25
+        elif to_sq in EXT_CENTER:
+            score += 10
+
+        # Development bonus: minor piece leaving back rank
+        from_sq = info.get("from_sq")
+        if from_sq and moved_type in ("N", "B"):
+            if (my_color == "w" and from_sq[1] == "1") or (my_color == "b" and from_sq[1] == "8"):
+                score += 18
+
+    # Piece safety / exchange heuristics: penalize hanging the moved piece
+    if to_sq and moved_type and moved_type != "K":
+        opp_att = attack_counts(new_board, opp_color)
+        my_def = attack_counts(new_board, my_color)
+
+        attackers = opp_att.get(to_sq, 0)
+        defenders = my_def.get(to_sq, 0)
+
+        moved_value = PIECE_VALUES.get(moved_type, 0)
+
+        if attackers > 0:
+            # If undefended and attacked -> big penalty
+            if defenders == 0:
+                score -= int(1.1 * moved_value) + 40
+            elif attackers > defenders:
+                score -= int(0.55 * moved_value)
+
+    # If capture, lightly penalize capturing onto a heavily defended square when under-defended
+    if info.get("is_capture") and to_sq:
+        opp_att = attack_counts(new_board, opp_color)
+        my_def = attack_counts(new_board, my_color)
+        attackers = opp_att.get(to_sq, 0)
+        defenders = my_def.get(to_sq, 0)
+        if attackers > defenders:
+            score -= 60 * (attackers - defenders)
+
+    # King safety: discourage king walks (except castling)
+    if moved_type == "K" and not info.get("castle"):
+        score -= 35
+
+    # Prefer moves that increase immediate pressure on opponent king square (cheap heuristic)
+    opp_king_sq = find_king(new_board, opp_color)
+    if opp_king_sq:
+        my_att = attack_counts(new_board, my_color)
+        score += 6 * my_att.get(opp_king_sq, 0)
+
+    return score
+
+
+def find_king(board: Dict[str, str], color: str) -> Optional[str]:
+    k = color + "K"
+    for sq, pc in board.items():
+        if pc == k:
+            return sq
+    return None
+
+
+# ---------------- SAN parsing & move application ----------------
+
+SQUARE_RE = re.compile(r"[a-h][1-8]")
+
+
+def sanitize_san(mv: str) -> str:
+    # Remove common suffixes and annotations; keep SAN core.
+    mv = mv.strip()
+    mv = mv.replace("0-0-0", "O-O-O").replace("0-0", "O-O")
+    mv = mv.replace("e.p.", "").replace("ep", "")
+    # Strip trailing check/mate symbols and annotation glyphs
+    mv = re.sub(r"[+#]+$", "", mv)
+    mv = re.sub(r"[!?]+$", "", mv)
+    return mv
+
+
+def parse_san(mv: str) -> Dict:
+    raw = mv
+    core = sanitize_san(mv)
+
+    info = {
+        "raw": raw,
+        "core": core,
+        "castle": None,          # "O-O" or "O-O-O"
+        "piece": None,           # "P","N","B","R","Q","K"
+        "is_capture": "x" in core,
+        "promotion": None,       # "Q","R","B","N"
+        "to_sq": None,
+        "disamb_file": None,
+        "disamb_rank": None,
+    }
+
+    if core in ("O-O", "O-O-O"):
+        info["castle"] = core
+        info["piece"] = "K"
+        return info
+
+    # Promotion
+    promo = None
+    if "=" in core:
+        parts = core.split("=")
+        if len(parts) >= 2 and parts[1]:
+            promo = parts[1][0]
+            if promo in ("Q", "R", "B", "N"):
+                info["promotion"] = promo
+
+    # Destination square: last [a-h][1-8] occurrence
+    squares = SQUARE_RE.findall(core)
+    if not squares:
+        return info
+    info["to_sq"] = squares[-1]
+
+    # Moving piece
+    first = core[0]
+    if first in "KQRBN":
+        info["piece"] = first
+        # Disambiguation between piece letter and ('x' or destination square)
+        # Find index where destination square begins (last occurrence)
+        dest = info["to_sq"]
+        dest_i = core.rfind(dest)
+        mid = core[1:dest_i]
+        mid = mid.replace("x", "")
+        # mid can be "", "b", "1", "b1"
+        if len(mid) == 1:
+            if mid in FILES:
+                info["disamb_file"] = mid
+            elif mid in RANKS:
+                info["disamb_rank"] = mid
+        elif len(mid) >= 2:
+            # take first file and first rank appearing
+            f = next((ch for ch in mid if ch in FILES), None)
+            r = next((ch for ch in mid if ch in RANKS), None)
+            info["disamb_file"] = f
+            info["disamb_rank"] = r
+    else:
+        info["piece"] = "P"
+        # Pawn capture includes from-file as first character (e.g., exd5)
+        # If not capture, from-file is destination file.
+        # We don't store it here; handled in resolution.
+
+    return info
+
+
+def apply_san_move(board: Dict[str, str], my_color: str, mv: str) -> Tuple[Dict[str, str], Dict]:
+    info = parse_san(mv)
+    new_board = dict(board)
+
+    if info.get("castle"):
+        return apply_castle(new_board, my_color, info)
+
+    piece_type = info.get("piece")
+    to_sq = info.get("to_sq")
+    is_capture = info.get("is_capture")
+    promotion = info.get("promotion")
+
+    if not piece_type or not to_sq:
+        raise ValueError("Could not parse SAN")
+
+    from_sq = resolve_from_square(new_board, my_color, piece_type, to_sq, info, is_capture, promotion)
+    moved_code = my_color + piece_type
+
+    captured_type = None
+    # Handle capture (including en passant)
+    if is_capture:
+        if to_sq in new_board:
+            captured_type = new_board[to_sq][1]
+            del new_board[to_sq]
+        else:
+            # Likely en passant
+            if piece_type != "P":
+                # Shouldn't happen in legal SAN
+                pass
+            else:
+                cap_sq = en_passant_captured_square(to_sq, my_color)
+                if cap_sq in new_board and new_board[cap_sq][0] != my_color and new_board[cap_sq][1] == "P":
+                    captured_type = "P"
+                    del new_board[cap_sq]
+
+    # Move piece
+    if from_sq not in new_board:
+        raise ValueError("No piece on from_sq")
+    del new_board[from_sq]
+
+    # Promotion replaces pawn
+    placed_type = piece_type
+    if piece_type == "P" and promotion:
+        placed_type = promotion
+
+    new_board[to_sq] = my_color + placed_type
+
+    info_out = {
+        "from_sq": from_sq,
+        "to_sq": to_sq,
+        "moved_type": piece_type,
+        "placed_type": placed_type,
+        "captured_type": captured_type,
+        "promotion": promotion,
+        "is_capture": is_capture,
+        "castle": None,
+    }
+    return new_board, info_out
+
+
+def apply_castle(board: Dict[str, str], my_color: str, info: Dict) -> Tuple[Dict[str, str], Dict]:
+    # Standard chess castling squares
+    if my_color == "w":
+        k_from = "e1"
+        if info["castle"] == "O-O":
+            k_to, r_from, r_to = "g1", "h1", "f1"
+        else:
+            k_to, r_from, r_to = "c1", "a1", "d1"
+    else:
+        k_from = "e8"
+        if info["castle"] == "O-O":
+            k_to, r_from, r_to = "g8", "h8", "f8"
+        else:
+            k_to, r_from, r_to = "c8", "a8", "d8"
+
+    new_board = dict(board)
+    # Move king
+    if k_from in new_board:
+        del new_board[k_from]
+    new_board[k_to] = my_color + "K"
+    # Move rook
+    if r_from in new_board:
+        del new_board[r_from]
+    new_board[r_to] = my_color + "R"
+
+    info_out = {
+        "from_sq": k_from,
+        "to_sq": k_to,
+        "moved_type": "K",
+        "placed_type": "K",
+        "captured_type": None,
+        "promotion": None,
+        "is_capture": False,
+        "castle": info["castle"],
+    }
+    return new_board, info_out
+
+
+def resolve_from_square(
+    board: Dict[str, str],
+    my_color: str,
+    piece_type: str,
+    to_sq: str,
+    info: Dict,
+    is_capture: bool,
+    promotion: Optional[str],
+) -> str:
+    if piece_type == "P":
+        return resolve_pawn_from(board, my_color, to_sq, info["core"], is_capture, promotion)
+
+    dis_f = info.get("disamb_file")
+    dis_r = info.get("disamb_rank")
+
+    candidates = []
+    for sq, pc in board.items():
+        if pc[0] != my_color or pc[1] != piece_type:
+            continue
+        if dis_f and sq[0] != dis_f:
+            continue
+        if dis_r and sq[1] != dis_r:
+            continue
+        if piece_can_reach(board, my_color, piece_type, sq, to_sq, is_capture):
+            candidates.append(sq)
+
+    if not candidates:
+        raise ValueError("No candidates for from-square")
+    if len(candidates) == 1:
+        return candidates[0]
+    # If ambiguity remains, choose a deterministic one
+    candidates.sort()
+    return candidates[0]
+
+
+def resolve_pawn_from(
+    board: Dict[str, str],
+    my_color: str,
+    to_sq: str,
+    core: str,
+    is_capture: bool,
+    promotion: Optional[str],
+) -> str:
+    dir_ = 1 if my_color == "w" else -1
+    tx, ty = sq_to_xy(to_sq)
+
+    # Determine origin file hint for captures (e.g., exd5)
+    from_file_hint = None
+    if is_capture:
+        # SAN starts with file letter for pawn captures
+        if core and core[0] in FILES:
+            from_file_hint = core[0]
+
+        candidates = []
+        for dx in (-1, 1):
+            fx = tx + dx
+            fy = ty - dir_
+            if 0 <= fx < 8 and 0 <= fy < 8:
+                fsq = xy_to_sq(fx, fy)
+                if from_file_hint and fsq[0] != from_file_hint:
+                    continue
+                if board.get(fsq) == my_color + "P":
+                    # Capture must be onto occupied square or en passant (empty to_sq)
+                    # Since move is legal, accept if diagonal.
+                    candidates.append(fsq)
+        if not candidates:
+            raise ValueError("No pawn capture candidate")
+        candidates.sort()
+        return candidates[0]
+
+    # Non-capture pawn push: must be same file
+    # Prefer single push if possible; else double push.
+    one_from = xy_to_sq(tx, ty - dir_) if 0 <= ty - dir_ < 8 else None
+    if one_from and board.get(one_from) == my_color + "P":
+        return one_from
+
+    # Double push
+    two_from = xy_to_sq(tx, ty - 2 * dir_) if 0 <= ty - 2 * dir_ < 8 else None
+    if two_from and board.get(two_from) == my_color + "P":
+        # Must come from starting rank: 2 for white, 7 for black
+        start_rank = "2" if my_color == "w" else "7"
+        if two_from[1] == start_rank:
+            # Intermediate square must be empty (usually true in legal move lists)
+            intermediate = xy_to_sq(tx, ty - dir_)
+            if intermediate not in board:
+                return two_from
+
+    raise ValueError("No pawn push candidate")
+
+
+def en_passant_captured_square(to_sq: str, my_color: str) -> str:
+    # Captured pawn sits behind destination square relative to capturer
+    dir_ = 1 if my_color == "w" else -1
+    x, y = sq_to_xy(to_sq)
+    cap_y = y - dir_
+    return xy_to_sq(x, cap_y)
+
+
+def piece_can_reach(board: Dict[str, str], my_color: str, pt: str, from_sq: str, to_sq: str, is_capture: bool) -> bool:
+    if from_sq == to_sq:
+        return False
+
+    fx, fy = sq_to_xy(from_sq)
+    tx, ty = sq_to_xy(to_sq)
+    dx, dy = tx - fx, ty - fy
+
+    # Occupancy rules at destination
+    dest = board.get(to_sq)
+    if is_capture:
+        # for non-pawns, capture implies dest occupied by opponent (en passant handled elsewhere)
+        if dest is None:
+            return False
+        if dest[0] == my_color:
+            return False
+    else:
+        if dest is not None:
+            return False
+
+    if pt == "N":
+        return (abs(dx), abs(dy)) in ((1, 2), (2, 1))
+    if pt == "K":
+        return max(abs(dx), abs(dy)) == 1
+    if pt == "B":
+        if abs(dx) != abs(dy):
+            return False
+        return ray_clear(board, fx, fy, tx, ty)
+    if pt == "R":
+        if dx != 0 and dy != 0:
+            return False
+        return ray_clear(board, fx, fy, tx, ty)
+    if pt == "Q":
+        if dx == 0 or dy == 0 or abs(dx) == abs(dy):
+            return ray_clear(board, fx, fy, tx, ty)
+        return False
+
+    return False
+
+
+def ray_clear(board: Dict[str, str], fx: int, fy: int, tx: int, ty: int) -> bool:
+    step_x = 0 if tx == fx else (1 if tx > fx else -1)
+    step_y = 0 if ty == fy else (1 if ty > fy else -1)
+    x, y = fx + step_x, fy + step_y
+    while (x, y) != (tx, ty):
+        sq = xy_to_sq(x, y)
+        if sq in board:
+            return False
+        x += step_x
+        y += step_y
+    return True
+
+
+# ---------------- Attacks (pseudo) ----------------
+
+def attack_counts(board: Dict[str, str], color: str) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for sq, pc in board.items():
+        if pc[0] != color:
+            continue
+        pt = pc[1]
+        for t in attacked_squares(board, sq, pc):
+            counts[t] = counts.get(t, 0) + 1
+    return counts
+
+
+def attacked_squares(board: Dict[str, str], sq: str, pc: str) -> List[str]:
+    color, pt = pc[0], pc[1]
+    x, y = sq_to_xy(sq)
+    out: List[str] = []
+
+    if pt == "P":
+        dir_ = 1 if color == "w" else -1
+        for dx in (-1, 1):
+            nx, ny = x + dx, y + dir_
+            if 0 <= nx < 8 and 0 <= ny < 8:
+                out.append(xy_to_sq(nx, ny))
+        return out
+
+    if pt == "N":
+        for dx, dy in ((1, 2), (2, 1), (-1, 2), (-2, 1), (1, -2), (2, -1), (-1, -2), (-2, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 8 and 0 <= ny < 8:
+                out.append(xy_to_sq(nx, ny))
+        return out
+
+    if pt == "K":
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < 8 and 0 <= ny < 8:
+                    out.append(xy_to_sq(nx, ny))
+        return out
+
+    # Sliding pieces
+    if pt in ("B", "R", "Q"):
+        dirs = []
+        if pt in ("B", "Q"):
+            dirs += [(1, 1), (1, -1), (-1, 1), (-1, -1)]
+        if pt in ("R", "Q"):
+            dirs += [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+        for sx, sy in dirs:
+            nx, ny = x + sx, y + sy
+            while 0 <= nx < 8 and 0 <= ny < 8:
+                tsq = xy_to_sq(nx, ny)
+                out.append(tsq)
+                if tsq in board:
+                    break
+                nx += sx
+                ny += sy
+        return out
+
+    return out
+
+
+# ---------------- Square helpers ----------------
+
+def sq_to_xy(sq: str) -> Tuple[int, int]:
+    return FILES.index(sq[0]), RANKS.index(sq[1])
+
+
+def xy_to_sq(x: int, y: int) -> str:
+    return FILES[x] + RANKS[y]
+</code>

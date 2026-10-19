@@ -1,0 +1,200 @@
+<thinking>
+I need to implement a policy for Connect 4 that selects a column to drop a disc. Since I'm competing in a gaming arena, I want a smart strategy that can win when possible and block the opponent.
+
+I'll use a minimax-like approach with depth limited to 3-4 levels due to time constraints (1 second on 3GHz CPU). However, for simplicity and reliability within the time limit, I'll implement a heuristic-based approach with the following steps:
+
+1. Check if I can win in the next move (by placing a disc in any column to complete 4 in a row). If yes, choose that column.
+2. Check if the opponent can win in their next move. If yes, block that column.
+3. Otherwise, use a heuristic scoring function to evaluate each possible move:
+   - Prefer center columns (col 3) as they offer more winning possibilities.
+   - Score positions based on potential lines (horizontal, vertical, diagonal) that can be formed.
+   - Use a simple evaluation: count potential 3-in-a-row opportunities and 2-in-a-row that can be extended.
+
+I'll implement a function to check for n-in-a-row patterns and score each move.
+
+This approach is efficient and works well in practice for Connect 4. The search will only consider valid columns and evaluate the board state without going too deep.
+
+I'll code accordingly.
+</thinking>
+<code>
+import numpy as np
+
+def policy(board: list[list[int]]) -> int:
+    # Convert board to numpy array for easier manipulation
+    board = np.array(board, dtype=int)
+    
+    # Get valid columns (not full)
+    valid_cols = [c for c in range(7) if board[0, c] == 0]
+    if not valid_cols:
+        return 0  # Should not happen in a valid game
+    
+    # Check if we can win immediately
+    for col in valid_cols:
+        if can_win(board, col, 1):
+            return col
+    
+    # Check if opponent can win immediately and block
+    for col in valid_cols:
+        if can_win(board, col, -1):
+            return col
+    
+    # Heuristic scoring for other moves
+    best_score = float('-inf')
+    best_col = valid_cols[0]
+    
+    for col in valid_cols:
+        score = evaluate_move(board, col, 1)
+        if score > best_score:
+            best_score = score
+            best_col = col
+    
+    return best_col
+
+def can_win(board, col, player):
+    """Check if placing a disc in col by player results in a win."""
+    # Find the row where the disc would land
+    for row in range(5, -1, -1):
+        if board[row, col] == 0:
+            break
+    
+    # Temporarily place the disc
+    board[row, col] = player
+    
+    # Check if this creates a win
+    win = check_winner(board, row, col, player)
+    
+    # Undo the move
+    board[row, col] = 0
+    
+    return win
+
+def check_winner(board, row, col, player):
+    """Check if there are 4 in a row centered at (row, col) for player."""
+    directions = [
+        (0, 1),   # horizontal
+        (1, 0),   # vertical
+        (1, 1),   # diagonal /
+        (1, -1)   # diagonal \
+    ]
+    
+    for dr, dc in directions:
+        count = 1  # Count the current disc
+        
+        # Check positive direction
+        r, c = row + dr, col + dc
+        while 0 <= r < 6 and 0 <= c < 7 and board[r, c] == player:
+            count += 1
+            r += dr
+            c += dc
+        
+        # Check negative direction
+        r, c = row - dr, col - dc
+        while 0 <= r < 6 and 0 <= c < 7 and board[r, c] == player:
+            count += 1
+            r -= dr
+            c -= dc
+        
+        if count >= 4:
+            return True
+    
+    return False
+
+def evaluate_move(board, col, player):
+    """Evaluate the heuristic score of placing a disc in column col for player."""
+    # Find the row where the disc would land
+    for row in range(5, -1, -1):
+        if board[row, col] == 0:
+            break
+    
+    # Temporarily place the disc
+    board[row, col] = player
+    
+    score = 0
+    
+    # Center preference
+    if col == 3:
+        score += 20
+    
+    # Count potential lines (3-in-a-row and 2-in-a-row)
+    score += count_patterns(board, row, col, player)
+    
+    # Undo the move
+    board[row, col] = 0
+    
+    return score
+
+def count_patterns(board, row, col, player):
+    """Count potential lines (3-in-a-row or 2-in-a-row with empty spaces) for player."""
+    score = 0
+    directions = [
+        (0, 1),   # horizontal
+        (1, 0),   # vertical
+        (1, 1),   # diagonal /
+        (1, -1)   # diagonal \
+    ]
+    
+    for dr, dc in directions:
+        # Count consecutive player discs and empty spaces in both directions
+        # We're looking for sequences of length 3 or 4 that can be completed
+        
+        # Positive direction
+        r, c = row + dr, col + dc
+        consecutive = 0
+        empty_space = 0
+        blocked = False
+        
+        # Count consecutive player discs and one potential empty space
+        for _ in range(3):
+            if 0 <= r < 6 and 0 <= c < 7:
+                if board[r, c] == player:
+                    consecutive += 1
+                elif board[r, c] == 0:
+                    empty_space += 1
+                    # Only allow one empty space to be counted as potential
+                else:  # opponent's disc
+                    blocked = True
+                    break
+                r += dr
+                c += dc
+            else:
+                break
+        
+        # Negative direction
+        r, c = row - dr, col - dc
+        consecutive2 = 0
+        empty_space2 = 0
+        blocked2 = False
+        
+        for _ in range(3):
+            if 0 <= r < 6 and 0 <= c < 7:
+                if board[r, c] == player:
+                    consecutive2 += 1
+                elif board[r, c] == 0:
+                    empty_space2 += 1
+                else:  # opponent's disc
+                    blocked2 = True
+                    break
+                r -= dr
+                c -= dc
+            else:
+                break
+        
+        # Combine both directions
+        total_consecutive = consecutive + consecutive2
+        total_empty = empty_space + empty_space2
+        
+        # If we have 3 consecutive, that's a win in the next move (but we already handled wins)
+        # But we still count potential for 3-in-a-row with 1 empty to complete
+        if total_consecutive == 3 and total_empty >= 1 and not blocked and not blocked2:
+            score += 100  # Very high value since this leads to win
+        elif total_consecutive == 2 and total_empty >= 1:
+            score += 10   # Threat of 3-in-a-row
+        elif total_consecutive == 1 and total_empty >= 2:
+            score += 3    # Potential future sequence
+        # Consider blocked threats
+        elif (consecutive == 2 and consecutive2 == 1) or (consecutive == 1 and consecutive2 == 2):
+            if empty_space + empty_space2 >= 1 and not (blocked and blocked2):
+                score += 8
+    
+    return score
+</code>

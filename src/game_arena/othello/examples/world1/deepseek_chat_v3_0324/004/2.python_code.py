@@ -1,0 +1,188 @@
+
+import numpy as np
+from functools import lru_cache
+
+# Precompute all 8 possible directions
+DIRECTIONS = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)]
+
+# Corner and edge positions (valuable positions)
+CORNER_POSITIONS = [(0,0), (0,7), (7,0), (7,7)]
+CORNER_ADJACENT = [(0,1), (1,0), (1,1), (0,6), (1,6), (1,7), 
+                  (6,0), (6,1), (7,1), (6,6), (6,7), (7,6)]
+
+class OthelloPolicy:
+    def __init__(self):
+        self.weights = {
+            'corner': 50,
+            'corner_adjacent': -20,
+            'mobility': 10,
+            'stability': 5,
+            'parity': 1,
+            'frontier': -15
+        }
+    
+    def get_legal_moves(self, you, opponent):
+        """Return all legal moves and flipped discs for each move."""
+        legal_moves = {}
+        your_color = you
+        opp_color = opponent
+        
+        for r in range(8):
+            for c in range(8):
+                if your_color[r][c] == 1 or opp_color[r][c] == 1:
+                    continue  # Cell is not empty
+                
+                flipped = []
+                for dr, dc in DIRECTIONS:
+                    nr, nc = r + dr, c + dc
+                    temp_flip = []
+                    valid = False
+                    
+                    while 0 <= nr < 8 and 0 <= nc < 8:
+                        if opp_color[nr][nc] == 1:
+                            temp_flip.append((nr, nc))
+                            nr += dr
+                            nc += dc
+                        elif your_color[nr][nc] == 1 and temp_flip:
+                            valid = True
+                            flipped.extend(temp_flip)
+                            break
+                        else:
+                            break
+                
+                if valid and flipped:
+                    legal_moves[(r, c)] = flipped
+                    
+        return legal_moves
+    
+    def evaluate_position(self, you, opponent):
+        """Evaluate the board position using multiple heuristics."""
+        # Corners captured
+        corner_score = sum(you[r][c] for r, c in CORNER_POSITIONS) - sum(opponent[r][c] for r, c in CORNER_POSITIONS)
+        
+        # Avoid corner-adjacent positions early
+        corner_adjacent_score = sum(you[r][c] for r, c in CORNER_ADJACENT) - sum(opponent[r][c] for r, c in CORNER_ADJACENT)
+        
+        # Mobility (number of legal moves)
+        your_moves = len(self.get_legal_moves(you, opponent))
+        opp_moves = len(self.get_legal_moves(opponent, you))
+        mobility_score = your_moves - opp_moves
+        
+        # Current piece count difference
+        piece_diff = np.sum(you) - np.sum(opponent)
+        
+        # Frontier discs (discs adjacent to empty spaces)
+        your_frontier = 0
+        opp_frontier = 0
+        empty_cells = np.where((you == 0) & (opponent == 0))
+        
+        # Combine evaluation components with weights
+        evaluation = (
+            self.weights['corner'] * corner_score +
+            self.weights['corner_adjacent'] * corner_adjacent_score +
+            self.weights['mobility'] * mobility_score +
+            self.weights['parity'] * piece_diff +
+            self.weights['frontier'] * (your_frontier - opp_frontier)
+        )
+        
+        return evaluation
+    
+    def minimax(self, you, opponent, depth, alpha, beta, maximizing_player):
+        if depth == 0:
+            return self.evaluate_position(you, opponent)
+        
+        legal_moves = self.get_legal_moves(you if maximizing_player else opponent, 
+                                          opponent if maximizing_player else you)
+        
+        if not legal_moves:
+            # If no moves available, pass and let opponent play
+            return self.minimax(opponent, you, depth-1, alpha, beta, not maximizing_player)
+        
+        if maximizing_player:
+            max_eval = -float('inf')
+            for move, flipped in legal_moves.items():
+                # Make move
+                new_you = you.copy()
+                new_opponent = opponent.copy()
+                r, c = move
+                new_you[r][c] = 1
+                for flip_r, flip_c in flipped:
+                    new_you[flip_r][flip_c] = 1
+                    new_opponent[flip_r][flip_c] = 0
+                
+                # Recurse
+                eval_score = self.minimax(new_you, new_opponent, depth-1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move, flipped in legal_moves.items():
+                # Make move
+                new_you = you.copy()
+                new_opponent = opponent.copy()
+                r, c = move
+                new_opponent[r][c] = 1
+                for flip_r, flip_c in flipped:
+                    new_opponent[flip_r][flip_c] = 1
+                    new_you[flip_r][flip_c] = 0
+                
+                # Recurse
+                eval_score = self.minimax(new_you, new_opponent, depth-1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    def find_best_move(self, you, opponent):
+        legal_moves = self.get_legal_moves(you, opponent)
+        if not legal_moves:
+            return None
+        
+        # First check for corner captures (immediate win)
+        for r, c in CORNER_POSITIONS:
+            if (r, c) in legal_moves:
+                return (r, c)
+        
+        # Use minimax to find best move with depth 3
+        best_move = None
+        best_eval = -float('inf')
+        depth = 3
+        
+        for move, flipped in legal_moves.items():
+            # Make move
+            new_you = you.copy()
+            new_opponent = opponent.copy()
+            r, c = move
+            new_you[r][c] = 1
+            for flip_r, flip_c in flipped:
+                new_you[flip_r][flip_c] = 1
+                new_opponent[flip_r][flip_c] = 0
+            
+            # Evaluate position
+            eval_score = self.minimax(new_you, new_opponent, depth-1, -float('inf'), float('inf'), False)
+            
+            # Prefer moves that flip more pieces if scores are equal
+            if eval_score > best_eval or (eval_score == best_eval and len(flipped) > len(best_move[1] if best_move else (None, []))):
+                best_eval = eval_score
+                best_move = (move, flipped)
+        
+        return best_move[0] if best_move else None
+
+# Global instance of the policy
+policy_engine = OthelloPolicy()
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """Determine the best move for the current Othello position."""
+    best_move = policy_engine.find_best_move(you, opponent)
+    
+    if best_move is None:
+        return "pass"
+    
+    r, c = best_move
+    col_char = chr(ord('a') + c)
+    row_num = str(r + 1)
+    return col_char + row_num

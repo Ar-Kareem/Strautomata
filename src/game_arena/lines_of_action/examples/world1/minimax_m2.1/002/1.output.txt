@@ -1,0 +1,291 @@
+# Strategy for Lines of Action Policy
+
+My strategy focuses on efficiently evaluating moves to maximize connectivity while considering multiple factors:
+
+## Key Components:
+
+1. **Connectivity Assessment**: Evaluate whether the current player has already achieved the winning condition (all pieces connected).
+
+2. **Graph-Based Connectivity Analysis**: Model pieces as nodes and use BFS to determine connected components in all 8 directions.
+
+3. **Smart Move Evaluation**: For each legal move, assess:
+   - **Connection Value**: How much the move improves the player's connectivity
+   - **Blocking Value**: How much the move disrupts opponent connectivity  
+   - **Centrality Bonus**: Reward moves toward the center of the board
+   - **Safety Score**: Prefer moves that don't expose pieces to capture
+
+4. **Legal Move Generation**: Generate all valid moves according to LOA rules (exact distance based on line piece count, jumping rules, etc.)
+
+5. **Greedy Selection**: Choose the move with the best composite score, prioritizing connectivity improvements.
+
+This approach balances immediate tactical benefits with the strategic goal of connecting all pieces efficiently.
+
+<code>
+import numpy as np
+from collections import deque
+
+def policy(board) -> str:
+    """
+    Returns the next move for the current player as a string in format "from_row,from_col:to_row,to_col".
+    
+    Args:
+        board: 8x8 numpy array where 1=current player, -1=opponent, 0=empty
+        
+    Returns:
+        Move string in format "from_row,from_col:to_row,to_col"
+    """
+    board = np.array(board)
+    player = 1
+    opponent = -1
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(board, player)
+    
+    if not legal_moves:
+        # No legal moves available
+        return "0,0:0,0"
+    
+    # Check if already won (all pieces connected)
+    if check_connectivity(board, player):
+        # Return first legal move if already won
+        move = legal_moves[0]
+        return f"{move[0]},{move[1]}:{move[2]},{move[3]}"
+    
+    # Evaluate all moves and pick the best
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(board, move, player, opponent)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    if best_move is None:
+        best_move = legal_moves[0]
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}"
+
+def get_all_legal_moves(board, player):
+    """Generate all legal moves for the player."""
+    moves = []
+    rows, cols = board.shape
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] == player:
+                # Try all 8 directions
+                for dr, dc in [(-1, -1), (-1, 0), (-1, 1),
+                              (0, -1),           (0, 1),
+                              (1, -1),  (1, 0),  (1, 1)]:
+                    # Calculate the number of pieces in this line
+                    line_count = count_line_pieces(board, r, c, dr, dc)
+                    
+                    if line_count <= 0:
+                        continue
+                    
+                    # Try to move in both directions along this line
+                    for direction in [1, -1]:
+                        target_r = r + dr * line_count * direction
+                        target_c = c + dc * line_count * direction
+                        
+                        if 0 <= target_r < 8 and 0 <= target_c < 8:
+                            if is_legal_move(board, r, c, target_r, target_c, player):
+                                moves.append((r, c, target_r, target_c))
+    
+    return moves
+
+def count_line_pieces(board, r, c, dr, dc):
+    """Count pieces in a line starting from (r,c) in direction (dr,dc)."""
+    count = 0
+    rows, cols = board.shape
+    
+    # Start from next position
+    check_r, check_c = r + dr, c + dc
+    
+    while 0 <= check_r < rows and 0 <= check_c < cols:
+        if board[check_r, check_c] != 0:
+            count += 1
+        check_r += dr
+        check_c += dc
+    
+    return count
+
+def is_legal_move(board, from_r, from_c, to_r, to_c, player):
+    """Check if a move is legal according to LOA rules."""
+    opponent = -player
+    
+    # Target must be empty or opponent piece
+    if board[to_r, to_c] == player:
+        return False
+    
+    # Calculate direction
+    dr = 0 if to_r == from_r else (1 if to_r > from_r else -1)
+    dc = 0 if to_c == from_c else (1 if to_c > from_c else -1)
+    
+    # Verify it's a straight line (horizontal, vertical, or diagonal)
+    if from_r != to_r and from_c != to_c:
+        if abs(to_r - from_r) != abs(to_c - from_c):
+            return False
+    
+    # Check for obstacles - can jump over friendly pieces but not enemy pieces
+    curr_r, curr_c = from_r + dr, from_c + dc
+    while (curr_r, curr_c) != (to_r, to_c):
+        if board[curr_r, curr_c] == opponent:
+            return False  # Cannot jump over opponent
+        curr_r += dr
+        curr_c += dc
+    
+    return True
+
+def evaluate_move(board, move, player, opponent):
+    """Evaluate the quality of a move."""
+    from_r, from_c, to_r, to_c = move
+    
+    # Create a copy of the board to simulate the move
+    new_board = board.copy()
+    new_board[to_r, to_c] = player
+    new_board[from_r, from_c] = 0
+    
+    score = 0
+    
+    # 1. Check if this move wins the game
+    if check_connectivity(new_board, player):
+        score += 100000
+    
+    # 2. Evaluate connectivity improvement
+    player_conn_before = count_connected_components(board, player)
+    player_conn_after = count_connected_components(new_board, player)
+    connectivity_improvement = player_conn_before - player_conn_after
+    
+    score += connectivity_improvement * 1000
+    
+    # 3. Evaluate opponent connectivity (try to block)
+    opp_conn_before = count_connected_components(board, opponent)
+    opp_conn_after = count_connected_components(new_board, opponent)
+    blocking_score = opp_conn_after - opp_conn_before
+    
+    score -= blocking_score * 800  # Negative means we want to increase opponent's components
+    
+    # 4. Centrality bonus
+    center_r, center_c = 3.5, 3.5
+    distance_from_center = abs(to_r - center_r) + abs(to_c - center_c)
+    centrality_bonus = (7 - distance_from_center) * 10
+    score += centrality_bonus
+    
+    # 5. Safety - avoid moves that leave pieces exposed
+    safety_bonus = 0
+    if board[from_r, from_c] == player and board[to_r, to_c] == opponent:
+        # Capturing opponent is good
+        safety_bonus += 50
+    else:
+        # Check if the destination is safer
+        old_danger = count_attacks(board, from_r, from_c, opponent)
+        new_danger = count_attacks(new_board, to_r, to_c, opponent)
+        safety_bonus += (old_danger - new_danger) * 20
+    
+    score += safety_bonus
+    
+    return score
+
+def check_connectivity(board, player):
+    """Check if all pieces of the player are connected."""
+    pieces = []
+    rows, cols = board.shape
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] == player:
+                pieces.append((r, c))
+    
+    if len(pieces) <= 1:
+        return True
+    
+    # BFS from the first piece
+    visited = set()
+    queue = deque([pieces[0]])
+    visited.add(pieces[0])
+    
+    while queue:
+        r, c = queue.popleft()
+        
+        # Check all 8 directions
+        for dr, dc in [(-1, -1), (-1, 0), (-1, 1),
+                      (0, -1),           (0, 1),
+                      (1, -1),  (1, 0),  (1, 1)]:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in visited:
+                continue
+            if not (0 <= nr < rows and 0 <= nc < cols):
+                continue
+            if board[nr, nc] == player:
+                visited.add((nr, nc))
+                queue.append((nr, nc))
+    
+    return len(visited) == len(pieces)
+
+def count_connected_components(board, player):
+    """Count the number of connected components for a player."""
+    rows, cols = board.shape
+    visited = set()
+    components = 0
+    
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] == player and (r, c) not in visited:
+                # Start a new component
+                components += 1
+                queue = deque([(r, c)])
+                visited.add((r, c))
+                
+                while queue:
+                    curr_r, curr_c = queue.popleft()
+                    
+                    for dr, dc in [(-1, -1), (-1, 0), (-1, 1),
+                                  (0, -1),           (0, 1),
+                                  (1, -1),  (1, 0),  (1, 1)]:
+                        nr, nc = curr_r + dr, curr_c + dc
+                        if (nr, nc) in visited:
+                            continue
+                        if not (0 <= nr < rows and 0 <= nc < cols):
+                            continue
+                        if board[nr, nc] == player:
+                            visited.add((nr, nc))
+                            queue.append((nr, nc))
+    
+    return components
+
+def count_attacks(board, r, c, attacker):
+    """Count how many opponent pieces can attack this position."""
+    opponent = attacker
+    player = -opponent
+    rows, cols = board.shape
+    
+    attack_count = 0
+    
+    for dr, dc in [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),           (0, 1),
+                  (1, -1),  (1, 0),  (1, 1)]:
+        # Check if there's an opponent piece that could move to (r, c)
+        check_r, check_c = r - dr, c - dc
+        
+        while 0 <= check_r < rows and 0 <= check_c < cols:
+            if board[check_r, check_c] == opponent:
+                # Check if this piece can legally move to (r, c)
+                line_count = count_line_pieces(board, check_r, check_c, dr, dc)
+                target_r = check_r + dr * line_count
+                target_c = check_c + dc * line_count
+                
+                if target_r == r and target_c == c:
+                    if is_legal_move(board, check_r, check_c, r, c, opponent):
+                        attack_count += 1
+                break
+            elif board[check_r, check_c] != 0:
+                # Blocked by any piece
+                break
+            
+            check_r -= dr
+            check_c -= dc
+    
+    return attack_count
+</code>

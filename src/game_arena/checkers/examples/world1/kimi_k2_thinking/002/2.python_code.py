@@ -1,0 +1,355 @@
+
+import time
+from typing import List, Tuple, Dict
+
+# =============================================================================
+# Constants and Configuration
+# =============================================================================
+
+# Piece values (king is roughly 3x man)
+MAN_VALUE = 100
+KING_VALUE = 300
+
+# Positional evaluation bonuses
+CENTER_BONUS = 10      # For controlling center squares
+EDGE_PENALTY = 20      # Penalty for pieces on edges (vulnerable)
+ADVANCE_BONUS = 5      # Bonus for advancing men toward promotion
+
+# Search depth (plies). 3 is safe for 1 second in Python.
+# The quiescence search extends this for capture sequences.
+MAX_DEPTH = 3
+
+# =============================================================================
+# Board and Move Representation
+# =============================================================================
+
+def is_dark_square(pos: Tuple[int, int]) -> bool:
+    """Check if a square is playable (dark square)."""
+    r, c = pos
+    return (r + c) % 2 == 1
+
+def is_valid_position(pos: Tuple[int, int]) -> bool:
+    """Check if position is on board and is a dark square."""
+    r, c = pos
+    return 0 <= r < 8 and 0 <= c < 8 and is_dark_square(pos)
+
+def opposite_color(color: str) -> str:
+    """Get opponent's color."""
+    return 'w' if color == 'b' else 'b'
+
+def is_piece_mine(piece: int, color: str) -> bool:
+    """Check if piece belongs to current player."""
+    return (color == 'w' and piece > 0) or (color == 'b' and piece < 0)
+
+def is_piece_opponent(piece: int, color: str) -> bool:
+    """Check if piece belongs to opponent."""
+    return (color == 'w' and piece < 0) or (color == 'b' and piece > 0)
+
+def get_piece_directions(piece: int, color: str) -> List[Tuple[int, int]]:
+    """
+    Get valid move directions for a piece.
+    Returns list of (dr, dc) tuples.
+    """
+    if abs(piece) == 1:  # man
+        if color == 'w':
+            return [(1, -1), (1, 1)]  # forward for white (down board)
+        else:
+            return [(-1, -1), (-1, 1)]  # forward for black (up board)
+    else:  # king
+        return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+# =============================================================================
+# Move Generation
+# =============================================================================
+
+def find_capture_sequences(board: Dict, start: Tuple[int, int], piece: int, color: str) -> List[Tuple[Tuple[int, int], List[Tuple[int, int]]]]:
+    """
+    Find all capture sequences starting from 'start'.
+    Returns list of tuples: (end_position, list_of_captured_positions)
+    """
+    sequences = []
+    
+    def dfs(current: Tuple[int, int], current_piece: int, captured: set):
+        """Depth-first search for capture sequences."""
+        found = False
+        
+        # Check promotion at current square
+        promoted_piece = current_piece
+        if abs(current_piece) == 1:  # if man
+            if (color == 'w' and current[0] == 7) or (color == 'b' and current[0] == 0):
+                promoted_piece = 2 if color == 'w' else -2
+        
+        dirs = get_piece_directions(promoted_piece, color)
+        
+        for dr, dc in dirs:
+            mid = (current[0] + dr, current[1] + dc)
+            land = (current[0] + 2*dr, current[1] + 2*dc)
+            
+            # Validate positions
+            if not is_valid_position(mid) or not is_valid_position(land):
+                continue
+            
+            # Check if mid is opponent piece not yet captured
+            mid_piece = board.get(mid)
+            if mid is None or mid in captured:
+                continue
+            if not is_piece_opponent(mid_piece, color):
+                continue
+            
+            # Check landing square is empty
+            if board.get(land) is not None:
+                continue
+            
+            found = True
+            captured.add(mid)
+            dfs(land, promoted_piece, captured)
+            captured.remove(mid)
+        
+        # If no more captures and we captured at least one piece
+        if not found and len(captured) > 0:
+            sequences.append((current, list(captured)))
+    
+    dfs(start, piece, set())
+    return sequences
+
+def get_all_moves(board: Dict, color: str) -> List[Tuple]:
+    """
+    Generate all legal moves for current player.
+    Returns list of moves: (start, end, is_capture, captured_positions)
+    """
+    moves = []
+    
+    # First, find all capture moves (mandatory if available)
+    for pos, piece in board.items():
+        if not is_piece_mine(piece, color):
+            continue
+        
+        sequences = find_capture_sequences(board, pos, piece, color)
+        for end, captured in sequences:
+            moves.append((pos, end, True, captured))
+    
+    # If captures exist, return only captures (mandatory rule)
+    if moves:
+        return moves
+    
+    # No captures, generate regular moves
+    for pos, piece in board.items():
+        if not is_piece_mine(piece, color):
+            continue
+        
+        dirs = get_piece_directions(piece, color)
+        
+        for dr, dc in dirs:
+            end = (pos[0] + dr, pos[1] + dc)
+            
+            if not is_valid_position(end):
+                continue
+            
+            if end in board:
+                continue
+            
+            moves.append((pos, end, False, []))
+    
+    return moves
+
+def apply_move(board: Dict, move: Tuple, color: str) -> Dict:
+    """
+    Apply a move to the board and return new board state.
+    move format: (start, end, is_capture, captured_positions)
+    """
+    start, end, is_capture, captured = move
+    
+    new_board = board.copy()
+    piece = new_board.pop(start)
+    
+    # Remove captured pieces
+    for cap in captured:
+        new_board.pop(cap, None)
+    
+    # Handle promotion
+    if abs(piece) == 1:  # if man
+        if (color == 'w' and end[0] == 7) or (color == 'b' and end[0] == 0):
+            piece = 2 if color == 'w' else -2
+    
+    new_board[end] = piece
+    
+    return new_board
+
+# =============================================================================
+# Evaluation Function
+# =============================================================================
+
+def evaluate(board: Dict, color: str) -> int:
+    """
+    Evaluate board position from perspective of 'color'.
+    Returns a score where higher is better for 'color'.
+    """
+    score = 0
+    
+    for pos, piece in board.items():
+        # Material score
+        value = KING_VALUE if abs(piece) == 2 else MAN_VALUE
+        
+        if is_piece_mine(piece, color):
+            score += value
+        else:
+            score -= value
+        
+        # Positional bonuses
+        if is_piece_mine(piece, color):
+            # Center control bonus
+            if 3 <= pos[0] <= 4 and 3 <= pos[1] <= 4:
+                score += CENTER_BONUS
+            
+            # Edge penalty (edges are vulnerable)
+            if pos[1] in (0, 7):
+                score -= EDGE_PENALTY
+            
+            # Advancement bonus for men
+            if abs(piece) == 1:
+                if color == 'w':
+                    score += ADVANCE_BONUS * pos[0]  # higher rows better for white
+                else:
+                    score += ADVANCE_BONUS * (7 - pos[0])  # lower rows better for black
+        else:
+            # Opponent pieces: opposite scoring
+            if 3 <= pos[0] <= 4 and 3 <= pos[1] <= 4:
+                score -= CENTER_BONUS
+            
+            if pos[1] in (0, 7):
+                score += EDGE_PENALTY
+            
+            if abs(piece) == 1:
+                if color == 'w':
+                    score -= ADVANCE_BONUS * pos[0]
+                else:
+                    score -= ADVANCE_BONUS * (7 - pos[0])
+    
+    return score
+
+def quiescence(board: Dict, color: str, alpha: int, beta: int) -> int:
+    """
+    Quiescence search: only explores capture moves to reach a quiet position.
+    This prevents the evaluation from being skewed by immediate capture sequences.
+    """
+    stand_pat = evaluate(board, color)
+    
+    # Stand pat if evaluation is good enough
+    if stand_pat >= beta:
+        return beta
+    if alpha < stand_pat:
+        alpha = stand_pat
+    
+    # Generate capture moves only
+    moves = []
+    for pos, piece in board.items():
+        if not is_piece_mine(piece, color):
+            continue
+        
+        sequences = find_capture_sequences(board, pos, piece, color)
+        for end, captured in sequences:
+            moves.append((pos, end, True, captured))
+    
+    # If no captures, return static evaluation
+    if not moves:
+        return stand_pat
+    
+    # Sort captures by number of pieces captured (most valuable first)
+    moves.sort(key=lambda m: len(m[3]), reverse=True)
+    
+    # Search captures
+    for move in moves:
+        new_board = apply_move(board, move, color)
+        score = -quiescence(new_board, opposite_color(color), -beta, -alpha)
+        
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    
+    return alpha
+
+def search(board: Dict, color: str, depth: int, alpha: int, beta: int) -> Tuple[int, Tuple]:
+    """
+    Alpha-beta negamax search.
+    Returns (score, move) where move is (start, end, is_capture, captured).
+    """
+    if depth == 0:
+        return quiescence(board, color, alpha, beta), None
+    
+    moves = get_all_moves(board, color)
+    
+    if not moves:
+        # No legal moves = loss
+        return -10000, None
+    
+    best_score = -float('inf')
+    best_move = None
+    
+    # Move ordering: captures first (already done by get_all_moves),
+    # then sort by number of captures for better pruning
+    moves.sort(key=lambda m: len(m[3]) if m[2] else 0, reverse=True)
+    
+    for move in moves:
+        new_board = apply_move(board, move, color)
+        score, _ = search(new_board, opposite_color(color), depth-1, -beta, -alpha)
+        score = -score
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+        
+        alpha = max(alpha, score)
+        if alpha >= beta:
+            break
+    
+    return best_score, best_move
+
+# =============================================================================
+# Main Policy Function
+# =============================================================================
+
+def policy(my_men: List[List[int]], my_kings: List[List[int]], 
+           opp_men: List[List[int]], opp_kings: List[List[int]], 
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Main policy function called by the arena.
+    Returns a move: ((from_row, from_col), (to_row, to_col))
+    """
+    # Build board representation: (r,c) -> piece_value
+    board = {}
+    
+    # Add my pieces
+    piece_values = {
+        'my_men': 1 if color == 'w' else -1,
+        'my_kings': 2 if color == 'w' else -2,
+        'opp_men': -1 if color == 'w' else 1,
+        'opp_kings': -2 if color == 'w' else 2
+    }
+    
+    for sq in my_men:
+        board[tuple(sq)] = piece_values['my_men']
+    for sq in my_kings:
+        board[tuple(sq)] = piece_values['my_kings']
+    for sq in opp_men:
+        board[tuple(sq)] = piece_values['opp_men']
+    for sq in opp_kings:
+        board[tuple(sq)] = piece_values['opp_kings']
+    
+    # Filter to only valid dark squares
+    board = {pos: piece for pos, piece in board.items() if is_dark_square(pos)}
+    
+    # Search for best move
+    _, move = search(board, color, MAX_DEPTH, -float('inf'), float('inf'))
+    
+    # Emergency fallback if search fails
+    if move is None:
+        moves = get_all_moves(board, color)
+        if moves:
+            move = moves[0]
+        else:
+            # No moves (shouldn't happen in valid game state)
+            return ((0, 0), (0, 0))
+    
+    # Return only the start and end coordinates as required
+    return (move[0], move[1])

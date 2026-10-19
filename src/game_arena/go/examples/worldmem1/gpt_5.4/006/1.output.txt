@@ -1,0 +1,292 @@
+The strategy for this policy is a fast tactical Go bot designed to always return a legal move while exploiting the most common arena weaknesses:
+
+1. It reconstructs the board from `me` and `opponent`.
+2. It generates only legal moves, including suicide checking.
+3. It prioritizes immediate tactical wins:
+   - capture opponent groups in atari,
+   - save own groups in atari,
+   - prefer larger captures/saves.
+4. If no urgent tactic exists, it scores candidate moves using a lightweight heuristic:
+   - center/corner opening preference,
+   - adjacency to own stones,
+   - pressure on opponent groups,
+   - liberty gain,
+   - local shape value,
+   - avoidance of dumb self-atari.
+5. It restricts search to empty points near existing stones for speed, but always falls back to any legal move, and finally pass `(0, 0)` if somehow no legal board move exists.
+
+This makes it robust, legal, and reasonably strong under a strict time budget.
+
+<code>
+from typing import List, Tuple, Dict, Set
+
+BOARD_SIZE = 19
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    my_set = set(me)
+    opp_set = set(opponent)
+    occupied = my_set | opp_set
+
+    def on_board(r: int, c: int) -> bool:
+        return 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE
+
+    def neighbors(p: Tuple[int, int]):
+        r, c = p
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if on_board(nr, nc):
+                yield (nr, nc)
+
+    def get_group_and_liberties(stones: Set[Tuple[int, int]], other: Set[Tuple[int, int]], start: Tuple[int, int]):
+        stack = [start]
+        group = set()
+        libs = set()
+        while stack:
+            p = stack.pop()
+            if p in group:
+                continue
+            group.add(p)
+            for q in neighbors(p):
+                if q in stones:
+                    if q not in group:
+                        stack.append(q)
+                elif q not in other:
+                    libs.add(q)
+        return group, libs
+
+    def all_groups_with_liberties(stones: Set[Tuple[int, int]], other: Set[Tuple[int, int]]):
+        seen = set()
+        groups = []
+        for s in stones:
+            if s in seen:
+                continue
+            g, libs = get_group_and_liberties(stones, other, s)
+            seen |= g
+            groups.append((g, libs))
+        return groups
+
+    def simulate_move(my_stones: Set[Tuple[int, int]], op_stones: Set[Tuple[int, int]], move: Tuple[int, int]):
+        if move == (0, 0):
+            return my_stones.copy(), op_stones.copy(), True, 0
+
+        if move in my_stones or move in op_stones:
+            return my_stones, op_stones, False, 0
+
+        new_my = set(my_stones)
+        new_op = set(op_stones)
+        new_my.add(move)
+
+        captured = 0
+        checked = set()
+        for nb in neighbors(move):
+            if nb in new_op and nb not in checked:
+                g, libs = get_group_and_liberties(new_op, new_my, nb)
+                checked |= g
+                if len(libs) == 0:
+                    captured += len(g)
+                    new_op -= g
+
+        my_group, my_libs = get_group_and_liberties(new_my, new_op, move)
+        if len(my_libs) == 0:
+            return my_stones, op_stones, False, 0
+
+        return new_my, new_op, True, captured
+
+    def legal_moves(my_stones: Set[Tuple[int, int]], op_stones: Set[Tuple[int, int]]):
+        occ = my_stones | op_stones
+        moves = []
+        for r in range(1, BOARD_SIZE + 1):
+            for c in range(1, BOARD_SIZE + 1):
+                p = (r, c)
+                if p in occ:
+                    continue
+                _, _, ok, _ = simulate_move(my_stones, op_stones, p)
+                if ok:
+                    moves.append(p)
+        return moves
+
+    def immediate_captures():
+        moves = {}
+        for g, libs in all_groups_with_liberties(opp_set, my_set):
+            if len(libs) == 1:
+                m = next(iter(libs))
+                if m in occupied:
+                    continue
+                _, _, ok, cap = simulate_move(my_set, opp_set, m)
+                if ok:
+                    moves[m] = max(moves.get(m, 0), len(g) + cap * 10)
+        return moves
+
+    def immediate_saves():
+        moves = {}
+        for g, libs in all_groups_with_liberties(my_set, opp_set):
+            if len(libs) == 1:
+                m = next(iter(libs))
+                if m in occupied:
+                    continue
+                new_my, new_op, ok, cap = simulate_move(my_set, opp_set, m)
+                if ok:
+                    ng, nlibs = get_group_and_liberties(new_my, new_op, m)
+                    score = len(g) * 8 + len(nlibs) * 3 + cap * 5
+                    moves[m] = max(moves.get(m, 0), score)
+        return moves
+
+    def candidate_moves():
+        if not occupied:
+            return [(10, 10), (4, 4), (4, 16), (16, 4), (16, 16), (10, 4), (10, 16), (4, 10), (16, 10)]
+
+        cand = set()
+        for p in occupied:
+            r, c = p
+            for dr in range(-2, 3):
+                for dc in range(-2, 3):
+                    nr, nc = r + dr, c + dc
+                    q = (nr, nc)
+                    if on_board(nr, nc) and q not in occupied:
+                        cand.add(q)
+
+        if len(cand) < 40:
+            for p in occupied:
+                for q in neighbors(p):
+                    if q not in occupied:
+                        cand.add(q)
+
+        return list(cand)
+
+    def move_heuristic(m: Tuple[int, int]) -> float:
+        new_my, new_op, ok, captured = simulate_move(my_set, opp_set, m)
+        if not ok:
+            return -10**18
+
+        score = 0.0
+        r, c = m
+
+        # Prefer center-ish in opening
+        dist_center = abs(r - 10) + abs(c - 10)
+        score += max(0, 10 - 0.6 * dist_center)
+
+        # Corner star points are good early
+        if len(occupied) < 20:
+            for sr, sc in [(4, 4), (4, 16), (16, 4), (16, 16), (10, 10)]:
+                d = abs(r - sr) + abs(c - sc)
+                score += max(0, 6 - d)
+
+        # Captures are very good
+        score += captured * 25
+
+        # Local support / pressure
+        friendly_adj = 0
+        enemy_adj = 0
+        friendly_diag = 0
+        enemy_diag = 0
+        for nb in neighbors(m):
+            if nb in my_set:
+                friendly_adj += 1
+            elif nb in opp_set:
+                enemy_adj += 1
+
+        for dr in (-1, 1):
+            for dc in (-1, 1):
+                q = (r + dr, c + dc)
+                if on_board(*q):
+                    if q in my_set:
+                        friendly_diag += 1
+                    elif q in opp_set:
+                        enemy_diag += 1
+
+        score += friendly_adj * 4 + friendly_diag * 1.2
+        score += enemy_adj * 2.5 + enemy_diag * 0.8
+
+        # Resulting liberties of placed stone's group
+        g, libs = get_group_and_liberties(new_my, new_op, m)
+        score += len(libs) * 2.2
+
+        # Penalize self-atari-like moves
+        if len(libs) == 1 and captured == 0:
+            score -= 20
+        elif len(libs) == 2 and captured == 0:
+            score -= 4
+
+        # Attack weak neighboring enemy groups
+        seen_enemy = set()
+        for nb in neighbors(m):
+            if nb in new_op and nb not in seen_enemy:
+                eg, elibs = get_group_and_liberties(new_op, new_my, nb)
+                seen_enemy |= eg
+                if len(elibs) == 1:
+                    score += len(eg) * 12
+                elif len(elibs) == 2:
+                    score += len(eg) * 4
+
+        # Defend neighboring friendly groups
+        seen_me = set()
+        for nb in neighbors(m):
+            if nb in new_my and nb not in seen_me:
+                fg, flibs = get_group_and_liberties(new_my, new_op, nb)
+                seen_me |= fg
+                if len(flibs) == 1:
+                    score -= len(fg) * 10
+                elif len(flibs) == 2:
+                    score += len(fg) * 2
+
+        # Slight preference for extending along lines with own stones
+        for dr, dc in DIRS:
+            q1 = (r + dr, c + dc)
+            q2 = (r + 2 * dr, c + 2 * dc)
+            if on_board(*q2):
+                if q1 in my_set and q2 in my_set:
+                    score += 3.5
+                if q1 in opp_set and q2 in opp_set:
+                    score += 2.0
+
+        return score
+
+    # 1. Immediate captures
+    caps = immediate_captures()
+    if caps:
+        best = None
+        best_score = -10**18
+        for m, sc in caps.items():
+            total = sc + move_heuristic(m)
+            if total > best_score:
+                best_score = total
+                best = m
+        if best is not None:
+            return best, memory
+
+    # 2. Immediate saves
+    saves = immediate_saves()
+    if saves:
+        best = None
+        best_score = -10**18
+        for m, sc in saves.items():
+            total = sc + move_heuristic(m)
+            if total > best_score:
+                best_score = total
+                best = m
+        if best is not None:
+            return best, memory
+
+    # 3. Heuristic candidate search
+    cand = candidate_moves()
+    best = None
+    best_score = -10**18
+    for m in cand:
+        sc = move_heuristic(m)
+        if sc > best_score:
+            best_score = sc
+            best = m
+
+    if best is not None and best_score > -10**17:
+        return best, memory
+
+    # 4. Fallback: any legal move
+    lm = legal_moves(my_set, opp_set)
+    if lm:
+        return lm[0], memory
+
+    # 5. Last resort: pass
+    return (0, 0), memory
+</code>

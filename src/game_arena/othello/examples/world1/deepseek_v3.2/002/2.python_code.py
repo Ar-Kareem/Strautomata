@@ -1,0 +1,201 @@
+
+import numpy as np
+import itertools
+
+# Precomputed positional weights
+POSITION_WEIGHTS = np.array([
+    [100, -20, 10,  5,  5, 10, -20, 100],
+    [-20, -30, -5, -5, -5, -5, -30, -20],
+    [ 10,  -5,  1,  1,  1,  1,  -5,  10],
+    [  5,  -5,  1,  0,  0,  1,  -5,   5],
+    [  5,  -5,  1,  0,  0,  1,  -5,   5],
+    [ 10,  -5,  1,  1,  1,  1,  -5,  10],
+    [-20, -30, -5, -5, -5, -5, -30, -20],
+    [100, -20, 10,  5,  5, 10, -20, 100]
+])
+
+# Directions: (dr, dc)
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+              (0, -1),           (0, 1),
+              (1, -1),  (1, 0),  (1, 1)]
+
+def is_valid_move(board, opponent, r, c):
+    """Check if placing at (r,c) is a legal move."""
+    if board[r, c] != 0 or opponent[r, c] != 0:
+        return False
+    
+    my_board = board.copy()
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc] == 1:
+            # Keep moving in that direction
+            while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc] == 1:
+                nr += dr
+                nc += dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and my_board[nr, nc] == 1:
+                return True
+    return False
+
+def get_flipped_count(board, opponent, r, c):
+    """Count how many opponent discs would be flipped by placing at (r,c)."""
+    total = 0
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        count = 0
+        while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr, nc] == 1:
+            count += 1
+            nr += dr
+            nc += dc
+        if 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == 1:
+            total += count
+    return total
+
+def get_mobility(board, opponent):
+    """Count number of legal moves for current player."""
+    moves = 0
+    for r in range(8):
+        for c in range(8):
+            if is_valid_move(board, opponent, r, c):
+                moves += 1
+    return moves
+
+def get_opponent_mobility(board, opponent):
+    """Count number of legal moves for opponent if they were to move next."""
+    # Swap perspectives
+    return get_mobility(opponent, board)
+
+def evaluate_position(board, opponent, move_count):
+    """Evaluate board state from current player's perspective."""
+    # Disc difference
+    my_discs = np.sum(board)
+    opp_discs = np.sum(opponent)
+    disc_diff = my_discs - opp_discs
+    
+    # Positional value
+    position_value = np.sum(board * POSITION_WEIGHTS) - np.sum(opponent * POSITION_WEIGHTS)
+    
+    # Mobility
+    my_mobility = get_mobility(board, opponent)
+    opp_mobility = get_opponent_mobility(board, opponent)
+    
+    # Corner control
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    my_corners = sum(board[c[0], c[1]] for c in corners)
+    opp_corners = sum(opponent[c[0], c[1]] for c in corners)
+    
+    # Edge stability
+    edge_positions = [(0,i) for i in range(1,7)] + [(7,i) for i in range(1,7)] + \
+                     [(i,0) for i in range(1,7)] + [(i,7) for i in range(1,7)]
+    my_edges = sum(board[pos[0], pos[1]] for pos in edge_positions)
+    opp_edges = sum(opponent[pos[0], pos[1]] for pos in edge_positions)
+    
+    # Game phase weights
+    if move_count < 20:  # Early game
+        return (0.1 * disc_diff + 0.4 * position_value + 
+                0.4 * (my_mobility - opp_mobility) + 2.0 * (my_corners - opp_corners))
+    elif move_count < 40:  # Mid game
+        return (0.2 * disc_diff + 0.5 * position_value + 
+                0.2 * (my_mobility - opp_mobility) + 3.0 * (my_corners - opp_corners) +
+                0.1 * (my_edges - opp_edges))
+    else:  # End game
+        return (0.6 * disc_diff + 0.2 * position_value + 
+                0.1 * (my_mobility - opp_mobility) + 5.0 * (my_corners - opp_corners) +
+                0.1 * (my_edges - opp_edges))
+
+def simulate_move(board, opponent, r, c):
+    """Return new board state after placing at (r,c)."""
+    new_board = board.copy()
+    new_opponent = opponent.copy()
+    
+    if not is_valid_move(board, opponent, r, c):
+        return new_board, new_opponent
+    
+    new_board[r, c] = 1
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        to_flip = []
+        while 0 <= nr < 8 and 0 <= nc < 8 and new_opponent[nr, nc] == 1:
+            to_flip.append((nr, nc))
+            nr += dr
+            nc += dc
+        if 0 <= nr < 8 and 0 <= nc < 8 and new_board[nr, nc] == 1:
+            for fr, fc in to_flip:
+                new_board[fr, fc] = 1
+                new_opponent[fr, fc] = 0
+    
+    return new_board, new_opponent
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """Main policy function - returns move string like 'd3' or 'pass'."""
+    # Count total moves played so far
+    total_discs = np.sum(you) + np.sum(opponent)
+    
+    # Get all legal moves
+    legal_moves = []
+    for r in range(8):
+        for c in range(8):
+            if is_valid_move(you, opponent, r, c):
+                legal_moves.append((r, c))
+    
+    if not legal_moves:
+        return "pass"
+    
+    # If only one move, return it immediately
+    if len(legal_moves) == 1:
+        r, c = legal_moves[0]
+        return f"{chr(ord('a') + c)}{r + 1}"
+    
+    # Evaluate each move with 2-ply lookahead
+    best_score = -float('inf')
+    best_move = legal_moves[0]
+    
+    for r, c in legal_moves:
+        # Immediate move evaluation
+        flipped = get_flipped_count(you, opponent, r, c)
+        
+        # Simulate making this move
+        new_you, new_opp = simulate_move(you, opponent, r, c)
+        
+        # Count opponent's responses
+        opp_moves = []
+        for orow in range(8):
+            for ocol in range(8):
+                if is_valid_move(new_opp, new_you, orow, ocol):
+                    opp_moves.append((orow, ocol))
+        
+        if opp_moves:
+            # Find opponent's best response
+            opp_best = -float('inf')
+            for orow, ocol in opp_moves:
+                # Simulate opponent's move
+                opp_new_opp, opp_new_you = simulate_move(new_opp, new_you, orow, ocol)
+                opp_score = evaluate_position(opp_new_you, opp_new_opp, total_discs + 2)
+                opp_best = max(opp_best, opp_score)
+            
+            # Our score is negative of opponent's best
+            move_score = -opp_best
+        else:
+            # Opponent has no moves after ours
+            move_score = evaluate_position(new_you, new_opp, total_discs + 1)
+        
+        # Add bonus for flipping many discs
+        move_score += 0.5 * flipped
+        
+        # Add positional bonus
+        move_score += 0.3 * POSITION_WEIGHTS[r, c]
+        
+        # Strong preference for corners
+        if (r, c) in [(0,0), (0,7), (7,0), (7,7)]:
+            move_score += 50
+        
+        # Avoid dangerous X-squares unless capturing corner
+        if (r, c) in [(1,1), (1,6), (6,1), (6,6)]:
+            move_score -= 20
+        
+        if move_score > best_score:
+            best_score = move_score
+            best_move = (r, c)
+    
+    # Convert to algebraic notation
+    r, c = best_move
+    return f"{chr(ord('a') + c)}{r + 1}"

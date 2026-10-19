@@ -1,0 +1,263 @@
+<thinking>
+To create a competitive Kalah player, I need to balance several key strategic elements:
+
+1. **Immediate reward**: Prioritize moves that result in extra moves (landing in the store) or captures (ending in an empty house with opponent seeds opposite).
+
+2. **Lookahead**: Use minimax with alpha-beta pruning to look ahead several moves and evaluate future board states.
+
+3. **Heuristic evaluation**: Develop a strong heuristic function that captures:
+   - Current store difference
+   - Seeds that can be safely moved to store
+   - Mobility (number of available moves)
+   - Parity control (controlling who ends the game)
+
+4. **Time management**: Since I have up to 1 second, I'll use iterative deepening to ensure I always return a move even if interrupted.
+
+The key insights:
+- Extra moves are extremely valuable (they deny opponent their turn)
+- Captures are strong but should be evaluated in context
+- Ending the game when opponent has a weaker board is often advantageous
+
+I'll implement:
+- A fast game simulation engine
+- Alpha-beta pruning with move ordering
+- Progressive deepening up to depth 8-10 depending on position
+- Heuristic that values store count, endgame potential, and mobility
+</thinking>
+<code>
+import numpy as np
+from typing import Tuple, List, Optional
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Kalah AI using alpha-beta pruning with iterative deepening.
+    Prioritizes extra moves, captures, and endgame control.
+    """
+    
+    # Global counter to track nodes searched
+    nodes_searched = 0
+    max_depth = 10
+    
+    def make_move(your_board: np.ndarray, opp_board: np.ndarray, move: int) -> Tuple[np.ndarray, np.ndarray, bool]:
+        """Execute move and return new boards and whether extra move was earned"""
+        seeds = your_board[move]
+        your_board[move] = 0
+        pos = move + 1
+        extra_move = False
+        
+        # Distribute seeds
+        for _ in range(seeds):
+            if pos <= 6:  # Your side (houses and store)
+                your_board[pos] += 1
+                if pos == 6:
+                    end_house = -1  # Store, not a house
+                else:
+                    end_house = pos
+                pos += 1
+            elif pos <= 13:  # Opponent's houses
+                opp_board[pos - 7] += 1
+                end_house = 6 - (pos - 7)  # Opposite house index on your side
+                pos += 1
+                if pos == 14:
+                    pos = 0
+            else:  # pos == 14, wrap to your houses
+                your_board[pos - 14] += 1
+                end_house = pos - 14
+                pos += 1
+                if pos == 20:  # Wrap after your houses
+                    pos = 0
+        
+        # Check for extra move
+        if end_house == -1:  # Last seed in store
+            extra_move = True
+        # Check for capture
+        elif 0 <= end_house <= 5 and your_board[end_house] == 1 and opp_board[5 - end_house] > 0:
+            # Capture: add captured seeds to store
+            your_board[6] += your_board[end_house] + opp_board[5 - end_house]
+            your_board[end_house] = 0
+            opp_board[5 - end_house] = 0
+        
+        return your_board.copy(), opp_board.copy(), extra_move
+    
+    def is_game_over(your_board: np.ndarray, opp_board: np.ndarray) -> bool:
+        """Check if game is over (one player has no seeds in houses)"""
+        your_houses_empty = np.all(your_board[:6] == 0)
+        opp_houses_empty = np.all(opp_board[:6] == 0)
+        return your_houses_empty or opp_houses_empty
+    
+    def final_score(your_board: np.ndarray, opp_board: np.ndarray) -> int:
+        """Calculate final score difference if game ended"""
+        if np.all(your_board[:6] == 0):
+            # You have no seeds, opponent moves theirs to store
+            opp_total = opp_board[6] + np.sum(opp_board[:6])
+            return your_board[6] - opp_total
+        elif np.all(opp_board[:6] == 0):
+            # Opponent has no seeds, you move yours to store
+            your_total = your_board[6] + np.sum(your_board[:6])
+            return your_total - opp_board[6]
+        else:
+            return your_board[6] - opp_board[ düşmémon]
+    
+    def evaluate(your_board: np.ndarray, opp_board: np.ndarray) -> float:
+        """Heuristic evaluation function"""
+        if is_game_over(your_board, opp_board):
+            return final_score(your_board, opp_board) * 1000
+        
+        score_diff = your_board[6] - opp_board[6]
+        
+        # Seeds in houses that can be moved to store
+        # Prioritize seeds that can reach store soon
+        mobility = np.sum(your_board[:6] > 0) - np.sum(opp_board[:6] > 0)
+        
+        # Bonus for potential extra moves
+        extra_move_potential = 0
+        for i in range(6):
+            if your_board[i] > 0:
+                landing = (i + your_board[i]) % 14
+                if landing == 6:
+                    extra_move_potential += 1
+                elif landing < 6 and your_board[landing] == 0 and opp_board[5-landing] > 0:
+                    # Potential capture
+                    extra_move_potential += 0.5
+        
+        # Endgame consideration
+        total_your_seeds = np.sum(your_board[:6])
+        total_opp_seeds = np.sum(opp_board[:6])
+        
+        # If one player is about to empty their houses, that's valuable
+        endgame_bonus = 0
+        if total_opp_seeds == 0:
+            endgame_bonus += 10
+        if total_your_seeds == 0:
+            endgame_bonus -= 10
+        
+        return score_diff + mobility * 2 + extra_move_potential * 3 + endgame_bonus
+    
+    def alphabeta(your_board: np.ndarray, opp_board: np.ndarray, depth: int, 
+                  alpha: float, beta: float, maximizing: bool, limit: int) -> float:
+        """Alpha-beta pruning search"""
+        global nodes_searched
+        if nodes_searched > 200000 or depth <= 0:
+            return evaluate(your_board, opp_board)
+        
+        nodes_searched += 1
+        
+        if maximizing:
+            if is_game_over(your_board, opp_board):
+                return evaluate(your_board, opp_board)
+            
+            max_eval = float('-inf')
+            moves = [i for i in range(6) if your_board[i] > 0]
+            # Move ordering: prioritize moves that give extra turn
+            moves.sort(key=lambda x: (x + your_board[x]) % 14 == 6, reverse=True)
+            
+            for move in moves:
+                new_you, new_opp, extra = make_move(your_board.copy(), opp_board.copy(), move)
+                if extra:
+                    eval_score = alphabeta(new_you, new_opp, depth, alpha, beta, True, limit)
+                else:
+                    eval_score = alphabeta(new_opp, new_you, depth-1, alpha, beta, False, limit)
+                
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break  # Beta cutoff
+            
+            return max_eval
+        else:
+            if is_game_over(opp_board, your_board):
+                return -evaluate(your_board, opp_board)
+            
+            min_eval = float('inf')
+            moves = [i for i in range(6) if your_board[i] > 0]
+            
+            for move in moves:
+                new_you, new_opp, extra = make_move(your_board.copy(), opp_board.copy(), move)
+                if extra:
+                    eval_score = alphabeta(new_you, new_opp, depth, alpha, beta, False, limit)
+                else:
+                    eval_score = alphabeta(new_me, new_you, depth-1, alpha, beta, True, limit)
+                
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break  # Alpha cutoff
+            
+            return min_eval
+    
+    # Convert to numpy arrays
+    you_np = np.array(you, dtype=np.int32)
+    opp_np = np.array(opponent, dtype=np.int32)
+    
+    # Get legal moves
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    # If only one move, take it
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Check for immediate extra move
+    for move in legal_moves:
+        if (move + you[move]) % 14 == 6:
+            return move
+    
+    # Check for immediate capture
+    for move in legal_moves:
+        seeds = you[move]
+        pos = move
+        for _ in range(seeds):
+            pos += 1
+            if pos <= 6:  # Your side
+                if pos == 6:
+                    last_house = -1
+                else:
+                    last_house = pos
+            elif pos <= 13:  # Opponent's side
+                last_house = 6 - (pos - 7)
+                if pos == 13:
+                    pos = -1
+            else:  # Back to your side
+                pos = pos - 14
+                last_house = pos
+        if 0 <= last_house <= 5 and you_np[last_house] == 0 and opponent[5-last_house] > 0:
+            return move
+    
+    # Iterative deepening alpha-beta search
+    best_move = legal_moves[0]
+    global nodes_searched
+    nodes_searched = 0
+    time_limit = 0.9  # Be conservative with time
+    
+    import time
+    start_time = time.time()
+    
+    for depth in range(1, max_depth + 1):
+        if time.time() - start_time > time_limit * 0.8:
+            break
+            
+        best_val = float('-inf')
+        current_best = legal_moves[0]
+        
+        # Move ordering
+        ordered_moves = legal_moves[:]
+        ordered_moves.sort(key=lambda x: ((x + you[x]) % 14 == 6, x), reverse=True)
+        
+        for move in ordered_moves:
+            new_you, new_opp, extra = make_move(you_np.copy(), opp_np.copy(), move)
+            if extra:
+                move_val = alphabeta(new_you, new_opp, depth, float('-inf'), float('inf'), True, depth)
+            else:
+                move_val = alphabeta(new_opp, new_you, depth-1, float('-inf'), float('inf'), False, depth)
+            
+            if move_val > best_val:
+                best_val = move_val
+                current_best = move
+                
+        best_move = current_best
+        
+        # If we found a clearly winning move, don't search deeper
+        if best_val > 1000:
+            break
+    
+    return best_move
+</code>

@@ -1,0 +1,293 @@
+
+import random
+import math
+from typing import List, Tuple, Dict
+import numpy as np
+
+class GameState:
+    def __init__(self, me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], board_size: int = 19):
+        self.board_size = board_size
+        self.board = [[0 for _ in range(board_size + 2)] for _ in range(board_size + 2)]  # 1-indexed, with borders
+        self.me_stones = set(me)
+        self.opponent_stones = set(opponent)
+        self.next_player = 1  # 1 for me, -1 for opponent
+        
+        # Mark border as occupied to simplify neighbor checking
+        for i in range(board_size + 2):
+            self.board[0][i] = -2
+            self.board[board_size + 1][i] = -2
+            self.board[i][0] = -2
+            self.board[i][board_size + 1] = -2
+        
+        # Place stones on board
+        for r, c in me:
+            self.board[r][c] = 1
+        for r, c in opponent:
+            self.board[r][c] = -1
+
+    def get_legal_moves(self) -> List[Tuple[int, int]]:
+        """Get all legal moves for the current player"""
+        legal_moves = []
+        for r in range(1, self.board_size + 1):
+            for c in range(1, self.board_size + 1):
+                if self.board[r][c] == 0 and self.is_legal_move(r, c):
+                    legal_moves.append((r, c))
+        return legal_moves
+
+    def is_legal_move(self, r: int, c: int) -> bool:
+        """Check if placing a stone at (r,c) is legal"""
+        if self.board[r][c] != 0:
+            return False
+            
+        # Check if move captures opponent stones
+        captures = self.get_captures(r, c)
+        if captures:
+            return True
+            
+        # Check if move has liberties after placement
+        self.board[r][c] = self.next_player
+        has_liberty = self.has_liberty(r, c)
+        self.board[r][c] = 0
+        
+        return has_liberty
+
+    def get_captures(self, r: int, c: int) -> List[Tuple[int, int]]:
+        """Get opponent stones that would be captured by placing a stone at (r,c)"""
+        captures = []
+        self.board[r][c] = self.next_player
+        
+        # Check adjacent opponent groups
+        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            if self.board[nr][nc] == -self.next_player:
+                group = self.get_group(nr, nc)
+                if not self.has_group_liberty(group):
+                    captures.extend(group)
+        
+        self.board[r][c] = 0
+        return list(set(captures))
+
+    def get_group(self, r: int, c: int) -> List[Tuple[int, int]]:
+        """Get all stones in the group connected to (r,c)"""
+        if self.board[r][c] == 0:
+            return []
+        
+        color = self.board[r][c]
+        group = []
+        visited = set()
+        stack = [(r, c)]
+        
+        while stack:
+            cr, cc = stack.pop()
+            if (cr, cc) in visited:
+                continue
+            visited.add((cr, cc))
+            group.append((cr, cc))
+            
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = cr + dr, cc + dc
+                if self.board[nr][nc] == color and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        
+        return group
+
+    def has_liberty(self, r: int, c: int) -> bool:
+        """Check if the stone at (r,c) has any liberties"""
+        color = self.board[r][c]
+        visited = set()
+        stack = [(r, c)]
+        
+        while stack:
+            cr, cc = stack.pop()
+            if (cr, cc) in visited:
+                continue
+            visited.add((cr, cc))
+            
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = cr + dr, cc + dc
+                if self.board[nr][nc] == 0:
+                    return True
+                elif self.board[nr][nc] == color and (nr, nc) not in visited:
+                    stack.append((nr, nc))
+        
+        return False
+
+    def has_group_liberty(self, group: List[Tuple[int, int]]) -> bool:
+        """Check if a group has any liberties"""
+        for r, c in group:
+            for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if self.board[nr][nc] == 0:
+                    return True
+        return False
+
+    def make_move(self, move: Tuple[int, int]) -> bool:
+        """Make a move and update the board state"""
+        r, c = move
+        if not self.is_legal_move(r, c):
+            return False
+            
+        # Place stone
+        self.board[r][c] = self.next_player
+        
+        # Remove captured stones
+        captures = self.get_captures(r, c)
+        for cr, cc in captures:
+            self.board[cr][cc] = 0
+            
+        # Switch player
+        self.next_player = -self.next_player
+        return True
+
+    def is_terminal(self) -> bool:
+        """Check if game is over"""
+        # For simplicity, we'll consider it terminal if no legal moves
+        return len(self.get_legal_moves()) == 0
+
+    def get_winner(self) -> int:
+        """Get the winner (1 for me, -1 for opponent, 0 for draw)"""
+        # Simple scoring: count stones
+        my_count = sum(row.count(1) for row in self.board)
+        opponent_count = sum(row.count(-1) for row in self.board)
+        
+        if my_count > opponent_count:
+            return 1
+        elif opponent_count > my_count:
+            return -1
+        else:
+            return 0
+
+class MCTSNode:
+    def __init__(self, state: GameState, move: Tuple[int, int] = None, parent=None):
+        self.state = state
+        self.move = move
+        self.parent = parent
+        self.children = []
+        self.visits = 0
+        self.wins = 0
+        self.untried_moves = state.get_legal_moves()
+
+    def uct_value(self, exploration_param: float = 1.41) -> float:
+        """Calculate UCT value for node selection"""
+        if self.visits == 0:
+            return float('inf')
+        return self.wins / self.visits + exploration_param * math.sqrt(math.log(self.parent.visits) / self.visits)
+
+    def is_fully_expanded(self) -> bool:
+        """Check if all moves have been tried"""
+        return len(self.untried_moves) == 0
+
+    def best_child(self, exploration_param: float = 1.41):
+        """Select best child based on UCT value"""
+        return max(self.children, key=lambda c: c.uct_value(exploration_param))
+
+    def expand(self):
+        """Expand tree by adding a child node"""
+        move = self.untried_moves.pop()
+        new_state = GameState(list(self.state.me_stones), list(self.state.opponent_stones))
+        new_state.board = [row[:] for row in self.state.board]
+        new_state.next_player = self.state.next_player
+        new_state.make_move(move)
+        child = MCTSNode(new_state, move, self)
+        self.children.append(child)
+        return child
+
+    def simulate(self) -> int:
+        """Run random playout from this node"""
+        current_state = GameState(list(self.state.me_stones), list(self.state.opponent_stones))
+        current_state.board = [row[:] for row in self.state.board]
+        current_state.next_player = self.state.next_player
+        
+        # Copy stone positions
+        for r in range(1, 20):
+            for c in range(1, 20):
+                if current_state.board[r][c] == 1:
+                    current_state.me_stones.add((r, c))
+                elif current_state.board[r][c] == -1:
+                    current_state.opponent_stones.add((r, c))
+        
+        # Play random moves until terminal state
+        for _ in range(100):  # Limit simulation length
+            if current_state.is_terminal():
+                break
+            moves = current_state.get_legal_moves()
+            if not moves:
+                # Pass if no legal moves
+                current_state.next_player = -current_state.next_player
+                continue
+            move = random.choice(moves)
+            current_state.make_move(move)
+        
+        return current_state.get_winner()
+
+    def backpropagate(self, result: int):
+        """Backpropagate result up the tree"""
+        self.visits += 1
+        if result == 1:  # Win for me
+            self.wins += 1
+        elif result == 0:  # Draw
+            self.wins += 0.5
+            
+        if self.parent:
+            self.parent.backpropagate(result)
+
+def mcts_search(state: GameState, iterations: int = 1000) -> Tuple[int, int]:
+    """Run MCTS to find best move"""
+    root = MCTSNode(state)
+    
+    for _ in range(iterations):
+        # Selection
+        node = root
+        while not node.state.is_terminal() and node.is_fully_expanded():
+            node = node.best_child()
+        
+        # Expansion
+        if not node.state.is_terminal() and not node.is_fully_expanded():
+            node = node.expand()
+        
+        # Simulation
+        result = node.simulate()
+        
+        # Backpropagation
+        node.backpropagate(result)
+    
+    # Return best move based on visit count
+    if not root.children:
+        return (0, 0)  # Pass if no children
+        
+    best_child = max(root.children, key=lambda c: c.visits)
+    return best_child.move
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]], memory: Dict) -> Tuple[Tuple[int, int], Dict]:
+    """Main policy function using MCTS"""
+    # Create current game state
+    state = GameState(me, opponent)
+    
+    # Get legal moves
+    legal_moves = state.get_legal_moves()
+    
+    # If no legal moves, pass
+    if not legal_moves:
+        return ((0, 0), memory)
+    
+    # Try to find immediate tactical moves
+    # 1. Check for moves that capture opponent stones
+    best_move = None
+    max_captures = 0
+    for move in legal_moves:
+        captures = state.get_captures(move[0], move[1])
+        if len(captures) > max_captures:
+            max_captures = len(captures)
+            best_move = move
+    
+    # If we found a capture move, take it
+    if best_move:
+        return (best_move, memory)
+    
+    # Otherwise use MCTS for strategic move selection
+    try:
+        move = mcts_search(state, iterations=500)
+        return (move, memory)
+    except:
+        # Fallback to random legal move if MCTS fails
+        return (random.choice(legal_moves), memory)

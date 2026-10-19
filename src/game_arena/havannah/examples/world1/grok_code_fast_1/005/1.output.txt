@@ -1,0 +1,151 @@
+The strategy for this policy is based on Monte Carlo Tree Search (MCTS) to evaluate moves on the Havannah board. MCTS iterates for a fixed number of rounds (1000 here), selecting children using Upper Confidence Bound (UCB1) to balance exploration and exploitation, expanding nodes by exploring unvisited moves, simulating random games until a bridge win is detected or a maximum number of moves (50) is reached (ignoring ring and fork detection for computational simplicity and time constraints), and backpropagating the simulation result (win, loss, or draw). The policy then selects the move leading to the child node with the highest visit count to maximize long-term winning potential, particularly focusing on building or blocking bridges. This approach is designed to outperform simpler heuristics by learning from simulations, while ensuring legality and efficiency within the 1-second CPU time limit.
+
+<code>
+import random
+import math
+
+board_size = 15
+corners = [(0, 0), (0, 14), (7, 0), (7, 14), (14, 0), (14, 14)]
+
+def get_neighbors(r, c):
+    neighbors = []
+    deltas = [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, 0), (1, 1)]
+    for dr, dc in deltas:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < board_size and 0 <= nc < board_size:
+            neighbors.append((nr, nc))
+    return neighbors
+
+def has_bridge(player, board):
+    stones = [(r, c) for r, row in enumerate(board) for c, val in enumerate(row) if val == player]
+    if len(stones) < 2:
+        return False
+    graph = {stone: set(get_neighbors(*stone)) & set(stones) for stone in stones}
+    visited = set()
+    def dfs(start, component):
+        visited.add(start)
+        component.add(start)
+        for neigh in graph[start]:
+            if neigh not in visited:
+                dfs(neigh, component)
+    components = []
+    for stone in stones:
+        if stone not in visited:
+            comp = set()
+            dfs(stone, comp)
+            components.append(comp)
+    for comp in components:
+        corner_count = sum(1 for c in corners if c in comp)
+        if corner_count >= 2:
+            return True
+    return False
+
+class MCTSNode:
+    def __init__(self, board, player_to_move='me', parent=None, move_from_parent=None, valid_mask=None):
+        self.board = [row[:] for row in board]
+        self.player = player_to_move
+        self.parent = parent
+        self.move = move_from_parent
+        self.children = []
+        self.wins = 0
+        self.visits = 0
+        self.valid_mask = valid_mask
+
+    def get_valid_moves(self):
+        v = []
+        for r in range(board_size):
+            for c in range(board_size):
+                if self.board[r][c] == '.' and self.valid_mask[r][c]:
+                    v.append((r, c))
+        return v
+
+    def select(self):
+        best_child = None
+        best_ucb = -float('inf')
+        for child in self.children:
+            if child.visits == 0:
+                return child
+            ucb = child.wins / child.visits + 2 * math.sqrt(math.log(self.visits) / child.visits)
+            if ucb > best_ucb:
+                best_ucb = ucb
+                best_child = child
+        return best_child
+
+    def expand(self):
+        moves = self.get_valid_moves()
+        random.shuffle(moves)
+        for move in moves:
+            if not any(child.move == move for child in self.children):
+                child = MCTSNode(self.board, 'opp' if self.player == 'me' else 'me', self, move, self.valid_mask)
+                # Place the move on the child's board
+                child.board[move[0]][move[1]] = self.player
+                self.children.append(child)
+                return child
+        return None
+
+    def simulate(self):
+        curr_board = [row[:] for row in self.board]
+        curr_player = self.player
+        moves_count = 0
+        move_limit = 50
+        while True:
+            vmoves = [ (r, c) for r, row in enumerate(curr_board) for c, val in enumerate(row) if val == '.' and self.valid_mask[r][c] ]
+            if not vmoves:
+                return 'draw'
+            move = random.choice(vmoves)
+            curr_board[move[0]][move[1]] = curr_player
+            if has_bridge(curr_player, curr_board):
+                return curr_player
+            curr_player = 'opp' if curr_player == 'me' else 'me'
+            moves_count += 1
+            if moves_count > move_limit:
+                return 'draw'
+
+    def backpropagate(self, result):
+        self.visits += 1
+        if result == 'draw':
+            pass  # Draw does not add wins
+        elif (result == 'me' and self.player == 'me') or (result == 'opp' and self.player == 'opp'):
+            self.wins += 1
+        if self.parent:
+            self.parent.backpropagate(result)
+
+def mcts(root, iterations=1000):
+    for _ in range(iterations):
+        # Select
+        node = root
+        while node.children and node.visits > 0:
+            node = node.select()
+        # Expand
+        if len(node.children) == 0 or (node.visits > 0 and len(node.children) < len(node.get_valid_moves())):
+            node = node.expand()
+            if node is None:
+                continue
+        # Simulate
+        result = node.simulate()
+        # Backpropagate
+        node.backpropagate(result)
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    board = [['.' for _ in range(board_size)] for _ in range(board_size)]
+    for r, c in me:
+        board[r][c] = 'me'
+    for r, c in opp:
+        board[r][c] = 'opp'
+    # Create root node
+    root = MCTSNode(board, player_to_move='me', valid_mask=valid_mask)
+    mcts(root)
+    # Select best move based on max visits
+    if root.children:
+        best_move = None
+        max_visits = -1
+        for child in root.children:
+            if child.visits > max_visits:
+                max_visits = child.visits
+                best_move = child.move
+        return best_move
+    else:
+        # Fallback to random legal move
+        vmoves = [(r, c) for r, row in enumerate(board) for c, val in enumerate(row) if val == '.' and valid_mask[r][c]]
+        return random.choice(vmoves) if vmoves else (7, 7)  # Should not happen
+</code>

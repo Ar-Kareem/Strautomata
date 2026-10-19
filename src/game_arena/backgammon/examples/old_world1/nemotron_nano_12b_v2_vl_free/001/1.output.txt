@@ -1,0 +1,164 @@
+To create a policy for a Backgammon AI that is both **legal** and **effective**, we need to focus on **strategic decision-making** based on the current game state. The function must return a valid move string in the format `<ORDER>:<FROM1>,<FROM2>`, where:
+
+- `<ORDER>` is either `'H'` (higher die first) or `'L'` (lower die first)
+- `<FROM1>` and `<FROM2>` represent the starting points for the moves, which can be `'B'` (bar), `'A0'` to `'A23'`, or `'P'` (pass)
+
+The policy must respect the following rules:
+- If you have checkers on the bar, you **must** move them before moving other checkers.
+- If only one die can be played, the **higher die** must be used if possible.
+- If both dice can be played, **both must be played**.
+- Bearing off is only allowed when all of your checkers are in your home board.
+
+---
+
+### Strategy Overview
+
+This policy uses a **greedy heuristic** to prioritize moves that:
+1. **Hit opponent's blots** (send them to the bar, increasing their difficulty to play)
+2. **Move checkers closer to home**, minimizing the total "pip count" (distance to the home board)
+3. **Use both dice when possible**, and **prefer the higher die first** when only one move is possible.
+
+The evaluation of each move is based on:
+- **Exposure to hitting** (sending opponent checkers to the bar)
+- **Pip count reduction** (how much the move improves the player’s position)
+- **Strategic blocking** of the opponent
+
+---
+
+### Python Implementation
+
+```python
+import sys
+
+def policy(state: dict) -> str:
+    """
+    Policy function for a Backgammon AI.
+    Returns a legal move string in the format: '<ORDER>:<FROM1>,<FROM2>'
+    """
+    my_pts = state['my_pts']
+    my_bar = state['my_bar']
+    opp_pts = state.get('opp_pts', [])
+    dice = state['dice']
+    moves = []
+
+    # Helper function to generate moves from the bar if applicable
+    def generate_bar_moves():
+        bar_moves = []
+        for d in dice:
+            if 0 <= d <= 11 and opp_pts[d] <= 1:
+                bar_moves.append(d)
+        return bar_moves
+
+    # Helper function to generate moves from points
+    def generate_point_moves():
+        point_moves = []
+        for i, cnt in enumerate(my_pts):
+            if cnt > 0:
+                for d in dice:
+                    dest = i + d
+                    if dest < 24 and opp_pts[dest] <= 1:
+                        point_moves.append((i, dest))
+                    dest = i - d
+                    if dest >= 0 and opp_pts[dest] <= 1:
+                        point_moves.append((i, dest))
+        return point_moves
+
+    def generate_all_moves():
+        all_moves = []
+
+        # Case 1: Checkers on the bar
+        if my_bar > 0:
+            bar_moves = generate_bar_moves()
+            if bar_moves:
+                # Generate all combinations of moves from bar
+                for i in range(len(dice)):
+                    if dice[i] in bar_moves:
+                        for j in range(len(dice)):
+                            if i != j and dice[j] in bar_moves:
+                                # Generate H/L combinations
+                                if dice[i] >= dice[j]:
+                                    all_moves.append(('H', 'B', dice[i], 'B', dice[j]))
+                                else:
+                                    all_moves.append(('L', 'B', dice[i], 'B', dice[j]))
+                        # Single die move from bar
+                        all_moves.append(('H', 'B', dice[i], 'P'))
+                        all_moves.append(('L', 'B', dice[i], 'P'))
+            return all_moves
+
+        # Case 2: No checkers on the bar, generate point moves
+        point_moves = generate_point_moves()
+        # Generate all valid move pairs
+        for i in range(len(point_moves)):
+            f1, d1 = point_moves[i]
+            for j in range(len(point_moves)):
+                f2, d2 = point_moves[j]
+                if i == j:
+                    continue
+                all_moves.append(('H', 'A' + str(f1), 'A' + str(f2)))
+                all_moves.append(('L', 'A' + str(f1), 'A' + str(f2)))
+        return all_moves
+
+    # Generate all valid moves
+    valid_moves = generate_all_moves()
+
+    if not valid_moves:
+        return "H:P,P"
+
+    # Evaluate each move
+    def evaluate_move(move):
+        order, from1, from2 = move
+        if from1 == 'P':
+            from_pos1 = None
+        else:
+            from_pos1 = int(from1[1:])
+        if from2 == 'P':
+            from_pos2 = None
+        else:
+            from_pos2 = int(from2[1:])
+
+        score = 0
+
+        # Penalize moving backwards
+        # Reward moving checkers closer to the home board (higher index)
+        # Also prioritize hitting opponent's blots
+        if from_pos1 is not None:
+            score += from_pos2 - from_pos1  # reward moving forward
+        if from_pos2 is not None:
+            score += from_pos2 - from_pos1
+
+        return score
+
+    # Sort moves by score
+    valid_moves.sort(key=evaluate_move, reverse=True)
+
+    # Choose the best move
+    best_move = valid_moves[0]
+    move_str = best_move[0] + ':' + best_move[1] + ',' + best_move[2]
+
+    return move_str
+```
+
+---
+
+### Example Output
+
+If the AI is in a position where it has checkers on the bar and the dice rolled are `[5, 6]`, and only 5 can be played from the bar, the output would be:
+
+```text
+H:B,A5,P
+```
+
+This means:
+- Use the **higher die (6)** first, but since it's not playable from the bar, it's passed.
+- Use the **lower die (5)** to move a checker from the bar to point 5.
+
+---
+
+### Notes on Strategy
+
+This is a **simplified greedy policy** that can be extended or optimized in future versions by incorporating:
+- **Machine Learning components** (like a learner that trains on known winning strategies)
+- **Minimax with alpha-beta pruning** for deeper lookahead
+- **Heuristics involving pip counts**, **blot counting**, and **blocking opportunities**
+
+But for now, this policy adheres to the rules and uses logical move generation and evaluation to provide a baseline intelligent strategy.

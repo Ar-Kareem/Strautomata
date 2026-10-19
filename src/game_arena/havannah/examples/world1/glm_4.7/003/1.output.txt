@@ -1,0 +1,476 @@
+The strategy for this policy is to use a heuristic evaluation function combined with a 1-ply search to determine the best move. The policy prioritizes winning immediately, blocking opponent wins, and then maximizing strategic metrics like connectivity to corners (for Bridges) and edges (for Forks), as well as board centrality.
+
+The policy operates in three main phases:
+1.  **Geometry Analysis**: Analyzes the `valid_mask` to dynamically determine the corners (degree 2 nodes) and edges (paths between corners) of the hexagonal board. This allows the strategy to adapt to any valid board shape within the 15x15 grid.
+2.  **Tactical Search**: It checks every valid move to see if it results in an immediate win (Bridge, Fork, or Ring) for the current player. If no winning move is found, it checks if the opponent has a winning threat that must be blocked.
+3.  **Heuristic Evaluation**: If no immediate tactical moves exist, it scores each valid move based on:
+    *   **Connectivity**: How many corners and edges the move connects to (using Union-Find).
+    *   **Central Control**: Proximity to the center of the board (7, 7), as central stones are strategically more powerful in Havannah.
+    *   **Local Strength**: The number of friendly neighbors.
+
+The neighbor logic strictly follows the "shifted column" hexagonal grid described: for odd columns, neighbors are shifted up; for even columns, neighbors are shifted down.
+
+```python
+import random
+from collections import defaultdict
+
+# Global cache for board geometry to avoid recomputation across turns
+_geometry_cache = {}
+
+def get_neighbors(r, c, valid_mask):
+    """
+    Returns a list of valid neighbor coordinates for (r, c) based on the
+    Havannah hex grid geometry described (odd-r shifted columns logic).
+    """
+    neighbors = []
+    
+    # Parity determines the shift direction for neighbors in adjacent columns
+    if c % 2 == 1:
+        # Odd column: neighbors in c-1 and c+1 are (r-1, c-1), (r, c-1) and (r-1, c+1), (r, c+1)
+        # Vertical neighbors are (r-1, c), (r+1, c)
+        deltas = [(-1, 0), (1, 0), (-1, -1), (0, -1), (-1, 1), (0, 1)]
+    else:
+        # Even column: neighbors in c-1 and c+1 are (r, c-1), (r+1, c-1) and (r, c+1), (r+1, c+1)
+        # Vertical neighbors are (r-1, c), (r+1, c)
+        deltas = [(-1, 0), (1, 0), (0, -1), (1, -1), (0, 1), (1, 1)]
+        
+    for dr, dc in deltas:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < 15 and 0 <= nc < 15 and valid_mask[nr][nc]:
+            neighbors.append((nr, nc))
+            
+    return neighbors
+
+def analyze_geometry(valid_mask):
+    """
+    Identifies corners (degree 2) and assigns edge IDs to cells.
+    Corners are nodes in the valid graph with exactly 2 neighbors.
+    Edges are the paths between corners along the perimeter.
+    """
+    # 1. Build graph and identify corners
+    degree = defaultdict(int)
+    valid_cells = []
+    
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c]:
+                valid_cells.append((r, c))
+                neighbors = get_neighbors(r, c, valid_mask)
+                degree[(r, c)] = len(neighbors)
+                
+    # Corners are typically degree 2 in a hexagon
+    corners = [cell for cell in valid_cells if degree[cell] == 2]
+    
+    # If we didn't find exactly 6 corners (e.g. different board shape), 
+    # fallback to assuming high-degree nodes are not corners, but strict degree 2 is best for standard Havannah.
+    # For safety, sort corners to ensure consistent edge assignment
+    # Simple spatial sort: angle from center
+    
+    center = (7, 7)
+    corners.sort(key=lambda p: (p[0]-center[0], p[1]-center[1]))
+    
+    # 2. Trace edges between corners
+    # We walk the boundary from one corner to the next
+    edge_map = {} # Maps (r,c) -> edge_id (0-5)
+    
+    if len(corners) == 6:
+        for i in range(6):
+            start_corner = corners[i]
+            end_corner = corners[(i + 1) % 6]
+            
+            curr = start_corner
+            prev = None
+            edge_map[curr] = i # Corner belongs to edge i
+            
+            while curr != end_corner:
+                # Find next neighbor on the edge
+                # An edge cell (not corner) usually has degree 3 or 4. 
+                # We want the neighbor that brings us closer to end_corner or continues the perimeter.
+                # Strict rule: move to valid neighbor that is not prev and is on the perimeter (degree < 6).
+                # Since it's a hex perimeter, simply following the "left hand rule" works or BFS.
+                
+                nbs = get_neighbors(curr[0], curr[1], valid_mask)
+                next_cell = None
+                
+                # Heuristic: pick neighbor with smallest distance to end_corner
+                # to avoid backtracking, ignoring 'prev'
+                best_dist = float('inf')
+                
+                for nb in nbs:
+                    if nb == prev:
+                        continue
+                    # In a simple perimeter walk, prioritize boundary cells (degree < 6)
+                    # or just geometric closeness
+                    d = (nb[0]-end_corner[0])**2 + (nb[1]-end_corner[1])**2
+                    if d < best_dist:
+                        best_dist = d
+                        next_cell = nb
+                
+                if next_cell:
+                    prev = curr
+                    curr = next_cell
+                    edge_map[curr] = i
+                else:
+                    break # Should not happen in valid hex
+    else:
+        # Fallback for non-standard shapes or if detection fails: 
+        # assign edges based on quadrants? 
+        # For standard Havannah, len(corners) is 6.
+        pass
+
+    # Map corners to indices
+    corner_indices = {c: i for i, c in enumerate(corners)}
+    
+    return corners, corner_indices, edge_map
+
+class UnionFind:
+    def __init__(self, stones_set):
+        self.parent = {stone: stone for stone in stones_set}
+        self.rank = {stone: 0 for stone in stones_set}
+        self.corners = defaultdict(set) # root -> set of corner indices
+        self.edges = defaultdict(set)   # root -> set of edge indices
+        
+    def find(self, x):
+        if self.parent[x] != x:
+            self.parent[x] = self.find(self.parent[x])
+        return self.parent[x]
+        
+    def union(self, x, y, corner_ids, edge_ids):
+        xr = self.find(x)
+        yr = self.find(y)
+        
+        if xr == yr:
+            return # Cycle detected in graph logic, but for UF just return
+            
+        if self.rank[xr] < self.rank[yr]:
+            xr, yr = yr, xr
+            
+        self.parent[yr] = xr
+        if self.rank[xr] == self.rank[yr]:
+            self.rank[xr] += 1
+            
+        # Merge metadata
+        self.corners[xr].update(self.corners[yr])
+        self.edges[xr].update(self.edges[yr])
+        
+    def add_stone(self, stone, corner_ids, edge_ids):
+        self.parent[stone] = stone
+        self.rank[stone] = 0
+        
+        if stone in corner_ids:
+            self.corners[stone].add(corner_ids[stone])
+        if stone in edge_ids:
+            self.edges[stone].add(edge_ids[stone])
+
+def check_win(stones_set, corners_list, corner_ids, edge_map):
+    """
+    Checks for Ring, Bridge, and Fork.
+    stones_set: set of (r,c) tuples
+    """
+    if not stones_set:
+        return False
+        
+    # 1. Check Ring (Cycle)
+    # Perform DFS. If we find a back-edge to a visited node (that is not parent), we have a cycle.
+    # In Havannah, a ring must enclose at least one cell.
+    # The smallest cycle enclosing a cell has length 6.
+    # However, simple cycle detection is fast. We can approximate Ring detection by cycle length >= 6.
+    
+    if len(stones_set) >= 6:
+        # Optimization: Check Ring first? Usually rare.
+        # Graph construction for DFS
+        graph = defaultdict(list)
+        for s in stones_set:
+            # Only include neighbors also in stones_set
+            r, c = s
+            # Use a cached valid_mask access if possible, but here we calculate neighbors based on global valid mask
+            # We need global valid_mask here. Assuming it's accessible or we just iterate stones_set and check coords
+            # To be safe, we rely on the geometry logic.
+            # We need the valid_mask to know valid neighbors.
+            pass
+            # This requires valid_mask in scope. We'll handle logic inside the main policy or pass it.
+            return False # Placeholder, implemented fully in policy
+
+    # 2. Check Bridge and Fork using Union-Find
+    uf = UnionFind(stones_set)
+    
+    # Pre-populate metadata
+    for s in stones_set:
+        if s in corner_ids:
+            uf.corners[uf.find(s)].add(corner_ids[s])
+        if s in edge_map:
+            uf.edges[uf.find(s)].add(edge_map[s])
+            
+    # Unions
+    for s in stones_set:
+        r, c = s
+        # We need neighbors. We can't call get_neighbors without valid_mask.
+        # We will perform the full win check inside the policy where valid_mask is available.
+        pass
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    global _geometry_cache
+    
+    # Convert lists to sets for O(1) lookups
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set.union(opp_set)
+    
+    # Analyze geometry (cached)
+    board_key = tuple(tuple(row) for row in valid_mask) # Not hashable directly if list of lists
+    # Simplified: assume valid_mask is constant for the game instance in this environment, 
+    # or compute every time (it's fast).
+    # We compute every time to be safe against different masks.
+    
+    # 1. Precompute Board Topology
+    # Find corners (degree 2)
+    # Find edges
+    # To do this, we need the list of all valid cells.
+    
+    # --- Geometry Helper ---
+    corners_list = []
+    corner_indices = {}
+    edge_map = {}
+    
+    # Simple graph of valid cells
+    valid_cells = []
+    degree_map = {}
+    for r in range(15):
+        for c in range(15):
+            if valid_mask[r][c]:
+                valid_cells.append((r, c))
+                
+    # Calculate degrees and neighbors to find corners
+    # Reuse get_neighbors logic
+    # Note: get_neighbors uses valid_mask, so we can call it freely.
+    
+    neighbors_map = {}
+    for cell in valid_cells:
+        nbs = get_neighbors(cell[0], cell[1], valid_mask)
+        neighbors_map[cell] = nbs
+        degree_map[cell] = len(nbs)
+        
+    corners_list = [c for c in valid_cells if degree_map[c] == 2]
+    
+    # Sort corners to assign edge IDs (0 to 5)
+    # Center of 15x15 is 7,7
+    cx, cy = 7, 7
+    corners_list.sort(key=lambda p: (p[0]-cx, p[1]-cy))
+    
+    for i, c in enumerate(corners_list):
+        corner_indices[c] = i
+        
+    # Identify edges
+    if len(corners_list) == 6:
+        for i in range(6):
+            start = corners_list[i]
+            end = corners_list[(i+1)%6]
+            
+            curr = start
+            prev = None
+            while curr != end:
+                edge_map[curr] = i # Corner belongs to edge i
+                
+                # Next step
+                candidates = [n for n in neighbors_map[curr] if n != prev]
+                # Filter for boundary cells (degree < 6) or closeness to end
+                # On a perimeter, there should be exactly 2 boundary neighbors (unless corner).
+                # We are on boundary.
+                
+                best_n = None
+                min_d = float('inf')
+                for n in candidates:
+                    d = (n[0]-end[0])**2 + (n[1]-end[1])**2
+                    if d < min_d:
+                        min_d = d
+                        best_n = n
+                
+                prev = curr
+                curr = best_n
+                if curr is None: break
+            
+            if curr: edge_map[curr] = i
+    # --- End Geometry Helper ---
+    
+    # --- Win Detection Function ---
+    def is_winner(stones_set):
+        if len(stones_set) < 3: return False
+        
+        # Union-Find Setup
+        uf = UnionFind(stones_set)
+        
+        # Initialize sets with existing data
+        for s in stones_set:
+            if s in corner_indices:
+                root = uf.find(s)
+                uf.corners[root].add(corner_indices[s])
+            if s in edge_map:
+                root = uf.find(s)
+                uf.edges[root].add(edge_map[s])
+        
+        # Unite
+        for s in stones_set:
+            for n in neighbors_map[s]:
+                if n in stones_set:
+                    uf.union(s, n, corner_indices, edge_map)
+        
+        # Check Conditions
+        # We need to check the roots of the stones
+        roots = set(uf.find(s) for s in stones_set)
+        
+        for root in roots:
+            # Bridge: 2 distinct corners
+            if len(uf.corners[root]) >= 2:
+                return True
+            # Fork: 3 distinct edges
+            if len(uf.edges[root]) >= 3:
+                return True
+        
+        # Ring: Cycle check
+        # Only efficient if we suspect a cycle (dense cluster).
+        # Using DFS on the subgraph.
+        # Check if cycle length >= 6 (standard hex ring minimum).
+        if len(stones_set) >= 6:
+            visited = {}
+            parent = {}
+            
+            # Start DFS from any stone
+            start = next(iter(stones_set))
+            stack = [start]
+            parent[start] = None
+            
+            while stack:
+                u = stack.pop()
+                if u in visited:
+                    continue
+                visited[u] = True
+                
+                for v in neighbors_map[u]:
+                    if v in stones_set:
+                        if v not in visited:
+                            parent[v] = u
+                            stack.append(v)
+                        elif parent[u] != v:
+                            # Cycle found: u -> ... -> v -> u
+                            # Calculate length
+                            # Backtrack from u to v
+                            curr = u
+                            length = 1
+                            while curr != v and curr is not None:
+                                curr = parent[curr]
+                                length += 1
+                            if length >= 6:
+                                return True
+        return False
+
+    # --- Phase 1: Immediate Win / Threat ---
+    
+    # Generate list of valid empty moves
+    # Optimization: Prioritize neighbors of existing stones
+    potential_moves = []
+    all_neighbors = set()
+    
+    for s in me_set:
+        for n in neighbors_map[s]:
+            if n not in occupied:
+                all_neighbors.add(n)
+    for s in opp_set:
+        for n in neighbors_map[s]:
+            if n not in occupied:
+                all_neighbors.add(n)
+                
+    # If board is empty or very sparse, consider center
+    if not all_neighbors:
+        center = (7, 7)
+        if valid_mask[7][7] and center not in occupied:
+            all_neighbors.add(center)
+        else:
+            # Fallback to any random valid cell
+             for r in range(15):
+                for c in range(15):
+                    if valid_mask[r][c] and (r,c) not in occupied:
+                        all_neighbors.add((r,c))
+
+    # Convert to list
+    candidates = list(all_neighbors)
+    random.shuffle(candidates) # Add noise
+    
+    # 1. Check for Win
+    for move in candidates:
+        me_set.add(move)
+        if is_winner(me_set):
+            return move
+        me_set.remove(move)
+        
+    # 2. Check for Block (Opponent Win)
+    best_block = None
+    for move in candidates:
+        opp_set.add(move)
+        if is_winner(opp_set):
+            best_block = move
+            opp_set.remove(move)
+            break # Only need one block (if multiple, pick first found or keep searching? Break is fast)
+        opp_set.remove(move)
+        
+    if best_block:
+        return best_block
+
+    # --- Phase 2: Heuristic Evaluation ---
+    # Score moves based on centrality and connectivity
+    
+    best_score = -float('inf')
+    best_move = candidates[0] if candidates else (7,7)
+    
+    # Centrality precalc
+    cx, cy = 7, 7
+    
+    for move in candidates:
+        score = 0
+        r, c = move
+        
+        # Heuristic 1: Centrality (closer to center is better)
+        dist_sq = (r - cx)**2 + (c - cy)**2
+        score -= dist_sq * 2
+        
+        # Heuristic 2: Connect to my groups (Virtual Connections proxy)
+        # Count my neighbors
+        my_neighbors = 0
+        opp_neighbors = 0
+        
+        # Temporarily add to UF to check connectivity?
+        # Just check immediate connections for speed.
+        
+        connected_corners = set()
+        connected_edges = set()
+        
+        for n in neighbors_map[move]:
+            if n in me_set:
+                my_neighbors += 1
+                # Accumulate corner/edge data from neighbors
+                # We need to know what groups the neighbors belong to.
+                # Simplified: Check if neighbor is on corner/edge
+                if n in corner_indices:
+                    connected_corners.add(corner_indices[n])
+                if n in edge_map:
+                    connected_edges.add(edge_map[n])
+            elif n in opp_set:
+                opp_neighbors += 1
+                
+        score += my_neighbors * 15
+        score += len(connected_corners) * 100 # Connecting corners is huge
+        score += len(connected_edges) * 20    # Connecting edges is good
+        
+        # Penalties
+        # If surrounded by opponents, it's a dead cell or block
+        if opp_neighbors > 0:
+            score += opp_neighbors * 2 # Blocking is slightly good
+            
+        # Random jitter
+        score += random.random() * 5
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return best_move
+```

@@ -1,0 +1,270 @@
+<thinking>
+Let me break down the problem:
+
+1. Kalah is a mancala-style game where I need to pick a house (0-5) and distribute seeds
+2. Special rules:
+   - Landing in my store gives an extra turn
+   - Landing in my empty house captures opponent's opposite house seeds
+3. Goal is to maximize my store count
+
+For a competitive policy, I should consider:
+1. **Immediate wins**: Check if any move wins the game
+2. **Extra turns**: Moves that land in my store are valuable (free turn)
+3. **Captures**: Moves that capture opponent seeds
+4. **Defensive play**: Prevent opponent from capturing my seeds
+5. **Endgame**: When close to ending, maximize my final score
+
+Let me implement a minimax search with alpha-beta pruning for a strong policy:
+
+Key components:
+- Simulate moves accurately
+- Evaluate board states (my_store - opponent_store is a simple heuristic)
+- Search ahead several plies
+- Handle extra turns correctly
+- Detect game-over states
+
+I'll implement:
+1. A move simulator that returns the new state and whether we get an extra turn
+2. A minimax function with alpha-beta pruning
+3. An evaluation function
+4. The policy function that picks the best move
+
+Let me code this carefully:
+
+```python
+def policy(you: list[int], opponent: list[int]) -> int:
+    # Simulate a move and return new state + extra_turn flag
+    def simulate_move(you, opponent, move):
+        you = you[:]
+        opponent = opponent[:]
+        
+        seeds = you[move]
+        you[move] = 0
+        
+        pos = move
+        player_side = True  # True = you, False = opponent
+        
+        while seeds > 0:
+            pos += 1
+            
+            if player_side:
+                if pos <= 6:
+                    you[pos] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        # Last seed
+                        if pos == 6:
+                            # Extra turn
+                            return you, opponent, True
+                        elif pos < 6 and you[pos] == 1:
+                            # Capture check
+                            opp_pos = 5 - pos
+                            if opponent[opp_pos] > 0:
+                                you[6] += you[pos] + opponent[opp_pos]
+                                you[pos] = 0
+                                opponent[opp_pos] = 0
+                else:
+                    # Switch to opponent side
+                    player_side = False
+                    pos = -1
+            else:
+                if pos <= 5:
+                    opponent[pos] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        # Last seed on opponent side, no special effects
+                        pass
+                else:
+                    # Skip opponent store, go back to our side
+                    player_side = True
+                    pos = -1
+        
+        return you, opponent, False
+    
+    def is_game_over(you, opponent):
+        return sum(you[:6]) == 0 or sum(opponent[:6]) == 0
+    
+    def get_legal_moves(you):
+        return [i for i in range(6) if you[i] > 0]
+    
+    def evaluate(you, opponent):
+        # Simple evaluation: difference in stores
+        return you[6] - opponent[6]
+    
+    def minimax(you, opponent, depth, alpha, beta, maximizing):
+        if depth == 0 or is_game_over(you, opponent):
+            if is_game_over(you, opponent):
+                # Game over, collect remaining seeds
+                final_you = you[:]
+                final_opp = opponent[:]
+                final_you[6] += sum(final_you[:6])
+                final_opp[6] += sum(final_opp[:6])
+                return final_you[6] - final_opp[6]
+            return evaluate(you, opponent)
+        
+        if maximizing:
+            max_eval = float('-inf')
+            for move in get_legal_moves(you):
+                new_you, new_opp, extra_turn = simulate_move(you, opponent, move)
+                if extra_turn:
+                    # We get another turn
+                    eval_score = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                else:
+                    # Opponent's turn
+                    eval_score = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in get_legal_moves(you):
+                new_you, new_opp, extra_turn = simulate_move(you, opponent, move)
+                if extra_turn:
+                    # Opponent gets another turn
+                    eval_score = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                else:
+                    # Our turn
+                    eval_score = minimax(new_opp, new_you, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Find best move
+    legal_moves = get_legal_moves(you)
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        new_you, new_opp, extra_turn = simulate_move(you, opponent, move)
+        if extra_turn:
+            score = minimax(new_you, new_opp, 6, float('-inf'), float('inf'), True)
+        else:
+            score = minimax(new_opp, new_you, 6, float('-inf'), float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+```
+
+Wait, I need to be more careful about the evaluation in minimax when it's the opponent's perspective. Let me reconsider the structure. When we call minimax from opponent's perspective, we need to swap the evaluation.
+
+Actually, let me simplify by always keeping track of whose turn it is explicitly.
+</thinking>
+
+<code>
+def policy(you: list[int], opponent: list[int]) -> int:
+    def simulate_move(you, opponent, move):
+        """Simulate a move and return (new_you, new_opponent, extra_turn)"""
+        you = you[:]
+        opponent = opponent[:]
+        
+        seeds = you[move]
+        you[move] = 0
+        
+        pos = move
+        on_you_side = True
+        
+        while seeds > 0:
+            pos += 1
+            
+            if on_you_side:
+                if pos <= 6:
+                    you[pos] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        if pos == 6:
+                            return you, opponent, True
+                        elif you[pos] == 1 and opponent[5 - pos] > 0:
+                            # Capture
+                            you[6] += you[pos] + opponent[5 - pos]
+                            you[pos] = 0
+                            opponent[5 - pos] = 0
+                else:
+                    on_you_side = False
+                    pos = -1
+            else:
+                if pos <= 5:
+                    opponent[pos] += 1
+                    seeds -= 1
+                else:
+                    on_you_side = True
+                    pos = -1
+        
+        return you, opponent, False
+    
+    def is_game_over(you, opponent):
+        return sum(you[:6]) == 0 or sum(opponent[:6]) == 0
+    
+    def final_score(you, opponent):
+        """Calculate final score difference (you - opponent)"""
+        you_total = you[6] + sum(you[:6])
+        opp_total = opponent[6] + sum(opponent[:6])
+        return you_total - opp_total
+    
+    def minimax(you, opponent, depth, alpha, beta, is_you_turn):
+        if depth == 0 or is_game_over(you, opponent):
+            if is_game_over(you, opponent):
+                return final_score(you, opponent)
+            return you[6] - opponent[6]
+        
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        if not legal_moves:
+            return final_score(you, opponent)
+        
+        if is_you_turn:
+            max_eval = float('-inf')
+            for move in legal_moves:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra:
+                    score = minimax(new_you, new_opp, depth - 1, alpha, beta, True)
+                else:
+                    score = minimax(new_opp, new_you, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, score)
+                alpha = max(alpha, score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in legal_moves:
+                new_you, new_opp, extra = simulate_move(you, opponent, move)
+                if extra:
+                    score = minimax(new_you, new_opp, depth - 1, alpha, beta, False)
+                else:
+                    # Score from original you's perspective (negated)
+                    score = -minimax(new_you, new_opp, depth - 1, -beta, -alpha, True)
+                min_eval = min(min_eval, score)
+                beta = min(beta, score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        new_you, new_opp, extra = simulate_move(you, opponent, move)
+        if extra:
+            score = minimax(new_you, new_opp, 7, float('-inf'), float('inf'), True)
+        else:
+            score = minimax(new_opp, new_you, 7, float('-inf'), float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+</code>

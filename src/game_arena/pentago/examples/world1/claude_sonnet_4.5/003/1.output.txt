@@ -1,0 +1,151 @@
+# Strategy
+
+My policy uses a minimax-inspired evaluation approach with the following priorities:
+
+1. **Immediate Win Detection**: If I can win this turn, take that move immediately.
+2. **Block Opponent Wins**: If the opponent can win on their next turn, block them.
+3. **Offensive & Defensive Heuristics**: Evaluate positions based on:
+   - Creating multiple threats (sequences of 4, 3, or 2 in a row)
+   - Blocking opponent threats
+   - Controlling the center positions (more strategic value)
+   - Considering the rotation effects on both creating and blocking winning sequences
+
+4. **Rotation Strategy**: For each placement, try all 8 possible rotations (4 quadrants × 2 directions) and pick the one that maximizes our advantage while minimizing opponent's threats.
+
+5. **Lookahead**: The policy evaluates the board state after each potential move and rotation combination, scoring based on the number and quality of sequences (longer sequences = higher value).
+
+The evaluation function counts:
+- Our winning sequences (heavily weighted)
+- Opponent's winning sequences (heavily penalized)
+- Potential threats (4-in-a-row, 3-in-a-row, 2-in-a-row)
+- Center control bonus
+
+<code>
+def policy(you, opponent):
+    import numpy as np
+    
+    you_arr = np.array(you, dtype=int)
+    opp_arr = np.array(opponent, dtype=int)
+    
+    def rotate_quadrant(board, quad, direction):
+        """Rotate a quadrant of the board."""
+        b = board.copy()
+        if quad == 0:
+            sub = b[0:3, 0:3]
+        elif quad == 1:
+            sub = b[0:3, 3:6]
+        elif quad == 2:
+            sub = b[3:6, 0:3]
+        else:  # quad == 3
+            sub = b[3:6, 3:6]
+        
+        if direction == 'L':
+            rotated = np.rot90(sub, k=1)
+        else:  # 'R'
+            rotated = np.rot90(sub, k=-1)
+        
+        if quad == 0:
+            b[0:3, 0:3] = rotated
+        elif quad == 1:
+            b[0:3, 3:6] = rotated
+        elif quad == 2:
+            b[3:6, 0:3] = rotated
+        else:
+            b[3:6, 3:6] = rotated
+        
+        return b
+    
+    def check_win(board):
+        """Check if there's a 5-in-a-row."""
+        # Horizontal and vertical
+        for i in range(6):
+            for j in range(2):
+                if np.sum(board[i, j:j+5]) == 5:
+                    return True
+                if np.sum(board[j:j+5, i]) == 5:
+                    return True
+        
+        # Diagonals
+        for i in range(2):
+            for j in range(2):
+                if np.sum([board[i+k, j+k] for k in range(5)]) == 5:
+                    return True
+                if np.sum([board[i+k, j+4-k] for k in range(5)]) == 5:
+                    return True
+        
+        return False
+    
+    def count_sequences(board, length):
+        """Count sequences of a given length."""
+        count = 0
+        # Horizontal
+        for i in range(6):
+            for j in range(7-length):
+                if np.sum(board[i, j:j+length]) == length:
+                    count += 1
+        # Vertical
+        for i in range(7-length):
+            for j in range(6):
+                if np.sum(board[i:i+length, j]) == length:
+                    count += 1
+        # Diagonals
+        for i in range(7-length):
+            for j in range(7-length):
+                if np.sum([board[i+k, j+k] for k in range(length)]) == length:
+                    count += 1
+                if np.sum([board[i+k, j+length-1-k] for k in range(length)]) == length:
+                    count += 1
+        return count
+    
+    def evaluate_board(my_board, opp_board):
+        """Evaluate the board state."""
+        if check_win(my_board):
+            return 10000
+        if check_win(opp_board):
+            return -10000
+        
+        score = 0
+        score += count_sequences(my_board, 4) * 100
+        score += count_sequences(my_board, 3) * 10
+        score += count_sequences(my_board, 2) * 2
+        
+        score -= count_sequences(opp_board, 4) * 150
+        score -= count_sequences(opp_board, 3) * 15
+        score -= count_sequences(opp_board, 2) * 3
+        
+        # Center control
+        center_positions = [(2,2), (2,3), (3,2), (3,3)]
+        for r, c in center_positions:
+            if my_board[r, c] == 1:
+                score += 1
+        
+        return score
+    
+    # Find all legal moves
+    empty_cells = [(r, c) for r in range(6) for c in range(6) 
+                   if you_arr[r, c] == 0 and opp_arr[r, c] == 0]
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for r, c in empty_cells:
+        for quad in range(4):
+            for direction in ['L', 'R']:
+                # Simulate move
+                my_sim = you_arr.copy()
+                opp_sim = opp_arr.copy()
+                my_sim[r, c] = 1
+                
+                # Simulate rotation
+                my_sim = rotate_quadrant(my_sim, quad, direction)
+                opp_sim = rotate_quadrant(opp_sim, quad, direction)
+                
+                # Evaluate
+                score = evaluate_board(my_sim, opp_sim)
+                
+                if score > best_score:
+                    best_score = score
+                    best_move = (r+1, c+1, quad, direction)
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]},{best_move[3]}"
+</code>

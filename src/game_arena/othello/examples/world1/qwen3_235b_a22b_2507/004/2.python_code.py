@@ -1,0 +1,89 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # 8 directions as (dr, dc)
+    directions = [(-1,-1), (-1,0), (-1,1),
+                 (0,-1),           (0,1),
+                 (1,-1),  (1,0),   (1,1)]
+    
+    # Precomputed board weights: corners and edges are valuable, next-to-corners bad
+    WEIGHTS = np.array([
+        [500, -150, 30, 10, 10, 30, -150, 500],
+        [-150, -250, 5, 5, 5, 5, -250, -150],
+        [30, 5, 1, 1, 1, 1, 5, 30],
+        [10, 5, 1, 1, 1, 1, 5, 10],
+        [10, 5, 1, 1, 1, 1, 5, 10],
+        [30, 5, 1, 1, 1, 1, 5, 30],
+        [-150, -250, 5, 5, 5, 5, -250, -150],
+        [500, -150, 30, 10, 10, 30, -150, 500]
+    ])
+    
+    def is_valid_move(r, c, you_mask, opp_mask):
+        if you_mask[r][c] or opp_mask[r][c]:
+            return False
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            found_opp = False
+            while 0 <= nr < 8 and 0 <= nc < 8:
+                if opp_mask[nr][nc]:
+                    found_opp = True
+                elif you_mask[nr][nc]:
+                    return found_opp
+                else:
+                    break
+                nr += dr
+                nc += dc
+        return False
+
+    def simulate_flip(r, c, you_mask, opp_mask):
+        new_you = you_mask.copy()
+        new_opp = opp_mask.copy()
+        new_you[r][c] = 1
+        to_flip = []
+        for dr, dc in directions:
+            line = []
+            nr, nc = r + dr, c + dc
+            while 0 <= nr < 8 and 0 <= nc < 8 and opp_mask[nr][nc]:
+                line.append((nr, nc))
+                nr += dr
+                nc += dc
+            if (0 <= nr < 8 and 0 <= nc < 8 and you_mask[nr][nc] and len(line) > 0):
+                to_flip.extend(line)
+        for nr, nc in to_flip:
+            new_you[nr][nc] = 1
+            new_opp[nr][nc] = 0
+        return new_you, new_opp
+
+    def evaluate_board(you_mask, opp_mask):
+        score = (you_mask * WEIGHTS).sum() - (opp_mask * WEIGHTS).sum()
+        # Bonus for mobility (number of future legal moves)
+        mobility = 0
+        for r in range(8):
+            for c in range(8):
+                if not you_mask[r][c] and not opp_mask[r][c]:
+                    if is_valid_move(r, c, opp_mask, you_mask):  # opponent's possible moves
+                        mobility -= 1
+                    if is_valid_move(r, c, you_mask, opp_mask):  # our possible moves
+                        mobility += 1
+        score += mobility * 5  # reward mobility
+        return score
+
+    # Find all legal moves
+    legal_moves = []
+    for r in range(8):
+        for c in range(8):
+            if is_valid_move(r, c, you, opponent):
+                # Simulate and score
+                new_you, new_opp = simulate_flip(r, c, you, opponent)
+                move_score = evaluate_board(new_you, new_opp)
+                col_char = 'abcdefgh'[c]
+                row_char = str(r + 1)
+                legal_moves.append((move_score, col_char + row_char))
+    
+    if not legal_moves:
+        return "pass"
+    
+    # Return move with highest score
+    legal_moves.sort(reverse=True)
+    return legal_moves[0][1]

@@ -1,0 +1,199 @@
+The strategy for this policy is to play optimally by prioritizing moves that capture boxes immediately, then selecting moves that are "safe" (moves that do not allow the opponent to capture a box on their next turn), and finally using a Minimax search algorithm with Alpha-Beta pruning to handle complex endgame scenarios where no safe moves are available. This ensures the bot is aggressive when winning, defensive when necessary, and analytically precise in the endgame.
+
+<code>
+import numpy as np
+import random
+
+def get_box_edge_count(r, c, h, v):
+    """
+    Returns the number of edges drawn around the box at (r, c).
+    Assumes r, c are valid box indices (0..3).
+    """
+    count = 0
+    if h[r, c] != 0: count += 1
+    if h[r+1, c] != 0: count += 1
+    if v[r, c] != 0: count += 1
+    if v[r, c+1] != 0: count += 1
+    return count
+
+def simulate_move(h, v, cap, r, c, is_horizontal, player):
+    """
+    Simulates drawing an edge.
+    Returns the new state (h, v, cap) and the number of boxes captured.
+    player: 1 for self, -1 for opponent.
+    """
+    new_h = h.copy()
+    new_v = v.copy()
+    new_cap = cap.copy()
+    
+    captured = []
+    
+    if is_horizontal:
+        new_h[r, c] = player
+        # Check top box (r-1, c)
+        if r > 0 and new_cap[r-1, c] == 0:
+            if get_box_edge_count(r-1, c, new_h, new_v) == 4:
+                captured.append((r-1, c))
+        # Check bottom box (r, c)
+        if r < 4 and new_cap[r, c] == 0:
+            if get_box_edge_count(r, c, new_h, new_v) == 4:
+                captured.append((r, c))
+    else:
+        new_v[r, c] = player
+        # Check left box (r, c-1)
+        if c > 0 and new_cap[r, c-1] == 0:
+            if get_box_edge_count(r, c-1, new_h, new_v) == 4:
+                captured.append((r, c-1))
+        # Check right box (r, c)
+        if c < 4 and new_cap[r, c] == 0:
+            if get_box_edge_count(r, c, new_h, new_v) == 4:
+                captured.append((r, c))
+                
+    for (br, bc) in captured:
+        new_cap[br, bc] = player
+        
+    return new_h, new_v, new_cap, len(captured)
+
+def get_legal_moves(h, v):
+    """
+    Returns a list of all legal moves in the format (r, c, 'H' or 'V').
+    """
+    moves = []
+    # Horizontal edges: row 0..4, col 0..3
+    for r in range(5):
+        for c in range(4):
+            if h[r, c] == 0:
+                moves.append((r, c, 'H'))
+    # Vertical edges: row 0..3, col 0..4
+    for r in range(4):
+        for c in range(5):
+            if v[r, c] == 0:
+                moves.append((r, c, 'V'))
+    return moves
+
+def minimax(h, v, cap, depth, is_maximizing, alpha, beta):
+    """
+    Minimax algorithm with Alpha-Beta pruning.
+    """
+    # Terminal condition or depth limit
+    total_edges = np.sum(h != 0) + np.sum(v != 0)
+    if total_edges == 40 or depth == 0:
+        return np.sum(cap == 1) - np.sum(cap == -1)
+    
+    moves = get_legal_moves(h, v)
+    if not moves:
+        return np.sum(cap == 1) - np.sum(cap == -1)
+        
+    if is_maximizing:
+        max_eval = -float('inf')
+        for (r, c, d) in moves:
+            is_h = (d == 'H')
+            nh, nv, nc, cnt = simulate_move(h, v, cap, r, c, is_h, 1)
+            if cnt > 0:
+                # Keep turn if boxes captured
+                eval = minimax(nh, nv, nc, depth, True, alpha, beta) 
+            else:
+                # Switch turn
+                eval = minimax(nh, nv, nc, depth - 1, False, alpha, beta)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for (r, c, d) in moves:
+            is_h = (d == 'H')
+            nh, nv, nc, cnt = simulate_move(h, v, cap, r, c, is_h, -1)
+            if cnt > 0:
+                # Opponent keeps turn
+                eval = minimax(nh, nv, nc, depth, False, alpha, beta)
+            else:
+                # Switch turn
+                eval = minimax(nh, nv, nc, depth - 1, True, alpha, beta)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(horizontal, np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    moves = get_legal_moves(horizontal, vertical)
+    
+    if not moves:
+        # Should not happen unless game is over, return dummy
+        return "0,0,H"
+        
+    # Add randomness to move order for variety in equally good positions
+    random.shuffle(moves)
+    
+    # 1. Greedy Phase: Look for capturing moves
+    best_capture_move = None
+    max_captured = 0
+    
+    for (r, c, d) in moves:
+        is_h = (d == 'H')
+        _, _, _, cap_count = simulate_move(horizontal, vertical, capture, r, c, is_h, 1)
+        if cap_count > 0:
+            if cap_count > max_captured:
+                max_captured = cap_count
+                best_capture_move = (r, c, d)
+    
+    if best_capture_move:
+        return f"{best_capture_move[0]},{best_capture_move[1]},{best_capture_move[2]}"
+    
+    # 2. Safe Phase: Look for moves that don't give away a box
+    # A move is unsafe if it creates a box with exactly 3 drawn edges.
+    safe_moves = []
+    for (r, c, d) in moves:
+        is_h = (d == 'H')
+        unsafe = False
+        
+        if is_h:
+            # Top box (r-1, c)
+            if r > 0 and capture[r-1, c] == 0:
+                if get_box_edge_count(r-1, c, horizontal, vertical) == 2:
+                    unsafe = True
+            # Bottom box (r, c)
+            if r < 4 and capture[r, c] == 0:
+                if get_box_edge_count(r, c, horizontal, vertical) == 2:
+                    unsafe = True
+        else:
+            # Left box (r, c-1)
+            if c > 0 and capture[r, c-1] == 0:
+                if get_box_edge_count(r, c-1, horizontal, vertical) == 2:
+                    unsafe = True
+            # Right box (r, c)
+            if c < 4 and capture[r, c] == 0:
+                if get_box_edge_count(r, c, horizontal, vertical) == 2:
+                    unsafe = True
+        
+        if not unsafe:
+            safe_moves.append((r, c, d))
+            
+    if safe_moves:
+        # Pick a safe move (first one from shuffled list)
+        m = safe_moves[0]
+        return f"{m[0]},{m[1]},{m[2]}"
+    
+    # 3. Endgame Phase: All moves give away a box.
+    # Use Minimax to find the best move to minimize damage or maximize gain via chain reactions.
+    best_score = -float('inf')
+    best_move = moves[0] # Fallback
+    depth_limit = 12
+    
+    for (r, c, d) in moves:
+        is_h = (d == 'H')
+        nh, nv, nc, cnt = simulate_move(horizontal, vertical, capture, r, c, is_h, 1)
+        
+        if cnt > 0:
+             score = minimax(nh, nv, nc, depth_limit, True, -float('inf'), float('inf'))
+        else:
+             score = minimax(nh, nv, nc, depth_limit - 1, False, -float('inf'), float('inf'))
+             
+        if score > best_score:
+            best_score = score
+            best_move = (r, c, d)
+            
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+</code>

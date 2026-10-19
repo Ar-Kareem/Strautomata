@@ -1,0 +1,48 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def is_win(b, p):
+        for row in b:
+            if all(cell == p for cell in row):
+                return True
+        for col in range(4):
+            if all(b[row][col] == p for row in range(4)):
+                return True
+        if all(b[i][i] == p for i in range(4)):
+            return True
+        if all(b[i][3 - i] == p for i in range(4)):
+            return True
+        return False
+    
+    def get_priority(i, j):
+        center_x, center_y = 1.5, 1.5
+        dx = i - center_x
+        dy = j - center_y
+        return dx * dx + dy * dy
+    
+    empty_cells = []
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                empty_cells.append((i, j))
+    empty_cells.sort(key=lambda pos: get_priority(pos[0], pos[1]))
+    
+    # Check for winning moves
+    for i, j in empty_cells:
+        new_board = [row.copy() for row in board]
+        new_board[i][j] = 1
+        if is_win(new_board, 1):
+            return (i, j)
+    
+    # Check for blocking opponent's win
+    blocking_moves = []
+    for i, j in empty_cells:
+        new_board = [row.copy() for row in board]
+        new_board[i][j] = -1
+        if is_win(new_board, -1):
+            blocking_moves.append((i, j))
+    
+    if blocking_moves:
+        return blocking_moves[0]
+    
+    # No winning or blocking moves; choose the best available
+    return empty_cells[0] if empty_cells else (0, 0)

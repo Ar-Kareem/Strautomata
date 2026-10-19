@@ -1,0 +1,362 @@
+
+from typing import List, Tuple, Dict
+
+# -----------------------------
+# Helpers for board mechanics
+# -----------------------------
+
+def clone_state(s: dict) -> dict:
+    return {
+        'my_pts': s['my_pts'][:],
+        'opp_pts': s['opp_pts'][:],
+        'my_bar': s['my_bar'],
+        'opp_bar': s['opp_bar'],
+        'my_off': s['my_off'],
+        'opp_off': s['opp_off'],
+        'dice': s.get('dice', [])[:],
+    }
+
+def all_in_home(my_pts: List[int], my_bar: int) -> bool:
+    if my_bar > 0:
+        return False
+    return sum(my_pts[6:]) == 0
+
+def can_bear_off_from(pt: int, die: int, my_pts: List[int], my_bar: int) -> bool:
+    if not all_in_home(my_pts, my_bar):
+        return False
+    dest = pt - die
+    if dest == -1:
+        return True
+    if dest < -1:
+        # Oversized die allowed only if no checker on higher points
+        # Higher points relative to movement toward 0 means indices > pt
+        return sum(my_pts[pt+1:24]) == 0
+    return False
+
+def is_open_for_me(opp_pts: List[int], dest: int) -> bool:
+    return opp_pts[dest] < 2
+
+def single_die_moves(state: dict, die: int) -> List[Tuple[str, dict]]:
+    """
+    Returns list of (from_token, new_state) legal moves for exactly one die.
+    Does not include pass.
+    """
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    moves = []
+
+    # Must enter from bar first
+    if state['my_bar'] > 0:
+        dest = 24 - die
+        if 0 <= dest <= 23 and is_open_for_me(opp_pts, dest):
+            ns = clone_state(state)
+            ns['my_bar'] -= 1
+            # hit blot if present
+            if ns['opp_pts'][dest] == 1:
+                ns['opp_pts'][dest] = 0
+                ns['opp_bar'] += 1
+            ns['my_pts'][dest] += 1
+            moves.append(("B", ns))
+        return moves
+
+    # Normal moves from points 0..23 where we have checkers
+    for pt in range(24):
+        if my_pts[pt] <= 0:
+            continue
+        dest = pt - die
+        if dest >= 0:
+            if is_open_for_me(opp_pts, dest):
+                ns = clone_state(state)
+                ns['my_pts'][pt] -= 1
+                if ns['opp_pts'][dest] == 1:
+                    ns['opp_pts'][dest] = 0
+                    ns['opp_bar'] += 1
+                ns['my_pts'][dest] += 1
+                moves.append((f"A{pt}", ns))
+        else:
+            if can_bear_off_from(pt, die, my_pts, state['my_bar']):
+                ns = clone_state(state)
+                ns['my_pts'][pt] -= 1
+                ns['my_off'] += 1
+                moves.append((f"A{pt}", ns))
+    return moves
+
+def pip_count(my_pts: List[int], my_bar: int) -> int:
+    # Distance to bear off: point i needs i+1 pips; bar checker needs 25
+    total = my_bar * 25
+    for i, n in enumerate(my_pts):
+        total += n * (i + 1)
+    return total
+
+def blot_risk(my_pts: List[int], opp_pts: List[int], opp_bar: int) -> int:
+    """
+    Approximate number of direct shots on our blots next turn.
+    Opponent moves from low to high, so opponent checker at j can hit our blot at i if i > j and i-j in 1..6.
+    If opponent has bar checkers, they may enter onto 0..5.
+    """
+    risk = 0
+    for i in range(24):
+        if my_pts[i] != 1:
+            continue
+        shots = 0
+        # direct shots by opposing checkers on board
+        lo = max(0, i - 6)
+        for j in range(lo, i):
+            if opp_pts[j] > 0:
+                shots += opp_pts[j]
+        # entry shots from bar onto our home board points 0..5
+        if opp_bar > 0 and 0 <= i <= 5:
+            shots += opp_bar
+        risk += shots
+    return risk
+
+def count_points(pts: List[int]) -> int:
+    return sum(1 for x in pts if x >= 2)
+
+def longest_prime(pts: List[int]) -> int:
+    best = cur = 0
+    for x in pts:
+        if x >= 2:
+            cur += 1
+            if cur > best:
+                best = cur
+        else:
+            cur = 0
+    return best
+
+def home_points(pts: List[int]) -> int:
+    return sum(1 for i in range(6) if pts[i] >= 2)
+
+def anchors_deep(pts: List[int]) -> int:
+    # Our made points in opponent home board / outer edge (high indices) are anchors
+    return sum(1 for i in range(18, 24) if pts[i] >= 2)
+
+def contact_exists(my_pts: List[int], opp_pts: List[int], my_bar: int, opp_bar: int) -> bool:
+    if my_bar > 0 or opp_bar > 0:
+        return True
+    my_max = max((i for i, n in enumerate(my_pts) if n > 0), default=-1)
+    opp_min = min((i for i, n in enumerate(opp_pts) if n > 0), default=24)
+    # If our furthest-back checker is behind some opponent checker, contact remains
+    return my_max >= opp_min
+
+def evaluate(state: dict) -> float:
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+
+    race = not contact_exists(my_pts, opp_pts, state['my_bar'], state['opp_bar'])
+
+    my_pip = pip_count(my_pts, state['my_bar'])
+    opp_pip = pip_count(opp_pts, state['opp_bar'])
+
+    my_blots = sum(1 for x in my_pts if x == 1)
+    opp_blots = sum(1 for x in opp_pts if x == 1)
+
+    my_risk = blot_risk(my_pts, opp_pts, state['opp_bar'])
+    opp_risk = blot_risk(opp_pts, my_pts, state['my_bar'])
+
+    score = 0.0
+
+    # Winning progress
+    score += 140.0 * state['my_off']
+    score -= 140.0 * state['opp_off']
+
+    # Bar is critical
+    score -= 95.0 * state['my_bar']
+    score += 95.0 * state['opp_bar']
+
+    # Race / pip
+    if race:
+        score += 2.6 * (opp_pip - my_pip)
+        score -= 7.0 * my_blots
+        score += 2.0 * count_points(my_pts)
+    else:
+        score += 1.1 * (opp_pip - my_pip)
+
+    # Structure
+    score += 11.0 * count_points(my_pts)
+    score -= 9.0 * count_points(opp_pts)
+
+    score += 8.0 * home_points(my_pts)
+    score -= 6.0 * home_points(opp_pts)
+
+    score += 5.0 * longest_prime(my_pts)
+    score -= 4.0 * longest_prime(opp_pts)
+
+    score += 3.5 * anchors_deep(my_pts)
+
+    # Blots and direct tactical danger
+    score -= 10.0 * my_blots
+    score += 6.0 * opp_blots
+    score -= 3.5 * my_risk
+    score += 1.8 * opp_risk
+
+    # Keep distribution for bearoff/race
+    if all_in_home(my_pts, state['my_bar']):
+        # Prefer lower pip stack in home board and fewer checkers on high home points
+        score -= 1.2 * sum(my_pts[i] * i for i in range(6))
+
+    return score
+
+def legal_actions(state: dict) -> List[str]:
+    dice = state.get('dice', [])
+    if not dice:
+        return ["H:P,P"]
+
+    if len(dice) == 1:
+        d = dice[0]
+        m = single_die_moves(state, d)
+        if not m:
+            return ["H:P,P"]
+        actions = []
+        for f1, _ in m:
+            actions.append(f"H:{f1},P")
+        return actions
+
+    d1, d2 = dice[0], dice[1]
+    high = max(d1, d2)
+    low = min(d1, d2)
+
+    # Try both orders of distinct dice values.
+    # If equal doubles somehow appear despite spec saying up to 2 ints, treat both moves with same die.
+    candidates = []
+
+    orders = []
+    if d1 == d2:
+        orders = [("H", d1, d2)]
+    else:
+        orders = [("H", high, low), ("L", low, high)]
+
+    any_two = False
+    any_one_high = False
+    any_one_low = False
+
+    one_move_records = []
+    two_move_records = []
+
+    for order_char, first_die, second_die in orders:
+        first_moves = single_die_moves(state, first_die)
+        if first_moves:
+            if first_die == high:
+                any_one_high = True
+            if first_die == low:
+                any_one_low = True
+        for f1, s1 in first_moves:
+            second_moves = single_die_moves(s1, second_die)
+            if second_moves:
+                any_two = True
+                for f2, s2 in second_moves:
+                    two_move_records.append((f"{order_char}:{f1},{f2}", s2))
+            else:
+                one_move_records.append((order_char, first_die, f1, s1))
+
+    if any_two:
+        return [a for a, _ in two_move_records]
+
+    # No two-die play exists. Must play one die if possible, and if only one die can be played, must use higher die when possible.
+    actions = []
+    if any_one_high:
+        for order_char, first_die, f1, _ in one_move_records:
+            if first_die == high:
+                actions.append(f"{order_char}:{f1},P")
+        # Remove duplicates while preserving order
+        out = []
+        seen = set()
+        for a in actions:
+            if a not in seen:
+                seen.add(a)
+                out.append(a)
+        return out
+
+    if any_one_low:
+        for order_char, first_die, f1, _ in one_move_records:
+            if first_die == low:
+                actions.append(f"{order_char}:{f1},P")
+        out = []
+        seen = set()
+        for a in actions:
+            if a not in seen:
+                seen.add(a)
+                out.append(a)
+        return out
+
+    return ["H:P,P"]
+
+def apply_action(state: dict, action: str) -> dict:
+    """
+    Assumes action is legal per our generator.
+    """
+    order, moves = action.split(":")
+    f1, f2 = moves.split(",")
+    dice = state.get('dice', [])[:]
+    if len(dice) == 0:
+        return clone_state(state)
+    if len(dice) == 1:
+        seq = [dice[0]]
+        toks = [f1]
+    else:
+        d1, d2 = dice[0], dice[1]
+        high = max(d1, d2)
+        low = min(d1, d2)
+        if len(dice) == 2 and d1 == d2:
+            seq = [d1, d2]
+        else:
+            seq = [high, low] if order == "H" else [low, high]
+        toks = [f1, f2]
+
+    s = clone_state(state)
+
+    for die, tok in zip(seq, toks):
+        if tok == "P":
+            continue
+        if tok == "B":
+            src_bar = True
+        else:
+            src_bar = False
+            pt = int(tok[1:])
+
+        if src_bar:
+            dest = 24 - die
+            s['my_bar'] -= 1
+            if s['opp_pts'][dest] == 1:
+                s['opp_pts'][dest] = 0
+                s['opp_bar'] += 1
+            s['my_pts'][dest] += 1
+        else:
+            dest = pt - die
+            s['my_pts'][pt] -= 1
+            if dest >= 0:
+                if s['opp_pts'][dest] == 1:
+                    s['opp_pts'][dest] = 0
+                    s['opp_bar'] += 1
+                s['my_pts'][dest] += 1
+            else:
+                s['my_off'] += 1
+    return s
+
+def policy(state: dict) -> str:
+    actions = legal_actions(state)
+    if not actions:
+        return "H:P,P"
+
+    # If only one legal action, return it immediately.
+    if len(actions) == 1:
+        return actions[0]
+
+    best_action = actions[0]
+    best_score = None
+
+    for a in actions:
+        ns = apply_action(state, a)
+        sc = evaluate(ns)
+
+        # Tiny tie-breakers favor using both dice, higher-first canonical order, and bearing off
+        if ",P" not in a:
+            sc += 0.05
+        if a.startswith("H:"):
+            sc += 0.001
+
+        if best_score is None or sc > best_score:
+            best_score = sc
+            best_action = a
+
+    return best_action

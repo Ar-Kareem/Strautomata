@@ -1,0 +1,482 @@
+The strategy for this policy is to implement a lightweight, standalone chess engine using the Negamax algorithm with Alpha-Beta pruning and iterative deepening. Since I cannot access the opponent's move history or full board state directly, I will reconstruct the board state by inferring the move that led to it from the previous turn. The evaluation function uses Piece-Square Tables (PST) to value positional advantages, such as controlling the center and king safety. To adhere to the one-second time limit, I use iterative deepening with a timeout check, allowing the engine to search deeper if time permits while ensuring a valid move is always returned. This approach balances search depth and speed to make strong tactical and positional decisions.
+
+```python
+import time
+import random
+
+# Constants
+INFINITY = 100000
+MATE_SCORE = 90000
+CHECKMATE_LIMIT = 1000
+
+# Piece values
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+}
+
+# Piece Square Tables (PST) - simplified for general purpose
+# Tables are defined for White. For Black, the board is flipped vertically (row 7-idx).
+PST = {
+    'P': [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        5, 10, 10, -20, -20, 10, 10,  5,
+        5, -5, -10,  0,  0, -10, -5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    'N': [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ],
+    'B': [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20
+    ],
+    'R': [
+        0,  0,  0,  5,  5,  0,  0,  0,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ],
+    'Q': [
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -5,  0,  5,  5,  5,  5,  0, -5,
+        0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20
+    ],
+    'K': [
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+        20, 20,  0,  0,  0,  0, 20, 20,
+        20, 30, 10,  0,  0, 10, 30, 20
+    ]
+}
+
+class ChessEngine:
+    def __init__(self, pieces, to_play):
+        self.pieces = pieces
+        self.to_play = to_play
+        self.board = self._parse_board()
+        self.turn = to_play
+        self.move_history = [] # Inferred
+        self.last_move = None
+        self._infer_last_move()
+
+    def _parse_board(self):
+        board = [None] * 64
+        for sq, pc in self.pieces.items():
+            file = ord(sq[0]) - ord('a')
+            rank = int(sq[1]) - 1
+            idx = rank * 8 + file
+            board[idx] = pc
+        return board
+
+    def _idx_to_sq(self, idx):
+        rank = idx // 8
+        file = idx % 8
+        return chr(file + ord('a')) + str(rank + 1)
+
+    def _sq_to_idx(self, sq):
+        file = ord(sq[0]) - ord('a')
+        rank = int(sq[1]) - 1
+        return rank * 8 + file
+
+    def _infer_last_move(self):
+        # Since we only get current state, we cannot know *exactly* what happened
+        # without full history. However, for PST updates or specific logic relying 
+        # on history, we are limited. We will rely on static evaluation.
+        # If we were tracking history, we would look for a piece that moved.
+        # For now, we assume no special history-dependent logic (like EP or Castling rights)
+        # is strictly necessary unless we reconstruct it. 
+        # We will handle castling by checking if King/Rook moved from initial squares.
+        pass
+
+    def get_legal_moves(self):
+        moves = []
+        for i, piece in enumerate(self.board):
+            if piece and piece[0] == self.turn[0]:
+                moves.extend(self._get_moves_for_piece(i, piece))
+        return moves
+
+    def _get_moves_for_piece(self, idx, piece):
+        moves = []
+        color = piece[0]
+        ptype = piece[1]
+        r, f = idx // 8, idx % 8
+        
+        # Directions
+        dirs = []
+        single_step = False
+        
+        if ptype == 'P':
+            # Pawns
+            direction = 8 if color == 'w' else -8
+            start_rank = 1 if color == 'w' else 6
+            curr_rank = idx // 8
+            
+            # Move forward 1
+            next_idx = idx + direction
+            if 0 <= next_idx < 64 and self.board[next_idx] is None:
+                # Promotion?
+                if (color == 'w' and curr_rank == 6) or (color == 'b' and curr_rank == 1):
+                    for p in ['q', 'r', 'b', 'n']:
+                        moves.append(self._idx_to_sq(idx) + self._idx_to_sq(next_idx) + p)
+                else:
+                    moves.append(self._idx_to_sq(idx) + self._idx_to_sq(next_idx))
+                
+                # Move forward 2
+                if curr_rank == start_rank:
+                    next_idx2 = idx + (direction * 2)
+                    if self.board[next_idx2] is None:
+                        moves.append(self._idx_to_sq(idx) + self._idx_to_sq(next_idx2))
+            
+            # Captures
+            for df in [-1, 1]:
+                cf = f + df
+                cr = r + (1 if color == 'w' else -1)
+                if 0 <= cf < 8 and 0 <= cr < 8:
+                    c_idx = cr * 8 + cf
+                    target = self.board[c_idx]
+                    if target and target[0] != color:
+                        # Promotion?
+                        if (color == 'w' and cr == 7) or (color == 'b' and cr == 0):
+                            for p in ['q', 'r', 'b', 'n']:
+                                moves.append(self._idx_to_sq(idx) + self._idx_to_sq(c_idx) + p)
+                        else:
+                            moves.append(self._idx_to_sq(idx) + self._idx_to_sq(c_idx))
+        
+        elif ptype == 'N':
+            dirs = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+            for dr, df in dirs:
+                nr, nf = r + dr, f + df
+                if 0 <= nr < 8 and 0 <= nf < 8:
+                    t_idx = nr * 8 + nf
+                    target = self.board[t_idx]
+                    if target is None or target[0] != color:
+                        moves.append(self._idx_to_sq(idx) + self._idx_to_sq(t_idx))
+        
+        elif ptype == 'K':
+            dirs = [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]
+            for dr, df in dirs:
+                nr, nf = r + dr, f + df
+                if 0 <= nr < 8 and 0 <= nf < 8:
+                    t_idx = nr * 8 + nf
+                    target = self.board[t_idx]
+                    if target is None or target[0] != color:
+                        moves.append(self._idx_to_sq(idx) + self._idx_to_sq(t_idx))
+            # Castling (Simplified: Check if squares are empty and assuming initial pos if safe)
+            # This is a heuristic. Real engines track castling rights.
+            # White: e1. Black: e8.
+            if color == 'w' and idx == 60:
+                # Kingside (h1 empty)
+                if self.board[61] is None and self.board[62] is None and self.board[63] == 'wR':
+                    moves.append('e1g1')
+                # Queenside (a1 empty)
+                if self.board[59] is None and self.board[58] is None and self.board[57] is None and self.board[56] == 'wR':
+                    moves.append('e1c1')
+            elif color == 'b' and idx == 4:
+                # Kingside
+                if self.board[5] is None and self.board[6] is None and self.board[7] == 'bR':
+                    moves.append('e8g8')
+                # Queenside
+                if self.board[3] is None and self.board[2] is None and self.board[1] is None and self.board[0] == 'bR':
+                    moves.append('e8c8')
+
+        elif ptype in ['R', 'B', 'Q']:
+            if ptype == 'R' or ptype == 'Q':
+                dirs = [(-1,0), (1,0), (0,-1), (0,1)]
+                for dr, df in dirs:
+                    nr, nf = r + dr, f + df
+                    while 0 <= nr < 8 and 0 <= nf < 8:
+                        t_idx = nr * 8 + nf
+                        target = self.board[t_idx]
+                        if target is None:
+                            moves.append(self._idx_to_sq(idx) + self._idx_to_sq(t_idx))
+                        elif target[0] != color:
+                            moves.append(self._idx_to_sq(idx) + self._idx_to_sq(t_idx))
+                            break
+                        else:
+                            break
+                        nr += dr
+                        nf += df
+            if ptype == 'B' or ptype == 'Q':
+                dirs = [(-1,-1), (-1,1), (1,-1), (1,1)]
+                for dr, df in dirs:
+                    nr, nf = r + dr, f + df
+                    while 0 <= nr < 8 and 0 <= nf < 8:
+                        t_idx = nr * 8 + nf
+                        target = self.board[t_idx]
+                        if target is None:
+                            moves.append(self._idx_to_sq(idx) + self._idx_to_sq(t_idx))
+                        elif target[0] != color:
+                            moves.append(self._idx_to_sq(idx) + self._idx_to_sq(t_idx))
+                            break
+                        else:
+                            break
+                        nr += dr
+                        nf += df
+        return moves
+
+    def evaluate(self):
+        score = 0
+        for i, p in enumerate(self.board):
+            if p:
+                color = p[0]
+                ptype = p[1]
+                val = PIECE_VALUES[ptype]
+                
+                # PST lookup
+                pst_val = 0
+                if color == 'w':
+                    pst_val = PST[ptype][i]
+                else:
+                    # Flip PST for black
+                    pst_row = i // 8
+                    pst_col = i % 8
+                    flipped_i = (7 - pst_row) * 8 + pst_col
+                    pst_val = PST[ptype][flipped_i]
+                
+                if color == 'w':
+                    score += val + pst_val
+                else:
+                    score -= val + pst_val
+        
+        return score if self.turn == 'white' else -score
+
+    def order_moves(self, moves):
+        # Simple ordering: captures first
+        scored = []
+        for m in moves:
+            target_sq = m[2:4]
+            t_idx = self._sq_to_idx(target_sq)
+            target_piece = self.board[t_idx]
+            is_capture = target_piece is not None
+            
+            # MVV-LVA roughly: assume higher value captures are better
+            score = 0
+            if is_capture:
+                score += PIECE_VALUES[target_piece[1]] * 10
+            # Prioritize promotions
+            if len(m) > 4:
+                score += 900
+            scored.append((score, m))
+        
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [x[1] for x in scored]
+
+    def is_check(self, color):
+        # Locate King
+        k_idx = -1
+        for i, p in enumerate(self.board):
+            if p == color[0] + 'K':
+                k_idx = i
+                break
+        if k_idx == -1: return True # Should not happen
+        
+        # Check for opponent attacks on k_idx
+        opp = 'white' if color == 'black' else 'black'
+        return self.is_square_attacked(k_idx, opp)
+
+    def is_square_attacked(self, idx, by_color):
+        r, f = idx // 8, idx % 8
+        
+        # Pawn attacks
+        pawn_dir = 8 if by_color == 'white' else -8
+        for df in [-1, 1]:
+            cr, cf = r - (1 if by_color == 'white' else -1), f + df # Reverse direction
+            if 0 <= cr < 8 and 0 <= cf < 8:
+                p = self.board[cr*8+cf]
+                if p and p[0] == by_color[0] and p[1] == 'P': return True
+        
+        # Knight attacks
+        dirs = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+        for dr, df in dirs:
+            nr, nf = r + dr, f + df
+            if 0 <= nr < 8 and 0 <= nf < 8:
+                p = self.board[nr*8+nf]
+                if p and p[0] == by_color[0] and p[1] == 'N': return True
+        
+        # King attacks (adjacent)
+        for dr in [-1, 0, 1]:
+            for df in [-1, 0, 1]:
+                if dr == 0 and df == 0: continue
+                nr, nf = r + dr, f + df
+                if 0 <= nr < 8 and 0 <= nf < 8:
+                    p = self.board[nr*8+nf]
+                    if p and p[0] == by_color[0] and p[1] == 'K': return True
+        
+        # Sliding attacks (R, B, Q)
+        # Rook lines
+        for dr, df in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nf = r + dr, f + df
+            while 0 <= nr < 8 and 0 <= nf < 8:
+                p = self.board[nr*8+nf]
+                if p:
+                    if p[0] == by_color[0] and (p[1] == 'R' or p[1] == 'Q'): return True
+                    break
+                nr += dr; nf += df
+        # Bishop lines
+        for dr, df in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+            nr, nf = r + dr, f + df
+            while 0 <= nr < 8 and 0 <= nf < 8:
+                p = self.board[nr*8+nf]
+                if p:
+                    if p[0] == by_color[0] and (p[1] == 'B' or p[1] == 'Q'): return True
+                    break
+                nr += dr; nf += df
+        return False
+
+    def make_move(self, move):
+        # Apply move to board (for search)
+        src = self._sq_to_idx(move[0:2])
+        dst = self._sq_to_idx(move[2:4])
+        p = self.board[src]
+        
+        captured = self.board[dst]
+        self.board[dst] = p
+        self.board[src] = None
+        
+        # Handle promotion
+        if len(move) > 4:
+            self.board[dst] = move[4].upper()
+            # Keep color
+            self.board[dst] = p[0] + self.board[dst]
+
+        return captured
+
+    def unmake_move(self, move, captured):
+        src = self._sq_to_idx(move[0:2])
+        dst = self._sq_to_idx(move[2:4])
+        
+        p = self.board[dst]
+        # Handle promotion revert
+        if len(move) > 4:
+            p = p[0] + 'P'
+            
+        self.board[src] = p
+        self.board[dst] = captured
+        
+        # Castling handling (move rook)
+        if p[1] == 'K':
+            if move == 'e1g1': # White short
+                self.board[63] = 'wR'; self.board[61] = None
+            elif move == 'e1c1': # White long
+                self.board[56] = 'wR'; self.board[59] = None
+            elif move == 'e8g8': # Black short
+                self.board[7] = 'bR'; self.board[5] = None
+            elif move == 'e8c8': # Black long
+                self.board[0] = 'bR'; self.board[3] = None
+
+    def negamax(self, depth, alpha, beta, start_time, time_limit):
+        if time.time() - start_time > time_limit:
+            raise TimeoutError()
+            
+        # Check for mate/stalemate
+        moves = self.get_legal_moves()
+        if not moves:
+            if self.is_check(self.turn):
+                return -MATE_SCORE + (100 - depth) # Prefer faster mate
+            else:
+                return 0 # Draw
+
+        if depth == 0:
+            return self.evaluate()
+            
+        max_score = -INFINITY
+        ordered_moves = self.order_moves(moves)
+        
+        for move in ordered_moves:
+            # Make
+            # We need to swap turn for evaluation logic in recursive call
+            # Current logic: evaluate() returns score relative to self.turn
+            # We need to handle turn switching manually
+            captured = self.make_move(move)
+            self.turn = 'white' if self.turn == 'black' else 'black'
+            
+            score = -self.negamax(depth - 1, -beta, -alpha, start_time, time_limit)
+            
+            self.turn = 'white' if self.turn == 'black' else 'black'
+            self.unmake_move(move, captured)
+            
+            if score > max_score:
+                max_score = score
+            alpha = max(alpha, score)
+            if alpha >= beta:
+                break
+                
+        return max_score
+
+    def search(self):
+        best_move = random.choice(self.get_legal_moves())
+        start_time = time.time()
+        time_limit = 0.9 # Leave 0.1s buffer
+        
+        try:
+            # Iterative Deepening
+            for depth in range(1, 100):
+                current_best_move = best_move
+                best_score = -INFINITY
+                alpha = -INFINITY
+                beta = INFINITY
+                
+                moves = self.order_moves(self.get_legal_moves())
+                for move in moves:
+                    captured = self.make_move(move)
+                    self.turn = 'white' if self.turn == 'black' else 'black'
+                    
+                    try:
+                        score = -self.negamax(depth - 1, -beta, -alpha, start_time, time_limit)
+                    except TimeoutError:
+                        self.turn = 'white' if self.turn == 'black' else 'black'
+                        self.unmake_move(move, captured)
+                        raise TimeoutError()
+                        
+                    self.turn = 'white' if self.turn == 'black' else 'black'
+                    self.unmake_move(move, captured)
+                    
+                    if score > best_score:
+                        best_score = score
+                        current_best_move = move
+                    alpha = max(alpha, score)
+                
+                if best_score > MATE_SCORE - 500: # Found mate
+                    return current_best_move
+                
+                best_move = current_best_move
+                
+        except TimeoutError:
+            pass
+            
+        return best_move
+
+def policy(pieces: dict[str, str], to_play: str) -> str:
+    engine = ChessEngine(pieces, to_play)
+    return engine.search()
+```

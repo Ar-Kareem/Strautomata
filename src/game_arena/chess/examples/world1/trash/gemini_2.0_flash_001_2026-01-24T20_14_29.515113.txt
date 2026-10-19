@@ -1,0 +1,125 @@
+The strategy for this policy is to prioritize moves based on the following criteria:
+
+1. **Checkmate:** If a move leads to checkmate, immediately return that move.
+2. **Captures:** Prioritize capturing opponent's pieces with higher value pieces or capturing pieces defending key squares.
+3. **Checks:** Prioritize moves that put the opponent's king in check.
+4. **King Safety:**  Improve king safety by castling, moving the king to a safer location, or blocking potential threats.
+5. **Piece Development:** Develop pieces to more active squares, especially knights and bishops.
+6. **Pawn Structure:** Improve pawn structure by advancing pawns to control the center or open lines for piece activity.
+7. **Avoid Blunders:** Avoid moves that lose material or weaken the king's position.
+8. **Simple Move:** If no other good move is available, play a simple developing move or a move that improves the position slightly.
+
+This policy iterates through the legal moves and evaluates each move based on these criteria. The move with the highest priority is returned.  A simple move evaluator is implemented to estimate value of pieces obtained/lost by the move.
+<code>
+import chess
+
+def piece_value(piece_type):
+    if piece_type == chess.PAWN:
+        return 1
+    elif piece_type == chess.KNIGHT or piece_type == chess.BISHOP:
+        return 3
+    elif piece_type == chess.ROOK:
+        return 5
+    elif piece_type == chess.QUEEN:
+        return 9
+    elif piece_type == chess.KING:
+        return 0  # King value is irrelevant for material evaluation
+
+def evaluate_move(move, board, to_play):
+    # Make a copy of the board to avoid modifying the original
+    board_copy = board.copy()
+    board_copy.push(move)
+
+    # Evaluate material balance after the move
+    white_material = 0
+    black_material = 0
+    for square in chess.SQUARES:
+        piece = board_copy.piece_at(square)
+        if piece:
+            value = piece_value(piece.piece_type)
+            if piece.color == chess.WHITE:
+                white_material += value
+            else:
+                black_material += value
+
+    if to_play == 'white':
+        material_advantage = white_material - black_material
+    else:
+        material_advantage = black_material - white_material
+    return material_advantage
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Selects the best move from the list of legal moves.
+
+    Args:
+        pieces: A dictionary mapping squares to piece codes.
+        to_play: 'white' or 'black'.
+        legal_moves: A list of legal moves in string format.
+
+    Returns:
+        A move string from the legal_moves list.
+    """
+    board = chess.Board()
+    board.clear()
+    for square, piece in pieces.items():
+        chess_square = chess.parse_square(square)
+        chess_piece = None
+        if piece[0] == 'w':
+            color = chess.WHITE
+        else:
+            color = chess.BLACK
+
+        if piece[1] == 'K':
+            chess_piece = chess.Piece(chess.KING, color)
+        elif piece[1] == 'Q':
+            chess_piece = chess.Piece(chess.QUEEN, color)
+        elif piece[1] == 'R':
+            chess_piece = chess.Piece(chess.ROOK, color)
+        elif piece[1] == 'B':
+            chess_piece = chess.Piece(chess.BISHOP, color)
+        elif piece[1] == 'N':
+            chess_piece = chess.Piece(chess.KNIGHT, color)
+        elif piece[1] == 'P':
+            chess_piece = chess.Piece(chess.PAWN, color)
+        board.set_piece_at(chess_square, chess_piece)
+    
+    if to_play == 'white':
+        turn = chess.WHITE
+    else:
+        turn = chess.BLACK
+
+    board.turn = turn
+
+    best_move = None
+    best_score = float('-inf')
+    
+    for move_str in legal_moves:
+        try:
+            move = board.parse_uci(move_str)
+        except ValueError:
+            continue #skip moves that are impossible on the current board
+
+        board_copy = board.copy()
+        try:
+            board_copy.push(move)
+        except ValueError:
+            continue # skip illegal moves resulting from board setup.
+        
+        if board_copy.is_checkmate():
+            return move_str
+
+        score = evaluate_move(move, board, to_play)
+
+        if board_copy.is_check():
+            score += 0.1  # Prioritize checks
+
+        if score > best_score:
+             best_score = score
+             best_move = move_str
+
+    if best_move is not None:
+        return best_move
+    else: #If all moves are somehow invalid return the first legal move provided...
+        return legal_moves[0]
+</code>

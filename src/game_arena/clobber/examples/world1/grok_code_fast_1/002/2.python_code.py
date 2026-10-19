@@ -1,0 +1,70 @@
+
+import numpy as np
+import copy
+
+def get_moves(y, o):
+    moves = []
+    for r in range(5):
+        for c in range(6):
+            if y[r, c]:
+                dirs = [['U', -1, 0], ['D', 1, 0], ['L', 0, -1], ['R', 0, 1]]
+                for d, dr, dc in dirs:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 5 and 0 <= nc < 6 and o[nr, nc]:
+                        moves.append(f'{r},{c},{d}')
+    return moves
+
+def apply_move(you, opp, move):
+    parts = move.split(',')
+    r, c = int(parts[0]), int(parts[1])
+    d = parts[2]
+    dr, dc = 0, 0
+    if d == 'U':
+        dr = -1
+    elif d == 'D':
+        dr = 1
+    elif d == 'L':
+        dc = -1
+    elif d == 'R':
+        dc = 1
+    nr, nc = r + dr, c + dc
+    new_you = np.copy(you)
+    new_opp = np.copy(opp)
+    new_you[r, c] = 0
+    new_opp[nr, nc] = 0
+    new_you[nr, nc] = 1
+    return new_you, new_opp
+
+def minimax(you, opp, depth, maximizing):
+    moves = get_moves(you, opp)
+    if not moves:
+        return -999999 if maximizing else 999999
+    if depth == 0:
+        return np.sum(you) - np.sum(opp)
+    vals = []
+    for move in moves:
+        ny, no = apply_move(you, opp, move)
+        if maximizing:
+            vals.append(minimax(no, ny, depth - 1, False))
+        else:
+            vals.append(minimax(ny, no, depth - 1, True))
+    if maximizing:
+        return max(vals)
+    else:
+        return min(vals)
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    you_np = np.array(you)
+    opp_np = np.array(opponent)
+    moves = get_moves(you_np, opp_np)
+    if not moves:
+        return '0,0,U'  # Fallback, but constraints ensure legal moves exist when called
+    best_move = None
+    best_val = -float('inf')
+    for move in moves:
+        new_you, new_opp = apply_move(you_np, opp_np, move)
+        val = minimax(new_opp, new_you, 2, False)
+        if val > best_val:
+            best_val = val
+            best_move = move
+    return best_move

@@ -1,0 +1,153 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Initialize board representation
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = -1
+
+    # Directions for neighbor checks
+    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+
+    # Find all empty points
+    empty_points = []
+    for r in range(19):
+        for c in range(19):
+            if board[r, c] == 0:
+                empty_points.append((r+1, c+1))
+
+    # If no empty points, pass
+    if not empty_points:
+        return (0, 0)
+
+    # Evaluate each candidate move
+    best_move = None
+    best_score = -float('inf')
+
+    for move in empty_points:
+        r, c = move
+        r -= 1
+        c -= 1
+
+        # Skip if move is not legal (basic check)
+        if not is_legal(board, r, c, 1):
+            continue
+
+        # Create temporary board with move played
+        temp_board = board.copy()
+        temp_board[r, c] = 1
+
+        # Calculate score for this move
+        score = evaluate_move(temp_board, r, c)
+
+        # Update best move if this is better
+        if score > best_score:
+            best_score = score
+            best_move = (r+1, c+1)
+
+    # If no good move found, pass
+    if best_move is None:
+        return (0, 0)
+
+    return best_move
+
+def is_legal(board, r, c, player):
+    """Check if a move is legal (basic ko and suicide check)"""
+    if board[r, c] != 0:
+        return False
+
+    # Check for suicide
+    temp_board = board.copy()
+    temp_board[r, c] = player
+    group, liberties = find_group(temp_board, r, c)
+
+    if liberties == 0:
+        return False
+
+    return True
+
+def find_group(board, r, c):
+    """Find connected group and count liberties"""
+    player = board[r, c]
+    if player == 0:
+        return [], 0
+
+    visited = set()
+    queue = deque([(r, c)])
+    group = []
+    liberties = 0
+
+    while queue:
+        x, y = queue.popleft()
+        if (x, y) in visited:
+            continue
+        visited.add((x, y))
+        group.append((x, y))
+
+        for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < 19 and 0 <= ny < 19:
+                if board[nx, ny] == 0:
+                    liberties += 1
+                elif board[nx, ny] == player and (nx, ny) not in visited:
+                    queue.append((nx, ny))
+
+    return group, liberties
+
+def evaluate_move(board, r, c):
+    """Evaluate the quality of a move"""
+    score = 0
+
+    # 1. Check for immediate captures
+    for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        nr, nc = r + dx, c + dy
+        if 0 <= nr < 19 and 0 <= nc < 19:
+            if board[nr, nc] == -1:  # Opponent stone
+                group, liberties = find_group(board, nr, nc)
+                if liberties == 1:
+                    score += 100  # High value for capture
+
+    # 2. Check if this move connects our groups
+    my_groups = set()
+    for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        nr, nc = r + dx, c + dy
+        if 0 <= nr < 19 and 0 <= nc < 19:
+            if board[nr, nc] == 1:
+                group, _ = find_group(board, nr, nc)
+                my_groups.add(frozenset(group))
+
+    if len(my_groups) > 1:
+        score += 50  # Value for connecting groups
+
+    # 3. Positional value (corners > edges > center)
+    if (r in [0, 18] and c in [0, 18]):  # Corner
+        score += 30
+    elif (r in [0, 18] or c in [0, 18]):  # Edge
+        score += 20
+    elif (r in [1, 2, 3, 4, 5, 13, 14, 15, 16, 17] or
+          c in [1, 2, 3, 4, 5, 13, 14, 15, 16, 17]):  # Near edge
+        score += 10
+
+    # 4. Check if this move threatens opponent groups
+    for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        nr, nc = r + dx, c + dy
+        if 0 <= nr < 19 and 0 <= nc < 19:
+            if board[nr, nc] == -1:
+                group, liberties = find_group(board, nr, nc)
+                if liberties == 2:
+                    score += 30  # Threatening to capture
+
+    # 5. Check if this move defends our weak groups
+    for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+        nr, nc = r + dx, c + dy
+        if 0 <= nr < 19 and 0 <= nc < 19:
+            if board[nr, nc] == 1:
+                group, liberties = find_group(board, nr, nc)
+                if liberties == 1:
+                    score += 40  # Defending weak group
+
+    return score

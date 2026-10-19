@@ -1,0 +1,173 @@
+The game is Clobber on a 5x6 board.
+Key strategic insights for Clobber:
+1.  **Move Deciding Outcomes:** A single move determines the entire outcome of the game because it changes the board state by exactly one piece.
+2.  **Solving the Game:** We can solve the game by performing a Depth First Search (DFS) on the game tree.
+3.  **Winning/Losing States:**
+    - A state is a **Winning** state if there exists *any* move that leads to a **Losing** state for the opponent.
+    - A state is a **Losing** state if *all* possible moves lead to a **Winning** state for the opponent.
+4.  **Terminal State:** If a player has no moves, it is a Losing state (the game ends).
+5.  **Optimization:** To beat the 1-second time limit, we must avoid re-computing the outcome of identical board states.
+    - We use **Memoization**: Store the result of states we've analyzed in a dictionary `memo`.
+    - We use **Zobrist Hashing**: To efficiently use the memoization, we represent the board as a single integer (hash). We generate random 64-bit integers for each possible piece placement (Player 1, Player 2, on each of 30 cells) and XOR them together.
+6.  **Algorithm:**
+    - Parse `you` and `opponent` to generate the initial Zobrist hash.
+    - Call a recursive function `solve(state_hash, current_player_pieces, opponent_pieces)`.
+    - Inside `solve`, generate all legal moves.
+    - If `current_player_pieces` has no moves, return `False` (Losing).
+    - Check memoization table. If found, return result.
+    - Iterate through moves:
+        - Apply move to update pieces and hash.
+        - Recursively call `solve` for the opponent.
+        - If the recursive call returns `False` (opponent loses), then the current state is `True` (Winning). Store in memo and return `True`.
+    - If no move leads to a Loss, return `False` (Losing).
+7.  **Return:** Once we determine the current state is Winning, we must return the specific move string that triggered the win.
+
+```python
+import sys
+import random
+
+# Set recursion limit high enough for the game tree (depth max 30, but recursion overhead)
+sys.setrecursionlimit(20000)
+
+def policy(you: list[list[int]], opponent: list[list[int]]) -> str:
+    # Constants
+    ROWS = 5
+    COLS = 6
+    SIZE = ROWS * COLS
+    
+    # Zobrist Hashing Setup
+    # We need a random 64-bit integer for each:
+    # - My piece at each cell (30)
+    # - Opponent piece at each cell (30)
+    # We use a fixed seed for determinism if needed, but random is fine
+    random.seed(42) 
+    zobrist_my = [random.getrandbits(64) for _ in range(SIZE)]
+    zobrist_opp = [random.getrandbits(64) for _ in range(SIZE)]
+    
+    # Precompute neighbors
+    # neighbors[cell_idx] = [(next_cell_idx, direction_char)]
+    neighbors = [[] for _ in range(SIZE)]
+    for r in range(ROWS):
+        for c in range(COLS):
+            idx = r * COLS + c
+            if r > 0: neighbors[idx].append(((r-1)*COLS + c, 'U'))
+            if r < ROWS - 1: neighbors[idx].append(((r+1)*COLS + c, 'D'))
+            if c > 0: neighbors[idx].append((r*COLS + (c-1), 'L'))
+            if c < COLS - 1: neighbors[idx].append((r*COLS + (c+1), 'R'))
+            
+    # Parse input into bitmasks
+    my_mask = 0
+    opp_mask = 0
+    current_hash = 0
+    
+    for r in range(ROWS):
+        for c in range(COLS):
+            idx = r * COLS + c
+            if you[r][c] == 1:
+                my_mask |= (1 << idx)
+                current_hash ^= zobrist_my[idx]
+            elif opponent[r][c] == 1:
+                opp_mask |= (1 << idx)
+                current_hash ^= zobrist_opp[idx]
+                
+    # Memoization cache
+    memo = {}
+
+    def solve(hash_val, m_mask, o_mask, is_my_turn):
+        # Check Memo
+        state_key = (hash_val, m_mask, o_mask, is_my_turn)
+        if state_key in memo:
+            return memo[state_key]
+        
+        # Generate Moves
+        # Optimization: Use bitwise operations to iterate
+        # We need to iterate over all bits set in m_mask
+        
+        moves_exist = False
+        
+        # Local variables for speed
+        n_list = neighbors
+        z_m = zobrist_my
+        z_o = zobrist_opp
+        
+        temp_m = m_mask
+        while temp_m:
+            # Get lowest set bit index
+            idx = (temp_m & -temp_m).bit_length() - 1
+            temp_m &= (temp_m - 1) # Clear the bit
+            
+            # Check all neighbors of this piece
+            for n_idx, direction in n_list[idx]:
+                # Check if neighbor is occupied by opponent
+                if (o_mask >> n_idx) & 1:
+                    # Found a valid move: (idx -> n_idx)
+                    moves_exist = True
+                    
+                    # Apply Move
+                    # 1. Remove my piece from idx (XOR my zobrist)
+                    # 2. Remove opp piece from n_idx (XOR opp zobrist)
+                    # 3. Add my piece to n_idx (XOR my zobrist)
+                    new_hash = hash_val ^ z_m[idx] ^ z_o[n_idx] ^ z_m[n_idx]
+                    new_my_mask = (m_mask ^ (1 << idx)) | (1 << n_idx)
+                    new_opp_mask = o_mask ^ (1 << n_idx)
+                    
+                    # Recurse
+                    # If the opponent loses in the new state, we win.
+                    if not solve(new_hash, new_opp_mask, new_my_mask, not is_my_turn):
+                        memo[state_key] = True
+                        return True # We found a winning move
+        
+        # If we processed moves (moves_exist is True) but didn't return True, 
+        # it means all moves led to winning states for the opponent (or game continued).
+        # If no moves existed, it's a loss.
+        result = False if moves_exist else False
+        
+        # Wait, if moves_exist is True, we iterated all moves and didn't find a forced win.
+        # So we lost.
+        # If moves_exist is False, we have no moves. We lose.
+        # So result is always False here.
+        
+        memo[state_key] = False
+        return False
+
+    # If solve returns True, the current state is a win.
+    # We need to return the specific move.
+    if solve(current_hash, my_mask, opp_mask, True):
+        # We know there is at least one winning move. Find it again.
+        # We repeat the move generation logic to find the first one that works.
+        
+        temp_m = my_mask
+        while temp_m:
+            idx = (temp_m & -temp_m).bit_length() - 1
+            temp_m &= (temp_m - 1)
+            
+            for n_idx, direction in neighbors[idx]:
+                if (opp_mask >> n_idx) & 1:
+                    # Apply Move
+                    new_hash = current_hash ^ zobrist_my[idx] ^ zobrist_opp[n_idx] ^ zobrist_my[n_idx]
+                    new_my_mask = (my_mask ^ (1 << idx)) | (1 << n_idx)
+                    new_opp_mask = opp_mask ^ (1 << n_idx)
+                    
+                    # Check if this leads to a loss for opponent
+                    if not solve(new_hash, new_opp_mask, new_my_mask, False):
+                        # This is the move.
+                        # Convert idx and n_idx to row, col
+                        # Start: idx
+                        s_r = idx // COLS
+                        s_c = idx % COLS
+                        return f"{s_r},{s_c},{direction}"
+
+    # Fallback (should not be reached if logic is correct and moves exist)
+    # Just return the first legal move found
+    temp_m = my_mask
+    while temp_m:
+        idx = (temp_m & -temp_m).bit_length() - 1
+        temp_m &= (temp_m - 1)
+        for n_idx, direction in neighbors[idx]:
+            if (opp_mask >> n_idx) & 1:
+                s_r = idx // COLS
+                s_c = idx % COLS
+                return f"{s_r},{s_c},{direction}"
+                
+    return "" 
+```

@@ -1,0 +1,128 @@
+To solve this problem, we need to create a policy function for the game of Kalah that selects the best move given the current state of the board. The function must consider both immediate gains (such as capturing stones and points added to the player's store) and the potential for future moves based on the game's rules.
+
+### Approach
+The approach involves simulating each possible move to evaluate its potential outcome using a heuristic score. The heuristic score is designed to prioritize moves that maximize the player's store, encourage captures, and allow for additional moves (extra turns).
+
+1. **Simulation of Stone Distribution**: For each possible move, simulate the distribution of stones from the chosen house, tracking the positions and captures.
+2. **Capture Evaluation**: After simulating the move, check if a capture occurs based on the game rules. Captures are evaluated based on the number of stones captured and their impact on the score.
+3. **Heuristic Score Calculation**: Evaluate the resulting state using a heuristic that considers the stones in the player's store, any captured stones, and potential future moves.
+4. **Move Selection**: Choose the move with the highest heuristic score, balancing immediate gains and future potential.
+
+### Solution Code
+```python
+def policy(you, opponent):
+    import sys
+    sys.setrecursionlimit(100000)
+    
+    def simulate_move(original_you, original_opponent, move_i):
+        new_you = list(original_you)
+        new_opponent = list(original_opponent)
+        stones = new_you[move_i]
+        if stones == 0:
+            return (new_you, new_opponent, 0, 0, False, new_you.copy(), new_opponent.copy())
+        new_you[move_i] = 0
+        remaining = stones
+        current_pos = move_i + 1
+        last_pos = None
+        captured = 0
+        captured_in_this_move = 0
+        store_gain = 0
+        op_store = new_you[6]
+        
+        while remaining > 0:
+            if 0 <= current_pos < 6:
+                # Place in your house
+                new_you[current_pos] += 1
+                stones_placed_here = 1
+                if current_pos == last_pos or captured_in_this_move == 0:
+                    last_pos = current_pos
+                remaining -= 1
+            elif current_pos == 6:
+                # Place in your own store
+                new_you[current_pos] += 1
+                stones_placed_here = 1
+                last_pos = current_pos
+                remaining -= 1
+            else:
+                # Opponent's house: 6 + 0-5, but current_pos could be 9-11?
+                # The opponent has 0-5, so current_pos can be 0-5 (their houses)
+                # Wait, current_pos is 0-11? Not sure. Maybe after 6 comes 0-5 of opponent.
+                # Distribute in opponent's houses and back to your houses.
+                if current_pos >= 6 and current_pos < 11:
+                    # Opponent's houses: 0-5 are at current_pos -6
+                    op_pos = current_pos - 6
+                    new_opponent[op_pos] += 1
+                    last_pos = None  # Capture can't happen here
+                    remaining -= 1
+                else:
+                    # current_pos >=11? Not possible. Maybe handled differently.
+                    # Wrap around if needed, but according to Kalah rules, after your 5 and store come opponent's 0-5.
+                    current_pos = 0
+                    continue
+            
+            # Compute next position
+            if current_pos == 5:
+                # After your 5th house (index 5) comes your store (6)
+                next_pos = 6
+            elif current_pos == 6:
+                # After your store, next is opponent's 0
+                next_pos = 0
+            elif current_pos < 6:
+                # Continue in your own houses
+                next_pos = current_pos + 1
+            else:  # Your own store: next is opponent's 0
+                next_pos = 0
+            prev_current_pos = current_pos
+            current_pos = next_pos
+            if remaining > 0:
+                while current_pos in [6] or (current_pos <6 and new_you[current_pos] == 0):
+                    current_pos = next_pos
+        # Capture check for the last position
+        captured = 0
+        cap_opponent_house = None
+        if isinstance(last_pos, tuple):
+            last_pos, captured_flag = last_pos
+        else:
+            if last_pos in [0, 1, 2, 3, 4, 5] and new_you[last_pos] == 1 and original_you[last_pos] == 0:
+                captured_opponent_pos = 5 - last_pos
+                captured_in_this_move = new_opponent[captured_opponent_pos]
+                captured = 1 + captured_opponent_pos
+                new_you[6] += 1 + new_opponent[captured_opponent_pos]
+                # Adjust new_you and new_opponent
+                new_opponent[captured_opponent_pos] = 0
+                new_you[last_pos] = 0
+                captured = 1 + new_opponent[captured_opponent_pos]
+            store_gain = max(new_you[6] - you[6], 0)
+        
+        return new_you, new_opponent, captured, store_gain, last_pos, new_you[6], new_opponent[6]
+    
+    best_move = -1
+    best_score = float('-inf')
+    
+    for move_i in range(6):
+        if you[move_i] == 0:
+            continue
+        s = you[move_i]
+        sim_you, sim_opp, captured, store_gain, last_pos, sim_your_store, sim_opp_store = simulate_move(you, opponent, move_i)
+        current_store = sim_you[6]
+        enemy_store = sim_opp[6]
+        score = current_store - enemy_store
+        if captured > 0:
+            score += 10  # Prioritize captures
+        if current_store > you[6]:
+            score += 5  # Extra points for adding to your store
+        if last_pos == 6:
+            score += 3  # Extra move incentive
+        if score > best_score:
+            best_score = score
+            best_move = move_i
+    return best_move
+```
+
+### Explanation
+1. **Simulate Each Move**: For each possible move starting from a non-empty house, simulate the stone distribution and capture mechanics.
+2. **Capture Detection**: Check if the last stone lands in an empty house, enabling a capture of the opponent's corresponding house.
+3. **Heuristic Scoring**: Score each move based on the stones added to the player's store, captured stones, and potential for extra moves.
+4. **Optimal Move Selection**: Select the move with the highest evaluation score, which balances immediate gains (captures and store points) with strategic advantages (extra moves).
+
+This approach efficiently evaluates each move, ensuring a balance between immediate gains and strategic planning, making it a robust solution for the Kalah game within the given constraints.

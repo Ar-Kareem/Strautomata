@@ -1,0 +1,190 @@
+
+import copy
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    # Convert all to tuples for immutability
+    my_men = [tuple(pos) for pos in my_men]
+    my_kings = [tuple(pos) for pos in my_kings]
+    opp_men = [tuple(pos) for pos in opp_men]
+    opp_kings = [tuple(pos) for pos in opp_kings]
+    
+    # Combine pieces
+    my_pieces = [(pos, 'man') for pos in my_men] + [(pos, 'king') for pos in my_kings]
+    opp_all = set(opp_men) | set(opp_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    
+    # Step 1: Check for captures
+    all_captures = []
+    for piece, type_ in my_pieces:
+        captures = get_piece_captures(
+            piece, 
+            set(my_men), 
+            set(my_kings), 
+            opp_men_set, 
+            opp_kings_set, 
+            type_ == 'king', 
+            color
+        )
+        all_captures.extend(captures)
+    
+    if all_captures:
+        # Select best capture by max pieces captured, prioritizing kings
+        best_capture = None
+        best_score = -1
+        for path, captured in all_captures:
+            score = len(captured) + sum(5 for pos in captured if pos in opp_kings_set)
+            if score > best_score or (score == best_score and len(path) > len(best_capture[0])):
+                best_capture = (path, captured)
+                best_score = score
+        return (best_capture[0][0], best_capture[0][1])
+    
+    # Step 2: No captures available, evaluate normal moves
+    normal_moves = []
+    for piece, type_ in my_pieces:
+        if type_ == 'man':
+            directions = [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+        else:
+            directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+        
+        for dr, dc in directions:
+            new_r = piece[0] + dr
+            new_c = piece[1] + dc
+            if 0 <= new_r < 8 and 0 <= new_c < 8:
+                new_pos = (new_r, new_c)
+                if new_pos not in my_men and new_pos not in my_kings and new_pos not in opp_men and new_pos not in opp_kings:
+                    normal_moves.append((piece, new_pos))
+    
+    if not normal_moves:
+        # Fallback (shouldn't occur in legal states)
+        return (my_men[0], (my_men[0][0] + (-1 if color == 'b' else 1), my_men[0][1] + (-1 if color == 'b' else 1)))
+    
+    # Evaluate normal moves
+    best_move = None
+    best_score = -float('inf')
+    for (from_pos, to_pos) in normal_moves:
+        score = evaluate_move(from_pos, to_pos, color, my_men, my_kings, opp_men, opp_kings)
+        if score > best_score:
+            best_score = score
+            best_move = (from_pos, to_pos)
+    
+    return best_move
+
+def get_piece_captures(pos, my_men, my_kings, opp_men, opp_kings, is_king, color):
+    all_moves = []
+    
+    # Determine directions
+    if is_king:
+        directions = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    else:
+        directions = [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+    
+    current_men = set(my_men)
+    current_kings = set(my_kings)
+    current_opp_men = set(opp_men)
+    current_opp_kings = set(opp_kings)
+    opp_all = current_opp_men | current_opp_kings
+    
+    # Check within piece's current state (man/king)
+    for dr, dc in directions:
+        adj_r = pos[0] + dr
+        adj_c = pos[1] + dc
+        jump_r = pos[0] + 2*dr
+        jump_c = pos[1] + 2*dc
+        
+        if not (0 <= adj_r < 8 and 0 <= adj_c < 8 and 0 <= jump_r < 8 and 0 <= jump_c < 8):
+            continue
+            
+        adj_pos = (adj_r, adj_c)
+        jump_pos = (jump_r, jump_c)
+        
+        if adj_pos in opp_all and jump_pos not in current_men and jump_pos not in current_kings and jump_pos not in opp_all:
+            # Make copies for new state
+            new_my_men = set(current_men)
+            new_my_kings = set(current_kings)
+            new_opp_men = set(current_opp_men)
+            new_opp_kings = set(current_opp_kings)
+            
+            # Remove captured piece
+            if adj_pos in new_opp_men:
+                new_opp_men.remove(adj_pos)
+            else:
+                new_opp_kings.remove(adj_pos)
+            
+            # Move piece and check promotion
+            new_is_king = is_king
+            if pos in new_my_men:
+                new_my_men.remove(pos)
+                if (color == 'b' and jump_r == 0) or (color == 'w' and jump_r == 7):
+                    new_my_kings.add(jump_pos)
+                    new_is_king = True
+                else:
+                    new_my_men.add(jump_pos)
+            else:
+                new_my_kings.remove(pos)
+                new_my_kings.add(jump_pos)
+            
+            # Recursively find further captures
+            sub_moves = get_piece_captures(
+                jump_pos, 
+                new_my_men, 
+                new_my_kings, 
+                new_opp_men, 
+                new_opp_kings, 
+                new_is_king, 
+                color
+            )
+            
+            if sub_moves:
+                for path, captured in sub_moves:
+                    all_moves.append(([pos, jump_pos] + path[1:], [adj_pos] + captured))
+            else:
+                all_moves.append(([pos, jump_pos], [adj_pos]))
+    
+    return all_moves
+
+def evaluate_move(from_pos, to_pos, color, my_men, my_kings, opp_men, opp_kings):
+    score = 0
+    is_king = from_pos in my_kings
+    
+    # Promotion bonus
+    if not is_king:
+        if (color == 'b' and to_pos[0] == 0) or (color == 'w' and to_pos[0] == 7):
+            score += 100
+    
+    # Advancement for non-promoting moves
+    if not is_king:
+        if color == 'b':
+            score += (from_pos[0] - to_pos[0]) * 2  # Prefer moving down
+        else:
+            score += (to_pos[0] - from_pos[0]) * 2  # Prefer moving up
+    
+    # Centrality
+    center_bonus = (3.5 - abs(3.5 - to_pos[0]) - abs(3.5 - to_pos[1])) * 0.5
+    score += center_bonus
+    
+    # Safety check
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    capture_dirs = [(1,1), (1,-1), (-1,1), (-1,-1)]  # All capture directions
+    
+    for dr, dc in capture_dirs:
+        adj_r = to_pos[0] + dr
+        adj_c = to_pos[1] + dc
+        jump_r = to_pos[0] + 2*dr
+        jump_c = to_pos[1] + 2*dc
+        
+        if not (0 <= adj_r < 8 and 0 <= adj_c < 8 and 0 <= jump_r < 8 and 0 <= jump_c < 8):
+            continue
+            
+        adj_pos = (adj_r, adj_c)
+        if adj_pos in opp_men_set and ((color == 'w' and dr == -1) or (color == 'b' and dr == 1)):
+            # Opponent man can capture
+            if (jump_r, jump_c) not in my_men + my_kings + opp_men + opp_kings:
+                score -= 50
+        elif adj_pos in opp_kings_set:
+            # Opponent king can capture
+            if (jump_r, jump_c) not in my_men + my_kings + opp_men + opp_kings:
+                score -= 50
+    
+    return score

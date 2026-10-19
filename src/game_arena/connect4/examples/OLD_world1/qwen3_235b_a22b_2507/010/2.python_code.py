@@ -1,0 +1,188 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> int:
+    """
+    Connect 4 targeting policy using minimax with alpha-beta pruning.
+    """
+    # Convert to numpy array for easier manipulation
+    grid = np.array(board)
+    ROWS, COLS = 6, 7
+    
+    def is_valid_column(col):
+        return grid[0, col] == 0  # Top row is empty
+    
+    def drop_piece(col, player):
+        # Find the lowest empty row in the column
+        for row in range(ROWS-1, -1, -1):
+            if grid[row, col] == 0:
+                grid[row, col] = player
+                return row, col
+        return None
+    
+    def undo_piece(row, col):
+        grid[row, col] = 0
+    
+    def check_win(player):
+        # Check horizontal
+        for row in range(ROWS):
+            for col in range(COLS - 3):
+                if all(grid[row, col+i] == player for i in range(4)):
+                    return True
+        
+        # Check vertical
+        for row in range(ROWS - 3):
+            for col in range(COLS):
+                if all(grid[row+i, col] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (positive slope)
+        for row in range(3, ROWS):
+            for col in range(COLS - 3):
+                if all(grid[row-i, col+i] == player for i in range(4)):
+                    return True
+        
+        # Check diagonal (negative slope)
+        for row in range(ROWS - 3):
+            for col in range(COLS - 3):
+                if all(grid[row+i, col+i] == player for i in range(4)):
+                    return True
+        
+        return False
+    
+    def evaluate_window(window, player):
+        score = 0
+        opp_player = -player
+        
+        if np.count_nonzero(window == player) == 4:
+            score += 100
+        elif np.count_nonzero(window == player) == 3 and np.count_nonzero(window == 0) == 1:
+            score += 10
+        elif np.count_nonzero(window == player) == 2 and np.count_nonzero(window == 0) == 2:
+            score += 2
+        
+        if np.count_nonzero(window == opp_player) == 3 and np.count_nonzero(window == 0) == 1:
+            score -= 80
+        
+        return score
+    
+    def score_position():
+        score = 0
+        
+        # Center column preference
+        center_array = grid[:, COLS // 2]
+        center_count = np.count_nonzero(center_array == 1)
+        score += center_count * 6
+        
+        # Score horizontal
+        for row in range(ROWS):
+            for col in range(COLS - 3):
+                window = grid[row, col:col+4]
+                score += evaluate_window(window, 1)
+        
+        # Score vertical
+        for row in range(ROWS - 3):
+            for col in range(COLS):
+                window = grid[row:row+4, col]
+                score += evaluate_window(window, 1)
+        
+        # Score positive diagonal
+        for row in range(3, ROWS):
+            for col in range(COLS - 3):
+                window = np.array([grid[row-i, col+i] for i in range(4)])
+                score += evaluate_window(window, 1)
+        
+        # Score negative diagonal
+        for row in range(ROWS - 3):
+            for col in range(COLS - 3):
+                window = np.array([grid[row+i, col+i] for i in range(4)])
+                score += evaluate_window(window, 1)
+        
+        return score
+    
+    def minimax(depth, alpha, beta, maximizing_player):
+        valid_cols = [col for col in range(COLS) if is_valid_column(col)]
+        
+        # Check for terminal conditions
+        if check_win(1):
+            return (None, 1000000)
+        elif check_win(-1):
+            return (None, -1000000)
+        elif len(valid_cols) == 0:
+            return (None, 0)
+        elif depth == 0:
+            return (None, score_position())
+        
+        if maximizing_player:
+            value = -np.inf
+            column = valid_cols[0]
+            
+            for col in valid_cols:
+                row, col_placed = drop_piece(col, 1)
+                new_score = minimax(depth-1, alpha, beta, False)[1]
+                undo_piece(row, col_placed)
+                
+                if new_score > value:
+                    value = new_score
+                    column = col
+                
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break  # Beta cutoff
+            
+            return column, value
+        else:
+            value = np.inf
+            column = valid_cols[0]
+            
+            for col in valid_cols:
+                row, col_placed = drop_piece(col, -1)
+                new_score = minimax(depth-1, alpha, beta, True)[1]
+                undo_piece(row, col_placed)
+                
+                if new_score < value:
+                    value = new_score
+                    column = col
+                
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break  # Alpha cutoff
+            
+            return column, value
+    
+    # Get all valid columns
+    valid_cols = [col for col in range(COLS) if is_valid_column(col)]
+    
+    # If only one valid move, take it
+    if len(valid_cols) == 1:
+        return valid_cols[0]
+    
+    # Check if we can win in one move
+    for col in valid_cols:
+        row, col_placed = drop_piece(col, 1)
+        if check_win(1):
+            undo_piece(row, col_placed)
+            return col
+        undo_piece(row, col_placed)
+    
+    # Check if opponent can win in one move, block it
+    for col in valid_cols:
+        row, col_placed = drop_piece(col, -1)
+        if check_win(-1):
+            undo_piece(row, col_placed)
+            return col
+        undo_piece(row, col_placed)
+    
+    # Use minimax with alpha-beta pruning
+    # Adjust depth based on available time
+    depth = 6
+    
+    best_col, _ = minimax(depth, -np.inf, np.inf, True)
+    
+    # Ensure we return a valid move
+    if best_col in valid_cols:
+        return best_col
+    else:
+        # Fallback to first valid column
+        return valid_cols[0]

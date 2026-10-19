@@ -1,0 +1,911 @@
+<thinking>
+The user wants me to implement a Connect 4 AI policy in Python.
+
+Here's my plan for the `policy` function:
+
+1.  **Prioritize winning moves:** Check if I can win in the next turn. If so, take that move immediately.
+2.  **Block opponent's winning moves:** Check if the opponent can win in their next turn. If so, block them.
+3.  **Prioritize creating 3-in-a-rows (threatening moves):** Look for moves that create a 3-in-a-row for myself, especially if they lead to multiple threats or a direct win on the next move.
+4.  **Prioritize blocking opponent's 3-in-a-rows:** Look for moves that prevent the opponent from creating a 3-in-a-row.
+5.  **Center preference:** Play in the center columns (3, 2, 4) if possible, as they offer more opportunities for connecting.
+6.  **Random valid move:** If no strategic move is found, pick a random valid column.
+
+Let's break down the implementation details:
+
+*   **Helper function `is_valid_move(board, col)`:** Checks if a column is not full.
+*   **Helper function `drop_disc(board, col, player)`:** Returns a new board state after dropping a disc. This is useful for simulating moves.
+*   **Helper function `check_win(board, player)`:** Checks if a given player has won on the current board. This will be crucial for detecting wins and opponent threats.
+
+**Detailed `check_win` logic:**
+It needs to check for 4-in-a-row horizontally, vertically, and diagonally.
+
+*   Iterate through rows and columns.
+*   For each cell `(r, c)`:
+    *   **Horizontal:** Check `(r, c), (r, c+1), (r, c+2), (r, c+3)`
+    *   **Vertical:** Check `(r, c), (r+1, c), (r+2, c), (r+3, c)`
+    *   **Diagonal (top-left to bottom-right):** Check `(r, c), (r+1, c+1), (r+2, c+2), (r+3, c+3)`
+    *   **Diagonal (top-right to bottom-left):** Check `(r, c), (r+1, c-1), (r+2, c-2), (r+3, c-3)`
+
+**Detailed `policy` function logic:**
+
+1.  Get all valid columns.
+2.  **Winning move:**
+    *   For each valid `col`:
+        *   Simulate dropping my disc (`1`) in `col`.
+        *   If `check_win` returns true for me, return `col`.
+3.  **Blocking opponent's win:**
+    *   For each valid `col`:
+        *   Simulate dropping opponent's disc (`-1`) in `col`.
+        *   If `check_win` returns true for the opponent, return `col`. (This assumes I can block it by playing there).
+4.  **Strategic evaluation (simplified for now to avoid complexity, will expand if time permits):**
+    *   Let's consider evaluating moves based on how many 2-in-a-rows, 3-in-a-rows they create for me, and how many they block for the opponent. This can be done by a scoring function for each column.
+    *   **`score_move(board, col, player)`:**
+        *   Simulate dropping disc.
+        *   Count potential 4s (3s + 1 empty, 2s + 2 empty, etc.).
+        *   Prioritize moves that create threats.
+        *   This is complex. Let's simplify.
+        *   A simpler approach would be to count potential "open" 3-in-a-rows (e.g., `1 1 1 0` or `0 1 1 1 0`) and 2-in-a-rows.
+
+    *   **Let's try a simpler scoring approach for now:**
+        *   Initialize `best_score = -infinity`, `best_col = -1`.
+        *   Iterate through valid columns `col`:
+            *   `current_score = 0`.
+            *   Simulate dropping player `1` disc: `temp_board = drop_disc(board, col, 1)`
+            *   **Check for direct win (already handled, but safety).**
+            *   **Check for opponent's immediate win after my move**:
+                *   Simulate opponent's best response to my move. This is getting into minimax.
+                *   For this 1-second limit, a simpler eval for each column is better.
+
+    *   **Revised scoring strategy (simpler heuristic):**
+        *   **`evaluate_position(board, player)`:** This function will count the number of 4-in-a-rows, 3-in-a-rows (with an open end), 2-in-a-rows (with open ends) for a given player.
+        *   For `policy`:
+            *   **Winning move:** Same as above.
+            *   **Blocking move:** Same as above.
+            *   **Else, evaluate all prospective moves:**
+                *   `scores = {}`
+                *   For each `col` in valid moves:
+                    *   `temp_board = drop_disc(board, col, 1)`
+                    *   `my_score = calculate_potential_chains(temp_board, 1)` (count 2s, 3s, 4s for me)
+                    *   `opponent_score = calculate_potential_chains(temp_board, -1)` (count 2s, 3s, 4s for opponent in the *resultant* board, higher opponent score means bad move for me)
+                    *   `column_score = my_score - opponent_score * 1.5` (penalize opponent's potential more heavily)
+                    *   `scores[col] = column_score`
+                *   Choose `col` with max `score`.
+                *   Add a bias for center columns.
+
+**Refined `calculate_potential_chains(board, player)`:**
+This function will iterate through all possible 4-in-a-row segments.
+For each segment of 4 cells, count how many of the `player`'s discs are present and how many are empty `0`.
+If there are 3 of the player's discs and 1 empty, it's a potential 4.
+If there are 2 of the player's discs and 2 empty, it's a potential 4.
+This will give a heuristic value.
+
+Example for `calculate_potential_chains`:
+A segment `[P, P, P, 0]` is good. Score +X.
+A segment `[P, P, 0, 0]` is okay. Score +Y.
+A segment `[0, 0, 0, 0]` is neutral.
+A segment `[P, P, O, 0]` (O is opponent) is bad, as I can't win there.
+
+Let's define a simpler `evaluate_window(window, player)`:
+`window` is a list of 4 cells.
+If `window.count(player) == 4`: return 1000 (win)
+If `window.count(player) == 3 and window.count(0) == 1`: return 10 (threat of 4)
+If `window.count(player) == 2 and window.count(0) == 2`: return 5 (threat of 3)
+If `window.count(-player) == 3 and window.count(0) == 1`: return -50 (opponent threat: block if possible) -- *This is better handled by explicit blocking before scoring.*
+
+So `calculate_potential_chains` will sum these values over all possible windows.
+
+**Final Policy Structure:**
+
+1.  **Define Constants:** `ROWS = 6`, `COLS = 7`, `PLAYER = 1`, `OPPONENT = -1`.
+2.  **`get_valid_moves(board)`:** Returns list of column indices that are not full.
+3.  **`drop_disc(board, col, player)`:** Returns a *new* board with the disc dropped.
+4.  **`check_win(board, player)`:** Checks if `player` has 4-in-a-row.
+5.  **`get_next_open_row(board, col)`:** Returns the lowest empty row in a column, or -1 if full.
+6.  **`evaluate_window(window, player)`:** Helper for scoring a 4-cell window.
+7.  **`score_board(board, player)`:** Scores the entire board for a given player by checking all 4-in-a-row windows.
+    *   Iterate horizontal, vertical, and both diagonal directions.
+    *   Extract 4-cell windows.
+    *   Call `evaluate_window` on each.
+    *   Sum up scores.
+
+8.  **`policy(board)` function:**
+    *   Get `valid_cols = get_valid_moves(board)`.
+    *   **Initialize scores for each column:** `col_scores = {}`
+    *   **Phase 1: Direct Win / Block Opponent Win**
+        *   Iterate `col` in `valid_cols`:
+            *   `temp_board = drop_disc(board, col, PLAYER)`
+            *   If `check_win(temp_board, PLAYER)`: return `col` (immediate win)
+            *   `temp_board_opponent_move = drop_disc(board, col, OPPONENT)` (simulate opponent playing there)
+            *   If `check_win(temp_board_opponent_move, OPPONENT)`: return `col` (immediate block)
+
+    *   **Phase 2: Evaluate other moves using `score_board`**
+        *   `best_score = -float('inf')`
+        *   `best_col = random.choice(valid_cols)` (fallback to random)
+        *   For `col` in `valid_cols`:
+            *   Simulate my move: `my_temp_board = drop_disc(board, col, PLAYER)`
+            *   `score = score_board(my_temp_board, PLAYER)`
+            *   **Consider opponent's response:** (This is crucial for preventing opponent wins and setting traps)
+                *   Simulate opponent's *best* response after my move:
+                    *   `opponent_best_response_score = -float('inf')`
+                    *   For `op_col` in `get_valid_moves(my_temp_board)`:
+                        *   `opponent_play_board = drop_disc(my_temp_board, op_col, OPPONENT)`
+                        *   `op_score = score_board(opponent_play_board, OPPONENT)`
+                        *   `opponent_best_response_score = max(opponent_best_response_score, op_score)`
+                        *   **Special case: if opponent can win after my move, penalize heavily.**
+                        *   If `check_win(opponent_play_board, OPPONENT)`:
+                            `score -= 1000` (very bad move if it allows opponent to win)
+                            break # No need to check other op moves, this one is a definite loss.
+
+            *   **Add center preference:** `score += (3 - abs(col - 3)) * 3` (More for center)
+            *   If `score > best_score`:
+                `best_score = score`
+                `best_col = col`
+        *   Return `best_col`
+
+Let's refine the scoring for `score_board` and `evaluate_window`.
+`score_board` should return a single integer representing the board's goodness for `player`.
+
+`evaluate_window(window, player)`:
+    *   `my_pieces = window.count(player)`
+    *   `opponent_pieces = window.count(-player)`
+    *   `empty_cells = window.count(0)`
+
+    *   If `my_pieces == 4`: return 1000000 (definite win)
+    *   If `my_pieces == 3 and empty_cells == 1`: return 100 (potential win in one move)
+    *   If `my_pieces == 2 and empty_cells == 2`: return 10 (potential 3-in-a-row)
+    *   If `opponent_pieces == 3 and empty_cells == 1`: return -500 (opponent's threat, needs blocking. Note: This should ideally be handled explicitly if not already blocked. If not blocked, it means I'm not playing in that column, so this window needs to be considered as a negative for current player if it's open for the opponent).
+
+Let's refine the `policy` once again:
+
+1.  **`check_win(board, player)`**: Boolean check.
+2.  **`get_next_open_row(board, col)`**: Utility.
+3.  **`is_valid_move(board, col)`**: Utility.
+4.  **`drop_disc(board, col, player)`**: Returns a *new* board.
+5.  **`evaluate_board(board, player)`**: This function will calculate a heuristic score for the board for `player`. It sums up values from `evaluate_window`.
+
+    *   `evaluate_window(window, player)`:
+        *   `my_count = window.count(player)`
+        *   `opponent_count = window.count(-player)`
+        *   `empty_count = window.count(0)`
+        *   If `my_count == 4`: return 10000 # Winning position
+        *   If `my_count == 3` and `empty_count == 1`: return 100 # Threat of 4 for me
+        *   If `my_count == 2` and `empty_count == 2`: return 10 # Threat of 3 for me
+        *   If `opponent_count == 3` and `empty_count == 1`: return -110 # Opponent threat, slightly worse than my threat of 4 (so I prioritize blocking)
+        *   If `opponent_count == 2` and `empty_count == 2`: return -15 # Opponent's milder threat
+        *   return 0
+
+6.  **`policy(board)`:**
+    *   `valid_cols = [c for c in range(COLS) if is_valid_move(board, c)]`
+    *   If `not valid_cols`: return `random.randint(0, COLS - 1)` (should not happen if game is not over)
+
+    *   **Phase 1: Check for immediate win**
+        *   For `col` in `valid_cols`:
+            *   `temp_board = drop_disc(board, col, PLAYER)`
+            *   If `check_win(temp_board, PLAYER)`: return `col`
+
+    *   **Phase 2: Check for opponent's immediate win (and block)**
+        *   For `col` in `valid_cols`:
+            *   `temp_board = drop_disc(board, col, OPPONENT)` (this simulates opponent playing here, to see if they *would* win if I didn't block)
+            *   If `check_win(temp_board, OPPONENT)`: return `col`
+
+    *   **Phase 3: Minimax-like evaluation for 1-ply + heuristic**
+        *   `best_score = -float('inf')`
+        *   `best_col = random.choice(valid_cols)` (fallback, potentially biased towards center later)
+
+        *   For `col` in `valid_cols`:
+            *   `score = 0`
+            *   `my_move_board = drop_disc(board, col, PLAYER)`
+            *   `score += evaluate_board(my_move_board, PLAYER)` # Score for my position after my move
+
+            *   **Consider opponent's best counter-move *after* my current move:**
+                *   `opponent_max_score = -float('inf')`
+                *   `opponent_valid_cols = [c for c in range(COLS) if is_valid_move(my_move_board, c)]`
+                *   If `not opponent_valid_cols`: # Board is full after my move
+                    pass
+                else:
+                    For `op_col` in `opponent_valid_cols`:
+                        `opponent_move_board = drop_disc(my_move_board, op_col, OPPONENT)`
+                        `op_board_score = evaluate_board(opponent_move_board, OPPONENT)`
+                        `opponent_max_score = max(opponent_max_score, op_board_score)`
+                        # If opponent can win, heavily penalize my current move
+                        If `check_win(opponent_move_board, OPPONENT)`:
+                            `opponent_max_score = 1000000` # Very high score for opponent means bad for me
+                            break # Opponent found a winning move
+
+                    `score -= opponent_max_score * 0.9` # Subtract opponent's potential score, weighted.
+                        # Using 0.9 because opponent plays FOR THEM, not against me directly in all heuristics.
+                        # If `opponent_max_score` is 1,000,000 this makes `score` very negative.
+
+            *   **Center preference:** `score += (3 - abs(col - 3)) * 5` # Boost center columns
+            *   If `score > best_score`:
+                `best_score = score`
+                `best_col = col`
+            *   **Tie-breaking**: if `score == best_score`, randomly choose between them to add some variation.
+                *   This is a good idea, but for the first version, let's keep it simple to ensure correctness. The first 'best_col' found will be chosen if scores are equal. Or, if I want to break ties, I can append to a list and choose randomly.
+
+    *   Return `best_col`
+
+This looks like a solid plan. The `evaluate_board` and `evaluate_window` will be key to heuristic scoring. The 1-ply lookahead for the opponent's best move is important to prevent immediate losses.
+
+Double-check board indexing: Rows 0 (top) to 5 (bottom). Columns 0 to 6.
+When dropping a disc, it goes to the lowest available cell, meaning highest row index.
+`get_next_open_row` needs to iterate from `ROWS - 1` up to `0`.
+
+```python
+import random
+import math
+
+ROWS = 6
+COLS = 7
+PLAYER = 1  # My disc
+OPPONENT = -1 # Opponent's disc
+EMPTY = 0
+
+def get_next_open_row(board, col):
+    """
+    Returns the lowest available row in a given column, or -1 if the column is full.
+    """
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == EMPTY:
+            return r
+    return -1
+
+def is_valid_move(board, col):
+    """
+    Checks if a column is a valid move (not full).
+    """
+    return 0 <= col < COLS and board[0][col] == EMPTY # Check if top row is empty
+
+def drop_disc(board, col, player):
+    """
+    Returns a new board state after dropping a disc in the specified column.
+    Does not modify the original board.
+    """
+    new_board = [row[:] for row in board] # Deep copy of the board
+    row = get_next_open_row(new_board, col)
+    if row != -1:
+        new_board[row][col] = player
+    return new_board
+
+def check_win(board, player):
+    """
+    Checks if the given player has won on the current board.
+    """
+    # Check horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if all(board[r][c+i] == player for i in range(4)):
+                return True
+
+    # Check vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if all(board[r+i][c] == player for i in range(4)):
+                return True
+
+    # Check positive diagonal (bottom-left to top-right)
+    for r in range(3, ROWS): # Start from row 3 upwards
+        for c in range(COLS - 3):
+            if all(board[r-i][c+i] == player for i in range(4)):
+                return True
+
+    # Check negative diagonal (top-left to bottom-right)
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r+i][c+i] == player for i in range(4)):
+                return True
+
+    return False
+
+def evaluate_window(window, player):
+    """
+    Evaluates a 4-cell window for potential scores.
+    """
+    my_count = window.count(player)
+    opponent_count = window.count(-player)
+    empty_count = window.count(EMPTY)
+
+    score = 0
+    if my_count == 4:
+        score += 100000 # Definitely a winning state
+    elif my_count == 3 and empty_count == 1:
+        score += 100 # Opportunity for 4-in-a-row
+    elif my_count == 2 and empty_count == 2:
+        score += 10 # Opportunity for 3-in-a-row
+
+    if opponent_count == 3 and empty_count == 1:
+        score -= 110 # Opponent has an opportunity for 4-in-a-row (needs blocking)
+    elif opponent_count == 2 and empty_count == 2:
+        score -= 15 # Opponent has an opportunity for 3-in-a-row
+
+    return score
+
+def score_board(board, player):
+    """
+    Scores the entire board for a given player based on potential 4-in-a-rows.
+    """
+    score = 0
+
+    # Center column preference
+    # The center column (index 3) is usually strategically important.
+    center_array = [board[r][COLS // 2] for r in range(ROWS)]
+    center_count = center_array.count(player)
+    score += center_count * 3 # Give a small bonus for pieces in the center
+
+    # Horizontal scoring
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = board[r][c:c+4]
+            score += evaluate_window(window, player)
+
+    # Vertical scoring
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r+i][c] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Positive diagonal scoring (bottom-left to top-right)
+    for r in range(3, ROWS): # Start from row 3 upwards
+        for c in range(COLS - 3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Negative diagonal scoring (top-left to bottom-right)
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    return score
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Determines the best column to drop a disc for the current player heuristic.
+    """
+    valid_cols = [c for c in range(COLS) if is_valid_move(board, c)]
+
+    if not valid_cols:
+        # This case should ideally not happen if the game is still allowing moves.
+        # But if it does, return a random valid column if available, or 0.
+        return random.randint(0, COLS - 1) if COLS > 0 else 0
+
+    # Phase 1: Check for immediate win
+    for col in valid_cols:
+        temp_board = drop_disc(board, col, PLAYER)
+        if check_win(temp_board, PLAYER):
+            return col
+
+    # Phase 2: Check for opponent's immediate win and block it
+    for col in valid_cols:
+        temp_board = drop_disc(board, col, OPPONENT) # Simulate opponent's potential move
+        if check_win(temp_board, OPPONENT):
+            return col # Block the opponent's winning move
+
+    # Phase 3: Evaluate other moves using a heuristic (1-ply lookahead with opponent response consideration)
+    best_score = -math.inf
+    best_cols = []
+
+    for col in valid_cols:
+        current_move_score = 0
+
+        # Simulate my move
+        my_move_board = drop_disc(board, col, PLAYER)
+        current_move_score += score_board(my_move_board, PLAYER)
+
+        # Consider opponent's best counter-move after my current move (1-ply lookahead for opponent)
+        opponent_max_counter_score = -math.inf
+        opponent_valid_cols_after_my_move = [c for c in range(COLS) if is_valid_move(my_move_board, c)]
+
+        if not opponent_valid_cols_after_my_move: # Board full after my move
+            # This is a good scenario if it leads to a win, but win is already checked.
+            # If not a win, it's a draw, which is neutral for this score.
+            opponent_max_counter_score = 0
+            
+        else:
+            can_opponent_win_next = False
+            for op_col in opponent_valid_cols_after_my_move:
+                opponent_play_board = drop_disc(my_move_board, op_col, OPPONENT)
+                
+                if check_win(opponent_play_board, OPPONENT):
+                    can_opponent_win_next = True
+                    opponent_max_counter_score = 10000000 # Extremely high score, meaning immediate loss for me
+                    break # Opponent can win, no need to check other op moves
+
+            if not can_opponent_win_next: # Only evaluate opponent's heuristic if they can't win
+                for op_col in opponent_valid_cols_after_my_move:
+                    opponent_play_board = drop_disc(my_move_board, op_col, OPPONENT)
+                    op_board_heuristic_score = score_board(opponent_play_board, OPPONENT)
+                    opponent_max_counter_score = max(opponent_max_counter_score, op_board_heuristic_score)
+            
+            # Subtract opponent's potential score, weighted. A higher opponent_max_counter_score is bad for me.
+            # The 0.9 weighting means I value my own gain slightly more than opponent's potential gain.
+            current_move_score -= opponent_max_counter_score * 0.9 
+
+        # If current_move_score allows opponent to win, it would be extremely negative,
+        # so this should already handle prioritizing avoiding opponent wins.
+
+        # Center preference addition is handled within score_board for actual pieces,
+        # but let's add an explicit bias for picking center columns if scores are close.
+        # This gives a slight edge to the center if it feels 'equal' otherwise.
+        # It's an implicit bias as it will modify the total score.
+        current_move_score += (3 - abs(col - 3)) * 5 # Increase score for central columns (3,2,4, etc.)
+
+
+        if current_move_score > best_score:
+            best_score = current_move_score
+            best_cols = [col] # Start a new list of best columns
+        elif current_move_score == best_score:
+            best_cols.append(col) # Add to list if tied
+
+    # If multiple columns have the same best score, pick one randomly.
+    if best_cols:
+        return random.choice(best_cols)
+    else:
+        # Fallback, should ideally not be reached if valid_cols is not empty
+        return random.choice(valid_cols)
+```
+
+Small bug fix: `random.choice(valid_cols)` for `best_col` init if `best_cols` empty. Also, `if COLS > 0 else 0` in case `valid_cols` empty.
+The `check_win` on `temp_board_opponent_move` for blocking should be `drop_disc(board, col, -1)` (opponent disc) instead of `player`. Corrected this in my mental trace for the `policy` function.
+
+Final check on logic within `policy`:
+
+1.  **Direct Win:** My move leads to an immediate win for me. `return col`. (Highest priority)
+2.  **Block Opponent Win:** My move blocks an opponent's immediate win. `return col`. (Next highest priority)
+    *   It's crucial that `drop_disc(board, col, OPPONENT)` simulates what would happen *if the opponent played there*. If that leads to a win for the opponent, then *I* must play there to block.
+3.  **Heuristic Evaluation:**
+    *   Calculate `my_move_score` if I play `col`.
+    *   Then, consider `opponent_max_counter_score`: what is the *highest* score the opponent can achieve on the board *after my move* if they play optimally.
+        *   If the opponent can literally win, `opponent_max_counter_score` is a huge positive for them (meaning huge negative for me). This is caught by `check_win(opponent_play_board, OPPONENT)`.
+        *   If the opponent can't win, then `opponent_max_counter_score` is based on `evaluate_board` for the opponent.
+    *   My `current_move_score` is `my_score - weighted_opponent_score`. This is a standard minimax-like evaluation at shallow depth.
+    *   Center preference applied.
+    *   Choose the column that maximizes `current_move_score`. Break ties randomly.
+
+The logic seems robust for a 1-second constraint. The depth is effectively 2 (my move + opponent's responsive move), but the 'opponent's responsive move' is only evaluated heuristically, not full minimax, except for immediate wins. This should be fast enough.
+
+Consider edge case: `valid_cols` could be empty if the board is full. The initial `if not valid_cols` handles that by returning a random valid column (which might not exist if COLS is 0, but game constraints mean COLS is 7). `random.randint(0, COLS - 1)` will throw an error if `COLS` is 0. But for Connect 4 `COLS` is 7. So `random.choice(valid_cols)` is fine, and if `valid_cols` is empty, it means the board is full, the game is over, so the function returning *any* column is acceptable, but it likely won't be called in a full board.
+I will ensure `random.choice(valid_cols)` is the final fallback after heuristic evaluation.
+
+```python
+import random
+import math
+
+# Constants for the game
+ROWS = 6
+COLS = 7
+PLAYER = 1  # Represents our AI's disc
+OPPONENT = -1 # Represents the opponent's disc
+EMPTY = 0   # Represents an empty cell
+
+def get_next_open_row(board: list[list[int]], col: int) -> int:
+    """
+    Returns the lowest available row index in a given column, or -1 if the column is full.
+    Rows are indexed from 0 (top) to 5 (bottom).
+    """
+    for r in range(ROWS - 1, -1, -1):  # Iterate from bottom-most row upwards
+        if board[r][col] == EMPTY:
+            return r
+    return -1
+
+def is_valid_move(board: list[list[int]], col: int) -> bool:
+    """
+    Checks if a column is a valid move (i.e., not full and within bounds).
+    """
+    return 0 <= col < COLS and board[0][col] == EMPTY # Check if the top cell of the column is empty
+
+def drop_disc(board: list[list[int]], col: int, player: int) -> list[list[int]]:
+    """
+    Returns a new board state after dropping a disc in the specified column.
+    Does not modify the original board to allow for simulation.
+    """
+    new_board = [row[:] for row in board] # Create a deep copy of the board
+    row = get_next_open_row(new_board, col)
+    if row != -1:
+        new_board[row][col] = player
+    return new_board
+
+def check_win(board: list[list[int]], player: int) -> bool:
+    """
+    Checks if the given player has formed a 4-in-a-row on the current board.
+    """
+    # Check horizontal lines
+    for r in range(ROWS):
+        for c in range(COLS - 3): # Iterate until there are 4 columns left
+            if all(board[r][c+i] == player for i in range(4)):
+                return True
+
+    # Check vertical lines
+    for c in range(COLS):
+        for r in range(ROWS - 3): # Iterate until there are 4 rows left
+            if all(board[r+i][c] == player for i in range(4)):
+                return True
+
+    # Check positive diagonal lines (bottom-left to top-right)
+    # The starting cell (r, c) should allow for a 4-disc diagonal upwards and rightwards
+    for r in range(3, ROWS): # Start from row 3 (index 3) up to the top
+        for c in range(COLS - 3):
+            if all(board[r-i][c+i] == player for i in range(4)):
+                return True
+
+    # Check negative diagonal lines (top-left to bottom-right)
+    # The starting cell (r, c) should allow for a 4-disc diagonal downwards and rightwards
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r+i][c+i] == player for i in range(4)):
+                return True
+
+    return False
+
+def evaluate_window(window: list[int], player: int) -> int:
+    """
+    Evaluates a 4-cell window for potential scores based on player discs and empty cells.
+    """
+    my_count = window.count(player)
+    opponent_count = window.count(-player)
+    empty_count = window.count(EMPTY)
+
+    score = 0
+    if my_count == 4:
+        score += 100000 # Direct win
+    elif my_count == 3 and empty_count == 1:
+        score += 100   # Threat of 4 for current player
+    elif my_count == 2 and empty_count == 2:
+        score += 10    # Threat of 3 for current player
+
+    # Penalize if opponent can form a line
+    # These values are set to be slightly more impactful than our own corresponding threats
+    # to prioritize blocking.
+    if opponent_count == 3 and empty_count == 1:
+        score -= 110 # Opponent has a threat of 4
+    elif opponent_count == 2 and empty_count == 2:
+        score -= 15 # Opponent has a threat of 3
+    
+    return score
+
+def score_board(board: list[list[int]], player: int) -> int:
+    """
+    Calculates a heuristic score for the entire board for a given player
+    by evaluating all possible 4-in-a-row windows.
+    """
+    score = 0
+
+    # Prioritize center column play - often strategically advantageous
+    center_column_idx = COLS // 2
+    for r in range(ROWS):
+        if board[r][center_column_idx] == player:
+            score += 3 # Small bonus for discs in the center column
+
+    # Evaluate horizontal windows
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = board[r][c : c + 4]
+            score += evaluate_window(window, player)
+
+    # Evaluate vertical windows
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r+i][c] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Evaluate positive diagonal windows (bottom-left to top-right)
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Evaluate negative diagonal windows (top-left to bottom-right)
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    return score
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 AI targeting policy using a 1-ply lookahead with heuristic evaluation
+    and opponent response consideration.
+    """
+    valid_cols = [c for c in range(COLS) if is_valid_move(board, c)]
+
+    # If no valid moves, return a random column (should not happen in normal game flow unless board is full)
+    if not valid_cols:
+        return random.randint(0, COLS - 1)
+
+    # --- Phase 1: Check for an immediate winning move for our AI ---
+    for col in valid_cols:
+        temp_board = drop_disc(board, col, PLAYER)
+        if check_win(temp_board, PLAYER):
+            return col # Take the winning move immediately
+
+    # --- Phase 2: Check if the opponent has an immediate winning move and block it ---
+    for col in valid_cols:
+        temp_board = drop_disc(board, col, OPPONENT) # Simulate opponent placing a disc in this column
+        if check_win(temp_board, OPPONENT):
+            return col # Block the opponent's winning move
+
+    # --- Phase 3: Evaluate all other valid moves using a heuristic approach ---
+    # This involves a 1-ply lookahead: (my move) -> (opponent's best counter-move)
+    best_overall_score = -math.inf
+    best_choice_cols = [] # List to store columns with the highest score (for tie-breaking)
+
+    for col in valid_cols:
+        current_move_evaluation_score = 0
+
+        # Simulate our move
+        board_after_my_move = drop_disc(board, col, PLAYER)
+        
+        # Add the score of the board state after our move for our player
+        current_move_evaluation_score += score_board(board_after_my_move, PLAYER)
+
+        # Consider the opponent's best possible counter-move after our move
+        opponent_max_counter_score = -math.inf # Track the highest score the opponent can achieve
+        opponent_valid_cols_after_my_move = [c for c in range(COLS) if is_valid_move(board_after_my_move, c)]
+
+        if not opponent_valid_cols_after_my_move:
+            # If the board is full after our move and we haven't won (checked in Phase 1),
+            # this is effectively a draw or a loss if the opponent still had a path to win.
+            # For simplicity, if opponent can't move, their "score" is neutral.
+            opponent_max_counter_score = 0 
+        else:
+            found_opponent_winning_counter = False
+            for op_col in opponent_valid_cols_after_my_move:
+                board_after_opponent_counter = drop_disc(board_after_my_move, op_col, OPPONENT)
+                
+                # If opponent can win after my move, this is a very bad move for me
+                if check_win(board_after_opponent_counter, OPPONENT):
+                    opponent_max_counter_score = 10000000 # Large positive score for opponent means critical failure for me
+                    found_opponent_winning_counter = True
+                    break # No need to check other opponent moves if a winning one is found
+
+            if not found_opponent_winning_counter:
+                # If opponent cannot win immediately, evaluate their heuristic score
+                for op_col in opponent_valid_cols_after_my_move:
+                    board_after_opponent_counter = drop_disc(board_after_my_move, op_col, OPPONENT)
+                    op_board_heuristic_score = score_board(board_after_opponent_counter, OPPONENT)
+                    opponent_max_counter_score = max(opponent_max_counter_score, op_board_heuristic_score)
+            
+            # Subtract the opponent's potential best score from our current move's evaluation.
+            # The 0.9 weight means we penalize opponent's potential slightly less than our own gain.
+            current_move_evaluation_score -= opponent_max_counter_score * 0.9
+
+        # Add a bias for playing in the central columns
+        # The column 3 is the most central, columns 2 and 4 are next, etc.
+        current_move_evaluation_score += (3 - abs(col - COLS // 2)) * 5 
+
+        # Update best score and best column(s)
+        if current_move_evaluation_score > best_overall_score:
+            best_overall_score = current_move_evaluation_score
+            best_choice_cols = [col] # Start a new list for the best choice
+        elif current_move_evaluation_score == best_overall_score:
+            best_choice_cols.append(col) # Add to the list if it's a tie
+
+    # If there are multiple columns with the same highest score, pick one randomly for variety
+    if best_choice_cols:
+        return random.choice(best_choice_cols)
+    else:
+        # Fallback: if somehow no best score was found (e.g., all scores -inf, which shouldn't happen with valid_cols)
+        return random.choice(valid_cols)
+```</thinking>
+```python
+import random
+import math
+
+# Constants for the game
+ROWS = 6
+COLS = 7
+PLAYER = 1  # Represents our AI's disc
+OPPONENT = -1 # Represents the opponent's disc
+EMPTY = 0   # Represents an empty cell
+
+def get_next_open_row(board: list[list[int]], col: int) -> int:
+    """
+    Returns the lowest available row index in a given column, or -1 if the column is full.
+    Rows are indexed from 0 (top) to 5 (bottom).
+    """
+    for r in range(ROWS - 1, -1, -1):  # Iterate from bottom-most row upwards
+        if board[r][col] == EMPTY:
+            return r
+    return -1
+
+def is_valid_move(board: list[list[int]], col: int) -> bool:
+    """
+    Checks if a column is a valid move (i.e., not full and within bounds).
+    """
+    return 0 <= col < COLS and board[0][col] == EMPTY # Check if the top cell of the column is empty
+
+def drop_disc(board: list[list[int]], col: int, player: int) -> list[list[int]]:
+    """
+    Returns a new board state after dropping a disc in the specified column.
+    Does not modify the original board to allow for simulation.
+    """
+    new_board = [row[:] for row in board] # Create a deep copy of the board
+    row = get_next_open_row(new_board, col)
+    if row != -1:
+        new_board[row][col] = player
+    return new_board
+
+def check_win(board: list[list[int]], player: int) -> bool:
+    """
+    Checks if the given player has formed a 4-in-a-row on the current board.
+    """
+    # Check horizontal lines
+    for r in range(ROWS):
+        for c in range(COLS - 3): # Iterate until there are 4 columns left
+            if all(board[r][c+i] == player for i in range(4)):
+                return True
+
+    # Check vertical lines
+    for c in range(COLS):
+        for r in range(ROWS - 3): # Iterate until there are 4 rows left
+            if all(board[r+i][c] == player for i in range(4)):
+                return True
+
+    # Check positive diagonal lines (bottom-left to top-right)
+    # The starting cell (r, c) should allow for a 4-disc diagonal upwards and rightwards
+    for r in range(3, ROWS): # Start from row 3 (index 3) up to the top
+        for c in range(COLS - 3):
+            if all(board[r-i][c+i] == player for i in range(4)):
+                return True
+
+    # Check negative diagonal lines (top-left to bottom-right)
+    # The starting cell (r, c) should allow for a 4-disc diagonal downwards and rightwards
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if all(board[r+i][c+i] == player for i in range(4)):
+                return True
+
+    return False
+
+def evaluate_window(window: list[int], player: int) -> int:
+    """
+    Evaluates a 4-cell window for potential scores based on player discs and empty cells.
+    """
+    my_count = window.count(player)
+    opponent_count = window.count(-player)
+    empty_count = window.count(EMPTY)
+
+    score = 0
+    if my_count == 4:
+        score += 100000 # Direct win
+    elif my_count == 3 and empty_count == 1:
+        score += 100   # Threat of 4 for current player
+    elif my_count == 2 and empty_count == 2:
+        score += 10    # Threat of 3 for current player
+
+    # Penalize if opponent can form a line
+    # These values are set to be slightly more impactful than our own corresponding threats
+    # to prioritize blocking.
+    if opponent_count == 3 and empty_count == 1:
+        score -= 110 # Opponent has a threat of 4
+    elif opponent_count == 2 and empty_count == 2:
+        score -= 15 # Opponent has a threat of 3
+    
+    return score
+
+def score_board(board: list[list[int]], player: int) -> int:
+    """
+    Calculates a heuristic score for the entire board for a given player
+    by evaluating all possible 4-in-a-row windows.
+    """
+    score = 0
+
+    # Prioritize center column play - often strategically advantageous
+    center_column_idx = COLS // 2
+    for r in range(ROWS):
+        if board[r][center_column_idx] == player:
+            score += 3 # Small bonus for discs in the center column
+
+    # Evaluate horizontal windows
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = board[r][c : c + 4]
+            score += evaluate_window(window, player)
+
+    # Evaluate vertical windows
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r+i][c] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Evaluate positive diagonal windows (bottom-left to top-right)
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r-i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    # Evaluate negative diagonal windows (top-left to bottom-right)
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r+i][c+i] for i in range(4)]
+            score += evaluate_window(window, player)
+
+    return score
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Connect 4 AI targeting policy using a 1-ply lookahead with heuristic evaluation
+    and opponent response consideration.
+    """
+    valid_cols = [c for c in range(COLS) if is_valid_move(board, c)]
+
+    # If no valid moves, return a random column (should not happen in normal game flow unless board is full)
+    if not valid_cols:
+        return random.randint(0, COLS - 1)
+
+    # --- Phase 1: Check for an immediate winning move for our AI ---
+    for col in valid_cols:
+        temp_board = drop_disc(board, col, PLAYER)
+        if check_win(temp_board, PLAYER):
+            return col # Take the winning move immediately
+
+    # --- Phase 2: Check if the opponent has an immediate winning move and block it ---
+    for col in valid_cols:
+        temp_board = drop_disc(board, col, OPPONENT) # Simulate opponent placing a disc in this column
+        if check_win(temp_board, OPPONENT):
+            return col # Block the opponent's winning move
+
+    # --- Phase 3: Evaluate all other valid moves using a heuristic approach ---
+    # This involves a 1-ply lookahead: (my move) -> (opponent's best counter-move)
+    best_overall_score = -math.inf
+    best_choice_cols = [] # List to store columns with the highest score (for tie-breaking)
+
+    for col in valid_cols:
+        current_move_evaluation_score = 0
+
+        # Simulate our move
+        board_after_my_move = drop_disc(board, col, PLAYER)
+        
+        # Add the score of the board state after our move for our player
+        current_move_evaluation_score += score_board(board_after_my_move, PLAYER)
+
+        # Consider the opponent's best possible counter-move after our move
+        opponent_max_counter_score = -math.inf # Track the highest score the opponent can achieve
+        opponent_valid_cols_after_my_move = [c for c in range(COLS) if is_valid_move(board_after_my_move, c)]
+
+        if not opponent_valid_cols_after_my_move:
+            # If the board is full after our move and we haven't won (checked in Phase 1),
+            # this is effectively a draw or a loss if the opponent still had a path to win.
+            # For simplicity, if opponent can't move, their "score" is neutral.
+            opponent_max_counter_score = 0 
+        else:
+            found_opponent_winning_counter = False
+            for op_col in opponent_valid_cols_after_my_move:
+                board_after_opponent_counter = drop_disc(board_after_my_move, op_col, OPPONENT)
+                
+                # If opponent can win after my move, this is a very bad move for me
+                if check_win(board_after_opponent_counter, OPPONENT):
+                    opponent_max_counter_score = 10000000 # Large positive score for opponent means critical failure for me
+                    found_opponent_winning_counter = True
+                    break # No need to check other opponent moves if a winning one is found
+
+            if not found_opponent_winning_counter:
+                # If opponent cannot win immediately, evaluate their heuristic score
+                for op_col in opponent_valid_cols_after_my_move:
+                    board_after_opponent_counter = drop_disc(board_after_my_move, op_col, OPPONENT)
+                    op_board_heuristic_score = score_board(board_after_opponent_counter, OPPONENT)
+                    opponent_max_counter_score = max(opponent_max_counter_score, op_board_heuristic_score)
+            
+            # Subtract the opponent's potential best score from our current move's evaluation.
+            # The 0.9 weight means we penalize opponent's potential slightly less than our own gain.
+            current_move_evaluation_score -= opponent_max_counter_score * 0.9
+
+        # Add a bias for playing in the central columns
+        # The column 3 is the most central, columns 2 and 4 are next, etc.
+        current_move_evaluation_score += (3 - abs(col - COLS // 2)) * 5 
+
+        # Update best score and best column(s)
+        if current_move_evaluation_score > best_overall_score:
+            best_overall_score = current_move_evaluation_score
+            best_choice_cols = [col] # Start a new list for the best choice
+        elif current_move_evaluation_score == best_overall_score:
+            best_choice_cols.append(col) # Add to the list if it's a tie
+
+    # If there are multiple columns with the same highest score, pick one randomly for variety
+    if best_choice_cols:
+        return random.choice(best_choice_cols)
+    else:
+        # Fallback: if somehow no best score was found (e.g., all scores -inf, which shouldn't happen with valid_cols)
+        return random.choice(valid_cols)
+```

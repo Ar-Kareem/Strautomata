@@ -1,0 +1,289 @@
+
+import time
+from typing import List, Tuple, Dict
+
+# 4x4 board uses 16-bit bitboards:
+# bit i corresponds to (row=i//4, col=i%4)
+FULL_MASK = (1 << 16) - 1
+
+# Winning patterns: 4 rows, 4 cols, 2 diagonals = 10 patterns
+PATTERNS = []
+# Rows
+for r in range(4):
+    pat = 0
+    for c in range(4):
+        pat |= 1 << (r * 4 + c)
+    PATTERNS.append(pat)
+# Cols
+for c in range(4):
+    pat = 0
+    for r in range(4):
+        pat |= 1 << (r * 4 + c)
+    PATTERNS.append(pat)
+# Diagonals
+PATTERNS.append((1 << 0) | (1 << 5) | (1 << 10) | (1 << 15))
+PATTERNS.append((1 << 3) | (1 << 6) | (1 << 9) | (1 << 12))
+
+WIN_SCORE = 10_000_000
+INF = 10_000_000_000
+
+# Positional preference: centers > corners > edges
+_POS = [0] * 16
+_centers = {(1, 1), (1, 2), (2, 1), (2, 2)}
+_corners = {(0, 0), (0, 3), (3, 0), (3, 3)}
+for r in range(4):
+    for c in range(4):
+        idx = r * 4 + c
+        if (r, c) in _centers:
+            _POS[idx] = 7
+        elif (r, c) in _corners:
+            _POS[idx] = 5
+        else:
+            _POS[idx] = 3
+
+# Heuristic weights for "open" lines (no enemy pieces on the line)
+# indexed by how many pieces you have on that line: 0..4
+_LINE_W = [0, 2, 12, 80, 2000]
+
+# Transposition table: key=(xmask, omask, turn, depth_rem) -> value
+_TT: Dict[Tuple[int, int, int, int], int] = {}
+
+
+def _popcount(x: int) -> int:
+    # Python 3.8+ typically supports int.bit_count; fallback is safe.
+    try:
+        return x.bit_count()
+    except AttributeError:
+        return bin(x).count("1")
+
+
+def _is_win(mask: int) -> bool:
+    for p in PATTERNS:
+        if (mask & p) == p:
+            return True
+    return False
+
+
+def _heuristic_eval(xmask: int, omask: int) -> int:
+    """
+    Heuristic from X's (player=1) perspective.
+    Positive is good for X, negative is good for O.
+    """
+    # If already terminal, return big values (caller also checks, but keep stable).
+    if _is_win(xmask):
+        return WIN_SCORE
+    if _is_win(omask):
+        return -WIN_SCORE
+
+    score = 0
+    for p in PATTERNS:
+        xm = xmask & p
+        om = omask & p
+        if xm and om:
+            continue  # blocked line
+        cx = _popcount(xm)
+        co = _popcount(om)
+        if co == 0:
+            score += _LINE_W[cx]
+        elif cx == 0:
+            score -= _LINE_W[co]
+    return score
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _negamax(
+    xmask: int,
+    omask: int,
+    turn: int,          # 1 means X to move, -1 means O to move
+    depth_rem: int,
+    alpha: int,
+    beta: int,
+    ply: int,
+    t_end: float
+) -> int:
+    if time.perf_counter() >= t_end:
+        raise _Timeout
+
+    # Terminal checks
+    if _is_win(xmask):
+        return (WIN_SCORE - ply) if turn == 1 else (-WIN_SCORE + ply)
+    if _is_win(omask):
+        return (-WIN_SCORE + ply) if turn == 1 else (WIN_SCORE - ply)
+
+    occ = xmask | omask
+    empties = (~occ) & FULL_MASK
+    if empties == 0:
+        return 0  # draw
+
+    if depth_rem == 0:
+        h = _heuristic_eval(xmask, omask)
+        return h if turn == 1 else -h
+
+    key = (xmask, omask, turn, depth_rem)
+    cached = _TT.get(key)
+    if cached is not None:
+        return cached
+
+    # Move ordering: immediate winning moves first, then heuristic ordering.
+    moves = []
+    e = empties
+    while e:
+        lsb = e & -e
+        idx = (lsb.bit_length() - 1) if hasattr(int, "bit_length") else _popcount((lsb - 1) ^ (lsb + (lsb - 1)))
+        e -= lsb
+
+        if turn == 1:
+            nx, no = xmask | lsb, omask
+            if _is_win(nx):
+                # Fast win
+                val = WIN_SCORE - ply - 1
+                _TT[key] = val
+                return val
+        else:
+            nx, no = xmask, omask | lsb
+            if _is_win(no):
+                val = WIN_SCORE - ply - 1
+                _TT[key] = val
+                return val
+
+        # Cheap ordering score
+        h = _heuristic_eval(nx, no)
+        order_score = (h if turn == 1 else -h) + _POS[idx]
+        moves.append((order_score, lsb, idx))
+
+    moves.sort(reverse=True, key=lambda t: t[0])
+
+    best = -INF
+    a = alpha
+    for _, bit, _idx in moves:
+        if turn == 1:
+            nx, no = xmask | bit, omask
+        else:
+            nx, no = xmask, omask | bit
+
+        val = -_negamax(nx, no, -turn, depth_rem - 1, -beta, -a, ply + 1, t_end)
+        if val > best:
+            best = val
+        if best > a:
+            a = best
+        if a >= beta:
+            break
+
+    _TT[key] = best
+    return best
+
+
+def _bit_to_rc(bit: int) -> Tuple[int, int]:
+    idx = bit.bit_length() - 1
+    return idx // 4, idx % 4
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Convert to bitboards
+    xmask = 0
+    omask = 0
+    for r in range(4):
+        for c in range(4):
+            v = board[r][c]
+            bit = 1 << (r * 4 + c)
+            if v == 1:
+                xmask |= bit
+            elif v == -1:
+                omask |= bit
+
+    occ = xmask | omask
+    empties = (~occ) & FULL_MASK
+    if empties == 0:
+        # No legal moves; return something (game should be over)
+        return (0, 0)
+
+    # Immediate win / block without search (very important tactically)
+    e = empties
+    while e:
+        bit = e & -e
+        e -= bit
+        if _is_win(xmask | bit):
+            return _bit_to_rc(bit)
+
+    e = empties
+    while e:
+        bit = e & -e
+        e -= bit
+        if _is_win(omask | bit):
+            return _bit_to_rc(bit)
+
+    # Iterative deepening alpha-beta
+    t_start = time.perf_counter()
+    # Keep a safety margin under 1 second
+    t_end = t_start + 0.95
+
+    # Default fallback: best positional move
+    best_move_bit = (empties & -empties)
+    best_fallback_score = -INF
+    e = empties
+    while e:
+        bit = e & -e
+        e -= bit
+        idx = bit.bit_length() - 1
+        s = _POS[idx]
+        if s > best_fallback_score:
+            best_fallback_score = s
+            best_move_bit = bit
+
+    # Root move ordering for better pruning
+    root_moves = []
+    e = empties
+    while e:
+        bit = e & -e
+        e -= bit
+        idx = bit.bit_length() - 1
+        h = _heuristic_eval(xmask | bit, omask)
+        root_moves.append((h + _POS[idx], bit))
+    root_moves.sort(reverse=True, key=lambda t: t[0])
+
+    # Maximum remaining plies
+    max_depth = _popcount(empties)
+
+    best_move = best_move_bit
+    best_score = -INF
+
+    for depth in range(1, max_depth + 1):
+        try:
+            cur_best_move = best_move
+            cur_best_score = -INF
+            alpha = -INF
+            beta = INF
+
+            for _ord, bit in root_moves:
+                if time.perf_counter() >= t_end:
+                    raise _Timeout
+
+                nx, no = xmask | bit, omask
+                # depth-1 remaining because we already made one move
+                val = -_negamax(nx, no, -1, depth - 1, -beta, -alpha, 1, t_end)
+
+                if val > cur_best_score:
+                    cur_best_score = val
+                    cur_best_move = bit
+                if val > alpha:
+                    alpha = val
+
+            # Only commit if we completed this depth
+            best_move = cur_best_move
+            best_score = cur_best_score
+
+            # If we found a forced win at this depth, we can stop early
+            if best_score >= WIN_SCORE - 10:
+                break
+
+        except _Timeout:
+            break
+
+    # Ensure legality (paranoia)
+    if (best_move & empties) == 0:
+        best_move = (empties & -empties)
+
+    return _bit_to_rc(best_move)

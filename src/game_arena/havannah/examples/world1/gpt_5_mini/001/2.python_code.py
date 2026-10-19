@@ -1,0 +1,378 @@
+
+#!/usr/bin/env python3
+"""
+Havannah policy for 15x15 board representation.
+
+Implements:
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]
+
+Returns a legal move (r, c).
+"""
+
+from typing import List, Tuple, Set, Dict
+import numpy as np
+import math
+import hashlib
+
+# Neighbor offsets adapted to the hex embedding described in the problem statement.
+_NEIGHBOR_OFFSETS = [(-1, 0), (1, 0), (-1, -1), (0, -1), (0, 1), (-1, 1)]
+
+
+def _neighbors(r: int, c: int, N: int, valid_mask) -> List[Tuple[int, int]]:
+    res = []
+    for dr, dc in _NEIGHBOR_OFFSETS:
+        rr = r + dr
+        cc = c + dc
+        if 0 <= rr < N and 0 <= cc < N and valid_mask[rr][cc]:
+            res.append((rr, cc))
+    return res
+
+
+def _build_board(N: int, me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask):
+    # 0 empty, 1 me, 2 opp, -1 invalid
+    board = np.full((N, N), -1, dtype=int)
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c]:
+                board[r, c] = 0
+    for (r, c) in me:
+        board[r, c] = 1
+    for (r, c) in opp:
+        board[r, c] = 2
+    return board
+
+
+def _boundary_and_corners(N: int, valid_mask) -> Tuple[List[Tuple[int, int]], Set[Tuple[int, int]], Dict[Tuple[int, int], int]]:
+    # Find boundary cells (valid cells with neighbor count < 6)
+    valid = valid_mask
+    boundary = []
+    deg = {}
+    for r in range(N):
+        for c in range(N):
+            if not valid[r][c]:
+                continue
+            neigh = 0
+            for dr, dc in _NEIGHBOR_OFFSETS:
+                rr = r + dr
+                cc = c + dc
+                if 0 <= rr < N and 0 <= cc < N and valid[rr][cc]:
+                    neigh += 1
+            deg[(r, c)] = neigh
+            if neigh < 6:
+                boundary.append((r, c))
+    if not boundary:
+        return [], set(), {}
+    # corners: boundary cells with degree == 2 (should be 6)
+    corners = set([p for p in boundary if deg.get(p, 0) == 2])
+    # Build boundary cycle by walking neighbors of the boundary set
+    boundary_set = set(boundary)
+    # adjacency among boundaries
+    b_adj = {}
+    for (r, c) in boundary:
+        lst = []
+        for dr, dc in _NEIGHBOR_OFFSETS:
+            rr, cc = r + dr, c + dc
+            if (rr, cc) in boundary_set:
+                lst.append((rr, cc))
+        b_adj[(r, c)] = lst
+
+    # pick start: prefer a corner if exists else any boundary cell
+    start = next(iter(corners)) if corners else boundary[0]
+    cycle = [start]
+    prev = None
+    curr = start
+    # walk until return to start or stuck (safeguard)
+    for _ in range(len(boundary) + 5):
+        neighs = b_adj[curr]
+        # choose neighbor that is not prev
+        next_cell = None
+        for nb in neighs:
+            if nb != prev:
+                next_cell = nb
+                break
+        if next_cell is None:
+            break
+        prev, curr = curr, next_cell
+        if curr == start:
+            break
+        cycle.append(curr)
+    # If didn't close the cycle, fallback to sorted boundary list (deterministic)
+    if cycle[0] != cycle[-1] and len(cycle) != len(boundary):
+        cycle = boundary.copy()
+    # create mapping cell->edge_index by splitting cycle at corners
+    edge_index = {}
+    if not cycle:
+        return boundary, corners, edge_index
+    # ensure cycle is linear list of boundary cells (if last equals first, remove duplicate)
+    if cycle and cycle[0] == cycle[-1]:
+        cycle = cycle[:-1]
+    L = len(cycle)
+    # find corner indices in cycle order
+    corner_idxs = [i for i,cell in enumerate(cycle) if cell in corners]
+    if len(corner_idxs) < 6:
+        # fallback: if fewer than 6 detected, distribute edges by splitting cycle into 6 segments as evenly as possible
+        corner_idxs = [int(round(i * L / 6.0)) for i in range(6)]
+    # make ordered list of corner_idxs (they are in cycle order)
+    corner_idxs_sorted = corner_idxs
+    # build segments
+    for seg_id in range(6):
+        a = corner_idxs_sorted[seg_id]
+        b = corner_idxs_sorted[(seg_id + 1) % 6]
+        # iterate from a to b (wrap if needed)
+        idx = a
+        while True:
+            edge_index[cycle[idx % L]] = seg_id
+            if idx % L == b % L:
+                break
+            idx += 1
+            # guard to avoid infinite loop
+            if (idx - a) > L + 5:
+                break
+    return boundary, corners, edge_index
+
+
+def _connected_component(start: Tuple[int, int], board: np.ndarray, player: int, valid_mask) -> Set[Tuple[int, int]]:
+    N = board.shape[0]
+    stack = [start]
+    seen = set([start])
+    while stack:
+        r, c = stack.pop()
+        for nb in _neighbors(r, c, N, valid_mask):
+            if nb in seen:
+                continue
+            rr, cc = nb
+            if board[rr, cc] == player:
+                seen.add(nb)
+                stack.append(nb)
+    return seen
+
+
+def _component_edges_and_corners(component: Set[Tuple[int, int]], corners: Set[Tuple[int, int]], edge_index: Dict[Tuple[int, int], int]) -> Tuple[int, int]:
+    # count distinct corners and distinct edges touched by component
+    corners_touched = 0
+    for c in corners:
+        if c in component:
+            corners_touched += 1
+    edges_touched = set()
+    for cell in component:
+        if cell in edge_index:
+            edges_touched.add(edge_index[cell])
+    return corners_touched, len(edges_touched)
+
+
+def _component_cycle_exists(component: Set[Tuple[int, int]], valid_mask) -> bool:
+    # build adjacency count within component
+    # edges = number of adjacencies between component nodes
+    edges = 0
+    for (r, c) in component:
+        for nb in _neighbors(r, c, len(valid_mask), valid_mask):
+            if nb in component:
+                edges += 1
+    edges = edges // 2
+    nodes = len(component)
+    # In an undirected connected graph, cycle exists iff edges >= nodes
+    return edges >= nodes and nodes > 0
+
+
+def _is_winning_after_move(move: Tuple[int, int], me_positions: List[Tuple[int, int]], board: np.ndarray,
+                           valid_mask, corners: Set[Tuple[int, int]], edge_index: Dict[Tuple[int, int], int]) -> bool:
+    r, c = move
+    N = board.shape[0]
+    if not valid_mask[r][c] or board[r, c] != 0:
+        return False
+    # simulate placement
+    board2 = board.copy()
+    board2[r, c] = 1
+    # find component containing the new stone
+    comp = _connected_component((r, c), board2, 1, valid_mask)
+    # check bridge: touches >=2 corners
+    corners_touched, edges_touched_count = _component_edges_and_corners(comp, corners, edge_index)
+    if corners_touched >= 2:
+        return True
+    # check fork: touches >=3 edges
+    if edges_touched_count >= 3:
+        return True
+    # check ring: component cycle exists
+    if _component_cycle_exists(comp, valid_mask):
+        return True
+    return False
+
+
+def _is_opponent_winning_after_move(move: Tuple[int, int], opp_positions: List[Tuple[int, int]], board: np.ndarray,
+                                    valid_mask, corners: Set[Tuple[int, int]], edge_index: Dict[Tuple[int, int], int]) -> bool:
+    # similar to own check but for opponent
+    r, c = move
+    if not valid_mask[r][c] or board[r, c] != 0:
+        return False
+    board2 = board.copy()
+    board2[r, c] = 2
+    comp = _connected_component((r, c), board2, 2, valid_mask)
+    corners_touched, edges_touched_count = _component_edges_and_corners(comp, corners, edge_index)
+    if corners_touched >= 2:
+        return True
+    if edges_touched_count >= 3:
+        return True
+    if _component_cycle_exists(comp, valid_mask):
+        return True
+    return False
+
+
+def _evaluate_move(move: Tuple[int, int], board: np.ndarray, valid_mask, me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]],
+                   center: Tuple[float, float], corners: Set[Tuple[int, int]], edge_index: Dict[Tuple[int, int], int]) -> float:
+    r, c = move
+    N = board.shape[0]
+    score = 0.0
+    # base: prefer center (control)
+    dx = r - center[0]
+    dy = c - center[1]
+    dist_center = math.hypot(dx, dy)
+    score -= 0.5 * dist_center
+
+    # adjacency: connecting to our stones
+    my_neighbors = 0
+    opp_neighbors = 0
+    empty_neighbors = 0
+    for nb in _neighbors(r, c, N, valid_mask):
+        rr, cc = nb
+        val = board[rr, cc]
+        if val == 1:
+            my_neighbors += 1
+        elif val == 2:
+            opp_neighbors += 1
+        elif val == 0:
+            empty_neighbors += 1
+    score += 3.0 * my_neighbors
+    # blocking opponent is valuable
+    score += 1.5 * opp_neighbors
+
+    # edge/corner proximity: closer to corners give bonus (encourage bridges)
+    if corners:
+        min_corner_dist = min(math.hypot(r - cr, c - cc) for (cr, cc) in corners)
+        score -= 0.3 * min_corner_dist
+
+    # if the move is on the boundary, give a bonus (helps forks)
+    if (r, c) in edge_index:
+        score += 1.0 + 0.5 * (1.0 / (1.0 + dist_center))
+
+    # penalize moves that are isolated (no neighbors)
+    if my_neighbors + opp_neighbors == 0:
+        score -= 0.7
+
+    # prefer moves that increase connectivity toward corners: compute adjacency to corner-reachable empty path
+    # cheap heuristic: distance to nearest corner along valid cells ignoring occupancy (BFS)
+    # we do a small BFS limited depth
+    limit = 6
+    visited = set()
+    q = [(r, c, 0)]
+    min_corner_steps = 999
+    while q:
+        rr, cc, d = q.pop(0)
+        if (rr, cc) in visited or d > limit:
+            continue
+        visited.add((rr, cc))
+        if (rr, cc) in corners:
+            min_corner_steps = min(min_corner_steps, d)
+            break
+        for nb in _neighbors(rr, cc, N, valid_mask):
+            if nb not in visited:
+                q.append((nb[0], nb[1], d + 1))
+    if min_corner_steps < 999:
+        score -= 0.4 * min_corner_steps
+
+    # encourage moves that block opponent quickly connecting to corners: if this cell is adjacent to many opponent stones, keep bonus
+    score += 0.25 * opp_neighbors
+
+    return score
+
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask) -> Tuple[int, int]:
+    """
+    Select a move for Havannah.
+
+    Args:
+        me: list of (r, c) for player-0 stones.
+        opp: list of (r, c) for player-1 stones.
+        valid_mask: 2D array-like of booleans marking playable cells.
+
+    Returns:
+        (r, c) a legal move tuple.
+    """
+    # Normalize valid_mask into numpy boolean array
+    valid_mask = np.array(valid_mask, dtype=bool)
+    N = valid_mask.shape[0]
+    board = _build_board(N, me, opp, valid_mask)
+
+    # Build boundary, corners and edge_index
+    boundary, corners, edge_index = _boundary_and_corners(N, valid_mask)
+
+    # Precompute free moves
+    free_moves = [(r, c) for r in range(N) for c in range(N) if valid_mask[r][c] and board[r, c] == 0]
+    if not free_moves:
+        # No move found (shouldn't happen), but pick first valid cell to avoid disqualification
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+
+    # 1) Check immediate winning moves for ourselves
+    for mv in free_moves:
+        if _is_winning_after_move(mv, me, board, valid_mask, corners, edge_index):
+            return mv
+
+    # 2) Block opponent immediate winning moves
+    blocking_moves = []
+    for mv in free_moves:
+        if _is_opponent_winning_after_move(mv, opp, board, valid_mask, corners, edge_index):
+            blocking_moves.append(mv)
+    if blocking_moves:
+        # choose best blocking move by heuristic (prefer ones that also help us)
+        me_set = set(me)
+        opp_set = set(opp)
+        center = (N / 2.0, N / 2.0)
+        best = None
+        best_score = -1e9
+        for mv in blocking_moves:
+            sc = _evaluate_move(mv, board, valid_mask, me_set, opp_set, center, corners, edge_index)
+            if sc > best_score:
+                best_score = sc
+                best = mv
+        if best is not None:
+            return best
+        return blocking_moves[0]
+
+    # 3) Evaluate all moves heuristically and pick best
+    me_set = set(me)
+    opp_set = set(opp)
+    center = (N / 2.0, N / 2.0)
+    scores = []
+    for mv in free_moves:
+        sc = _evaluate_move(mv, board, valid_mask, me_set, opp_set, center, corners, edge_index)
+        scores.append((sc, mv))
+
+    # deterministic tie-breaker using hash of board state
+    # sort scores descending, but break ties using stable deterministic ordering derived from state
+    scores.sort(reverse=True, key=lambda x: (x[0], - (x[1][0] * 100 + x[1][1])))
+    top_score = scores[0][0]
+    # gather all with score within tiny epsilon
+    eps = 1e-6
+    candidates = [mv for sc, mv in scores if abs(sc - top_score) <= eps]
+    if len(candidates) == 1:
+        return candidates[0]
+    # deterministic selection among candidates: hash me+opp lists
+    h = hashlib.sha256()
+    for p in sorted(me):
+        h.update(f"M{p[0]},{p[1]}|".encode())
+    for p in sorted(opp):
+        h.update(f"O{p[0]},{p[1]}|".encode())
+    digest = int(h.hexdigest()[:16], 16)
+    choice = digest % len(candidates)
+    return candidates[choice]
+
+
+# Allow direct testing when running as script (simple random move)
+if __name__ == "__main__":
+    # Example trivial test: empty 15x15 with a central hex board mask approximated as all True
+    N = 15
+    vm = np.ones((N, N), dtype=bool)
+    mv = policy([], [], vm)
+    print("Selected move:", mv)

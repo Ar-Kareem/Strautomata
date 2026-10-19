@@ -1,0 +1,154 @@
+# Strategy for Pentago AI Policy
+
+1. **Winning Moves First**: Always check if I can win immediately with the next move (placing a marble that creates a 5-in-a-row without even needing rotation). If found, take that move.
+
+2. **Block Opponent Wins**: Check if the opponent has an immediate winning threat (4 in a row with an empty space) that needs to be blocked by either:
+   - Occupying the empty space in their line
+   - Rotating to disrupt their line
+
+3. **Center Control**: Prefer placing marbles in central positions (especially quadrants 0 and 3 centers) as they offer more flexibility for future moves.
+
+4. **Create Multiple Threats**: Try to place marbles that create potential lines in multiple directions simultaneously.
+
+5. **Rotation Strategy**: When rotating, prefer rotations that:
+   - Advance my own potential lines
+   - Disrupt opponent's potential lines
+   - Move center pieces to better positions
+
+6. **Defensive Play**: When no obvious offensive moves are available, focus on moves that don't give the opponent obvious advantages.
+
+Here's the implementation:
+
+<code>
+import numpy as np
+from itertools import product
+
+def policy(you, opponent):
+    you_board = np.array(you)
+    opp_board = np.array(opponent)
+    empty = ~you_board & ~opp_board
+    
+    # Convert 1-indexed to 0-indexed for easier calculations
+    def find_immediate_win(board):
+        # Check all possible empty positions
+        for r, c in zip(*np.where(empty)):
+            temp = board.copy()
+            temp[r][c] = 1
+            if check_win(temp):
+                return r+1, c+1  # convert to 1-indexed
+        return None
+    
+    def check_win(board):
+        # Check all possible 5-in-a-row
+        # Horizontal
+        for r in range(6):
+            for c in range(2):
+                if np.all(board[r, c:c+5] == 1):
+                    return True
+        # Vertical
+        for c in range(6):
+            for r in range(2):
+                if np.all(board[r:r+5, c] == 1):
+                    return True
+        # Diagonals (top-left to bottom-right)
+        for r in range(2):
+            for c in range(2):
+                if all(board[r+i, c+i] == 1 for i in range(5)):
+                    return True
+        # Diagonals (top-right to bottom-left)
+        for r in range(2):
+            for c in range(4, 6):
+                if all(board[r+i, c-i] == 1 for i in range(5)):
+                    return True
+        return False
+    
+    def get_quadrant(r, c):
+        # Get quadrant index for a position
+        quad_row = 0 if r < 3 else 2
+        quad_col = 0 if c < 3 else 1
+        return quad_row + quad_col
+    
+    def rotate_quadrant(board, quad, direction):
+        quad_r = 0 if quad < 2 else 3
+        quad_c = 0 if quad % 2 == 0 else 3
+        sub = board[quad_r:quad_r+3, quad_c:quad_c+3]
+        if direction == 'L':
+            sub[:] = np.rot90(sub, 1)
+        else:
+            sub[:] = np.rot90(sub, -1)
+    
+    def evaluate_position(r, c, quad, dir):
+        # Simulate move and evaluate
+        temp_you = you_board.copy()
+        temp_you[r][c] = 1
+        rotate_quadrant(temp_you, quad, dir)
+        temp_opp = opp_board.copy()
+        rotate_quadrant(temp_opp, quad, dir)
+        
+        # Score based on features
+        score = 0
+        
+        # Immediate win
+        if check_win(temp_you):
+            score += 1000
+        
+        # Block opponent
+        if check_win(temp_opp):
+            score -= 1000
+        
+        # Center control
+        if (r, c) in [(2,2), (2,3), (3,2), (3,3), 
+                      (2,4), (2,5), (3,4), (3,5),
+                      (4,2), (4,3), (5,2), (5,3),
+                      (4,4), (4,5), (5,4), (5,5)]:
+            score += 2
+        
+        # Potential lines
+        for dr, dc in [(0,1), (1,0), (1,1), (1,-1)]:
+            length = 0
+            for i in range(-4, 5):
+                nr, nc = r + i*dr, c + i*dc
+                if 0 <= nr < 6 and 0 <= nc < 6 and temp_you[nr][nc]:
+                    length += 1
+                else:
+                    if length > 1:
+                        score += length * length
+                    length = 0
+        
+        return score
+    
+    # First, check if I can win immediately
+    win_move = find_immediate_win(you_board)
+    if win_move:
+        r, c = win_move
+        quad = get_quadrant(r-1, c-1)  # convert to 0-indexed
+        return f"{r},{c},{quad},L"  # direction doesn't matter for immediate win
+    
+    # Check if opponent has immediate win that needs blocking
+    opp_win_move = find_immediate_win(opp_board)
+    if opp_win_move:
+        r, c = opp_win_move
+        quad = get_quadrant(r-1, c-1)
+        return f"{r},{c},{quad},L"
+    
+    # If no immediate wins, evaluate all possible moves
+    best_score = -float('inf')
+    best_move = None
+    
+    # Get all empty positions
+    empty_positions = list(zip(*np.where(empty)))
+    
+    # Try to limit to reasonable candidates to save time
+    candidate_positions = empty_positions
+    
+    for r, c in candidate_positions:
+        # For each empty position, try all possible quadrants/directions
+        for quad in range(4):
+            for dir in ['L', 'R']:
+                score = evaluate_position(r, c, quad, dir)
+                if score > best_score:
+                    best_score = score
+                    best_move = f"{r+1},{c+1},{quad},{dir}"
+    
+    return best_move
+</code>

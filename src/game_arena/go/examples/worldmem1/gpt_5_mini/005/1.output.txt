@@ -1,0 +1,198 @@
+Strategy:
+- Capture-first: always play a move that captures opponent stones if possible (choose the capture with the largest number of stones captured and best resulting liberties).
+- Avoid suicide: do not play moves that leave your placed stone/group with zero liberties (unless it captures and then becomes legal).
+- Connect and expand: prefer moves adjacent to your stones (to connect and increase influence) and moves that increase liberties and group size.
+- Prefer central/star-point influence early: if the board is empty, play the center; otherwise bias towards star points and center.
+- Avoid filling obvious own eyes: do not play into points that are surrounded entirely by your stones (likely an eye) unless capturing.
+- Deterministic but with minor randomness to break ties (seeded from current board).
+
+The implementation computes legal moves by simulating captures and liberties. It scores every legal empty point using the heuristic above and returns the best move. If no legal move is found, it passes (0, 0).
+
+<code>
+import random
+import math
+from collections import deque
+
+BOARD_SIZE = 19
+
+def neighbors(r, c):
+    for dr, dc in ((-1,0),(1,0),(0,-1),(0,1)):
+        rr, cc = r+dr, c+dc
+        if 0 <= rr < BOARD_SIZE and 0 <= cc < BOARD_SIZE:
+            yield rr, cc
+
+def in_bounds(r, c):
+    return 0 <= r < BOARD_SIZE and 0 <= c < BOARD_SIZE
+
+def board_from_lists(me, opponent):
+    board = [[0]*BOARD_SIZE for _ in range(BOARD_SIZE)]
+    for (r,c) in me:
+        board[r-1][c-1] = 1
+    for (r,c) in opponent:
+        board[r-1][c-1] = -1
+    return board
+
+def flood_group(board, r, c):
+    color = board[r][c]
+    if color == 0:
+        return set(), set()
+    q = deque()
+    q.append((r,c))
+    group = set()
+    libs = set()
+    visited = set()
+    while q:
+        x,y = q.popleft()
+        if (x,y) in visited:
+            continue
+        visited.add((x,y))
+        group.add((x,y))
+        for nx, ny in neighbors(x,y):
+            if board[nx][ny] == 0:
+                libs.add((nx,ny))
+            elif board[nx][ny] == color and (nx,ny) not in visited:
+                q.append((nx,ny))
+    return group, libs
+
+def simulate_move(board, move, color):
+    r,c = move
+    if board[r][c] != 0:
+        return None  # illegal: occupied
+    # copy board
+    b = [row[:] for row in board]
+    b[r][c] = color
+    captures = 0
+    opp_color = -color
+    removed = set()
+    # check opponent adjacent groups for capture
+    adj_opps = set()
+    for nr, nc in neighbors(r,c):
+        if b[nr][nc] == opp_color:
+            adj_opps.add((nr,nc))
+    for orr, occ in adj_opps:
+        grp, libs = flood_group(b, orr, occ)
+        if len(libs) == 0:
+            # capture
+            captures += len(grp)
+            for (x,y) in grp:
+                b[x][y] = 0
+                removed.add((x,y))
+    # now check our group's liberties
+    grp, libs = flood_group(b, r, c)
+    if len(libs) == 0:
+        # suicide (illegal)
+        return None
+    return b, captures, grp, libs, removed
+
+# Heuristic scoring for a simulated legal move result
+def score_move(board_before, board_after_tuple, move, color):
+    # board_after_tuple is (b, captures, grp, libs, removed)
+    b, captures, grp, libs, removed = board_after_tuple
+    # weight captures heavily
+    score = captures * 1000
+    # size of resulting connected group
+    score += len(grp) * 4
+    # liberties of the resulting group
+    score += len(libs) * 15
+    # adjacency to our existing stones (on board_before)
+    r,c = move
+    adj_self = 0
+    for nr,nc in neighbors(r,c):
+        if board_before[nr][nc] == color:
+            adj_self += 1
+    score += adj_self * 20
+    # penalize moves that are obvious eyes (all neighbors are our stones/off-board)
+    neighbors_total = 0
+    neighbors_own = 0
+    for dr,dc in ((-1,0),(1,0),(0,-1),(0,1)):
+        nr, nc = r+dr, c+dc
+        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+            neighbors_total += 1
+            if board_before[nr][nc] == color:
+                neighbors_own += 1
+    if neighbors_total > 0 and neighbors_own == neighbors_total and captures == 0:
+        # likely an eye: discourage strongly
+        score -= 5000
+    # prefer center-ish positions moderately (closer to center = higher)
+    center = (BOARD_SIZE-1)/2.0
+    dist = abs(r - center) + abs(c - center)
+    score += (BOARD_SIZE*2 - dist) * 0.5
+    return score
+
+def find_best_move(board, me_positions, opp_positions, rng):
+    color = 1
+    best_score = -1e9
+    best_moves = []
+    # If board empty, open at center (10,10) (1-indexed)
+    if not me_positions and not opp_positions:
+        return (BOARD_SIZE//2, BOARD_SIZE//2)
+    # iterate all empty positions
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r][c] != 0:
+                continue
+            sim = simulate_move(board, (r,c), color)
+            if sim is None:
+                continue
+            sc = score_move(board, sim, (r,c), color)
+            if sc > best_score + 1e-9:
+                best_score = sc
+                best_moves = [(r,c)]
+            elif abs(sc - best_score) < 1e-9:
+                best_moves.append((r,c))
+    if not best_moves:
+        return None
+    # tie-breaker: prefer moves that are closer to existing stones (to engage)
+    def tie_break_key(m):
+        r,c = m
+        min_dist = 1e9
+        for (mr,mc) in me_positions + opp_positions:
+            dr = (mr-1) - r
+            dc = (mc-1) - c
+            d = abs(dr) + abs(dc)
+            if d < min_dist:
+                min_dist = d
+        if min_dist == 1e9:
+            min_dist = BOARD_SIZE*2
+        # lower distance better, but add slight noise
+        return min_dist + rng.random()*0.01
+    best_moves.sort(key=tie_break_key)
+    return best_moves[0]
+
+def policy(me, opponent, memory):
+    """
+    me: list of (row, col) tuples (1-indexed) of our stones
+    opponent: list of (row, col) tuples (1-indexed) of opponent's stones
+    memory: dict for persistent memory
+    returns: ((row, col), memory)
+    """
+    # initialize RNG in memory for deterministic-but-varying behavior
+    seed = memory.get('seed', None)
+    if seed is None:
+        # seed from current board state to get repeatable but varied behavior
+        seed = (len(me) << 16) ^ (len(opponent) << 8)
+        seed ^= sum((r*31 + c) for (r,c) in me)
+        seed ^= sum((r*97 + c) for (r,c) in opponent)
+        # mix with a random token so subsequent runs vary
+        seed ^= random.getrandbits(20)
+    rng = random.Random(seed)
+    # update seed moderately for next call
+    memory_out = dict(memory)
+    memory_out['seed'] = rng.randint(0, 2**30)
+
+    board = board_from_lists(me, opponent)
+    # find best move
+    best = find_best_move(board, me, opponent, rng)
+    if best is None:
+        # no legal moves found: pass
+        return (0,0), memory_out
+    # convert to 1-index
+    r, c = best
+    return (r+1, c+1), memory_out
+
+# If run as a script for quick sanity check (not used by arena):
+if __name__ == "__main__":
+    # empty board test
+    mv, mem = policy([], [], {})
+    print("Move on empty:", mv)
+</code>

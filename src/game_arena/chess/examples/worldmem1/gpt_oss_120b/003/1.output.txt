@@ -1,0 +1,124 @@
+**Strategy Overview**
+
+The policy follows a fast, heuristic‑based move selection that works without a full chess engine:
+
+1. **Immediate mates** – any move that ends with ‘#’ is chosen instantly.  
+2. **Capture value** – for every move that contains ‘x’, the target square is extracted, the captured piece is looked up in `pieces`, and its standard material value (P=1, N/B=3, R=5, Q=9) is added to the move’s score.  
+3. **Promotions** – a promotion (`=Q`, `=R`, `=B`, `=N`) adds the value of the new piece minus the pawn value.  
+4. **Checks** – moves that give check (`+`) receive a small bonus.  
+5. **Castling** – castling (`O-O`, `O-O-O`) receives a modest safety bonus.  
+
+The move with the highest total score is returned.  Ties are broken by random choice to avoid deterministic play.  The policy never returns an illegal move because it always selects from the supplied `legal_moves` list.
+
+---
+
+<code>
+import re
+import random
+
+# Material values for pieces
+PIECE_VALUES = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 0   # King is never captured; value not needed
+}
+
+def _extract_target_square(move: str) -> str | None:
+    """
+    Return the destination square (e.g., 'e5') from a move string.
+    Works for normal moves, captures, promotions, and castling.
+    """
+    # Castling does not have a square
+    if move.startswith('O-O'):
+        return None
+    # Look for a square at the end of the string
+    m = re.search(r'([a-h][1-8])$', move)
+    return m.group(1) if m else None
+
+def _is_capture(move: str) -> bool:
+    """True if the move string indicates a capture."""
+    return 'x' in move
+
+def _capture_value(move: str, pieces: dict, to_play: str) -> int:
+    """
+    Material value of the captured piece, if any.
+    Returns 0 if the move is not a capture or the target square is empty.
+    """
+    if not _is_capture(move):
+        return 0
+    target = _extract_target_square(move)
+    if not target:
+        return 0
+    piece = pieces.get(target)
+    if not piece:
+        # Could be an en‑passant capture; try to infer the pawn location.
+        # En‑passant target square is empty; the captured pawn is on the same file,
+        # one rank behind the destination.
+        file = target[0]
+        rank = int(target[1])
+        pawn_rank = rank - 1 if to_play == 'white' else rank + 1
+        pawn_sq = f"{file}{pawn_rank}"
+        piece = pieces.get(pawn_sq)
+    if not piece:
+        return 0
+    color, ptype = piece[0], piece[1]
+    opponent = 'w' if to_play == 'black' else 'b'
+    if color != opponent:
+        return 0
+    return PIECE_VALUES.get(ptype, 0)
+
+def _promotion_value(move: str) -> int:
+    """Value added by a promotion (new piece value – pawn value)."""
+    m = re.search(r'=[QRBN]', move)
+    if not m:
+        return 0
+    promo_piece = m.group(0)[1]   # character after '='
+    return PIECE_VALUES[promo_piece] - PIECE_VALUES['P']
+
+def _move_score(move: str, pieces: dict, to_play: str) -> float:
+    """Heuristic score for a single legal move."""
+    # Immediate checkmate wins outright
+    if '#' in move:
+        return float('inf')
+
+    score = 0.0
+    # Capture material
+    score += _capture_value(move, pieces, to_play)
+
+    # Promotion bonus
+    score += _promotion_value(move)
+
+    # Small bonus for delivering check
+    if '+' in move:
+        score += 0.5
+
+    # Small safety bonus for castling
+    if move.startswith('O-O'):
+        score += 0.2
+
+    return score
+
+def policy(pieces: dict[str, str], to_play: str,
+           legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    """
+    Choose the best move according to the heuristic described above.
+    Returns (chosen_move, memory).  Memory is passed through unchanged.
+    """
+    # 1. Immediate checkmate
+    mates = [mv for mv in legal_moves if mv.endswith('#')]
+    if mates:
+        return random.choice(mates), memory
+
+    # 2. Score all moves
+    scored_moves = [(mv, _move_score(mv, pieces, to_play)) for mv in legal_moves]
+    # Find the highest score
+    max_score = max(score for _, score in scored_moves)
+    best_moves = [mv for mv, sc in scored_moves if sc == max_score]
+
+    # Choose randomly among equally good moves
+    chosen = random.choice(best_moves)
+    return chosen, memory
+</code>

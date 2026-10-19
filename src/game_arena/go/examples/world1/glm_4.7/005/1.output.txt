@@ -1,0 +1,190 @@
+# Strategy
+
+The policy implements a tactical Go AI with the following key components:
+
+1. **Legal Move Detection**: Uses flood-fill to correctly determine liberties and identify legal moves, avoiding illegal moves including suicide placements.
+
+2. **Prioritized Scoring**:
+   - **Capture**: Highest priority (100 points per stone) - immediately take opponent stones when possible
+   - **Atari Attack**: Put opponent groups in atari (1 liberty) with 50 point bonus
+   - **Defense**: Save own groups from atari with 40 point bonus
+   - **Extension**: Play near own stones (3 points for adjacent, 1 for distance 2)
+   - **Influence**: Play near opponent stones (2 points at distance 2, 1 at distance 3)
+   - **Positional**: Penalize edge play (-15 for first two lines, -5 for third line)
+   - **Center Preference**: Slight bias toward the center of the board
+
+3. **Efficient Implementation**: Uses numpy for board representation and BFS flood-fill for liberty counting, ensuring performance within the 1-second limit.
+
+4. **Random Tie-breaking**: Small random noise and random selection among equal-scoring moves prevents predictable play patterns.
+
+<code>
+import numpy as np
+from collections import deque
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    # Create board: 0 = empty, 1 = my stone, -1 = opponent stone
+    board = np.zeros((19, 19), dtype=int)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = -1
+    
+    def on_board(r, c):
+        return 0 <= r < 19 and 0 <= c < 19
+    
+    def get_liberties(r, c):
+        """Get liberty positions of the group containing (r, c)."""
+        if board[r, c] == 0:
+            return set()
+        
+        color = board[r, c]
+        liberties = set()
+        visited = set([(r, c)])
+        queue = deque([(r, c)])
+        
+        while queue:
+            cr, cc = queue.popleft()
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = cr + dr, cc + dc
+                if not on_board(nr, nc):
+                    continue
+                if board[nr, nc] == 0:
+                    liberties.add((nr, nc))
+                elif board[nr, nc] == color and (nr, nc) not in visited:
+                    visited.add((nr, nc))
+                    queue.append((nr, nc))
+        
+        return liberties
+    
+    def count_capture(r, c, color):
+        """Count opponent stones captured by playing at (r, c)."""
+        opponent = -color
+        board[r, c] = color  # temporary placement
+        
+        captured = 0
+        checked = set()
+        
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if on_board(nr, nc) and board[nr, nc] == opponent and (nr, nc) not in checked:
+                checked.add((nr, nc))
+                libs = get_liberties(nr, nc)
+                if len(libs) == 0:
+                    # Count entire group
+                    group_count = 0
+                    stack = [(nr, nc)]
+                    seen = set()
+                    while stack:
+                        gr, gc = stack.pop()
+                        if (gr, gc) in seen:
+                            continue
+                        seen.add((gr, gc))
+                        group_count += 1
+                        for gdr, gdc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            gnr, gnc = gr + gdr, gc + gdc
+                            if on_board(gnr, gnc) and board[gnr, gnc] == opponent and (gnr, gnc) not in seen:
+                                stack.append((gnr, gnc))
+                    captured += group_count
+        
+        board[r, c] = 0  # remove temporary
+        return captured
+    
+    def is_legal(r, c, color):
+        """Check if (r, c) is a legal move for color."""
+        if not on_board(r, c) or board[r, c] != 0:
+            return False
+        
+        # If it captures, it's legal
+        if count_capture(r, c, color) > 0:
+            return True
+        
+        # Check suicide
+        board[r, c] = color
+        libs = get_liberties(r, c)
+        board[r, c] = 0
+        
+        return len(libs) > 0
+    
+    # Collect legal moves
+    legal_moves = []
+    for r in range(19):
+        for c in range(19):
+            if is_legal(r, c, 1):
+                legal_moves.append((r, c))
+    
+    if not legal_moves:
+        return (0, 0)
+    
+    # Score each move
+    best_moves = []
+    best_score = -float('inf')
+    
+    for r, c in legal_moves:
+        score = 0
+        
+        # Priority 1: Capture
+        captured = count_capture(r, c, 1)
+        score += captured * 100
+        
+        # Priority 2: Put opponent in atari
+        board[r, c] = 1
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if on_board(nr, nc) and board[nr, nc] == -1:
+                libs = get_liberties(nr, nc)
+                if len(libs) == 1:
+                    score += 50
+        board[r, c] = 0
+        
+        # Priority 3: Save own stones in atari
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if on_board(nr, nc) and board[nr, nc] == 1:
+                libs_before = len(get_liberties(nr, nc))
+                board[r, c] = 1
+                libs_after = len(get_liberties(r, c))
+                board[r, c] = 0
+                if libs_before == 1 and libs_after > 1:
+                    score += 40
+        
+        # Priority 4: Extend own groups
+        for mr, mc in me:
+            dist = abs(r - (mr - 1)) + abs(c - (mc - 1))
+            if dist == 1:
+                score += 3
+            elif dist == 2:
+                score += 1
+        
+        # Priority 5: Influence near opponent
+        for or_r, or_c in opponent:
+            dist = abs(r - (or_r - 1)) + abs(c - (or_c - 1))
+            if dist == 2:
+                score += 2
+            elif dist == 3:
+                score += 1
+        
+        # Priority 6: Avoid edges
+        edge_dist = min(r, 18 - r, c, 18 - c)
+        if edge_dist < 2:
+            score -= 15
+        elif edge_dist == 2:
+            score -= 5
+        
+        # Priority 7: Slight preference for center
+        center_dist = abs(r - 9) + abs(c - 9)
+        score -= center_dist * 0.05
+        
+        # Add small random noise for variety
+        score += random.random() * 0.1
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [(r, c)]
+        elif abs(score - best_score) < 0.2:  # Almost equal
+            best_moves.append((r, c))
+    
+    # Random choice among best moves
+    best_r, best_c = random.choice(best_moves)
+    return (best_r + 1, best_c + 1)
+</code>

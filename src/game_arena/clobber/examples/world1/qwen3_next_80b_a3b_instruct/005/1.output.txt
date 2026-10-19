@@ -1,0 +1,234 @@
+The strategy for this policy is to implement a minimax-based AI with depth-limited search and heuristic evaluation to make optimal moves in Clobber. Clobber is an impartial game where each move captures an opponent's piece, and the player who cannot move loses. The key insight is to prioritize moves that maximize immediate captures while preserving mobility and avoiding creating isolated pieces. 
+
+The policy will:
+1. Generate all legal moves from the current board state.
+2. For each move, simulate the resulting board and evaluate the position using a heuristic that rewards:
+   - Capturing opponent pieces (1 point per capture)
+   - Maximizing the number of own pieces with legal future moves (mobility)
+   - Minimizing opponent mobility
+   - Avoiding creating isolated or stranded own pieces
+3. Use a depth-2 minimax search with alpha-beta pruning to choose the move that leads to the best expected outcome.
+4. Fallback to a greedy capture strategy if the search times out or no moves are available, prioritizing captures that maximize opponent piece removal.
+
+This strategy balances immediate tactical gains with long-term positional advantage, avoiding moves that leave pieces vulnerable to being captured in response. By focusing on mobility and forced captures, it outperforms naive greedy policies that only consider immediate captures without considering the reaction.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Optional
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    # Convert input lists to 5x6 numpy arrays
+    you_board = np.array(you).reshape(5, 6)
+    opponent_board = np.array(opponent).reshape(5, 6)
+    
+    # Get all legal moves
+    legal_moves = get_all_legal_moves(you_board, opponent_board)
+    
+    # If no moves, return arbitrary (shouldn't happen in valid play, but safeguard)
+    if len(legal_moves) == 0:
+        # Find any own piece and move it in some direction if possible (shouldn't occur in valid game)
+        for r in range(5):
+            for c in range(6):
+                if you_board[r, c] == 1:
+                    for dr, dc, dir_name in [(0, 1, 'R'), (0, -1, 'L'), (1, 0, 'D'), (-1, 0, 'U')]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 5 and 0 <= nc < 6 and opponent_board[nr, nc] == 1:
+                            return f"{r},{c},{dir_name}"
+        return "0,0,U"  # Fallback (should never reach here in valid game)
+    
+    # Use minimax with depth 2 and alpha-beta pruning for better strategy
+    best_move = minimax_search(you_board, opponent_board, depth=2, alpha=-float('inf'), beta=float('inf'), maximizing_player=True)
+    
+    # If minimax didn't return anything (shouldn't happen), use best greedy move
+    if best_move is None:
+        best_move = get_best_greedy_move(you_board, opponent_board)
+    
+    return best_move
+
+def get_all_legal_moves(you_board: np.ndarray, opponent_board: np.ndarray) -> List[str]:
+    moves = []
+    directions = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]  # up, right, down, left
+    
+    for r in range(5):
+        for c in range(6):
+            if you_board[r, c] == 1:  # own piece
+                for dr, dc, dir_name in directions:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 5 and 0 <= nc < 6 and opponent_board[nr, nc] == 1:
+                        moves.append(f"{r},{c},{dir_name}")
+    return moves
+
+def get_best_greedy_move(you_board: np.ndarray, opponent_board: np.ndarray) -> str:
+    # Greedy: pick move that captures an opponent piece
+    # Prefer moves that capture pieces with the most adjacent opponent pieces (maximize impact)
+    moves = get_all_legal_moves(you_board, opponent_board)
+    if not moves:
+        return "0,0,U"  # fallback
+    
+    best_score = -1
+    best_move = moves[0]
+    
+    for move in moves:
+        r, c, dir_name = parse_move(move)
+        dr, dc = get_direction_vector(dir_name)
+        nr, nc = r + dr, c + dc
+        
+        # Count opponent's adjacent pieces at the captured position (heuristic for impact)
+        adjacent_opponent_count = 0
+        for dr2, dc2 in [(-1,0), (1,0), (0,1), (0,-1)]:
+            nnr, nnc = nr + dr2, nc + dc2
+            if 0 <= nnr < 5 and 0 <= nnc < 6 and opponent_board[nnr, nnc] == 1:
+                adjacent_opponent_count += 1
+        
+        # Prefer moves that capture pieces with more adjacent opponent pieces
+        # Also prefer capturing over non-capturing (but all moves here are captures)
+        if adjacent_opponent_count > best_score:
+            best_score = adjacent_opponent_count
+            best_move = move
+    
+    return best_move
+
+def parse_move(move_str: str) -> Tuple[int, int, str]:
+    parts = move_str.split(',')
+    return int(parts[0]), int(parts[1]), parts[2]
+
+def get_direction_vector(dir_name: str) -> Tuple[int, int]:
+    mapping = {'U': (-1, 0), 'R': (0, 1), 'D': (1, 0), 'L': (0, -1)}
+    return mapping[dir_name]
+
+def evaluate_position(you_board: np.ndarray, opponent_board: np.ndarray) -> float:
+    """
+    Heuristic evaluation function for a board state.
+    Returns a score where higher is better for the current player.
+    """
+    # Count own pieces and opponent pieces
+    own_pieces = np.sum(you_board)
+    opp_pieces = np.sum(opponent_board)
+    
+    # Mobility: number of legal moves available to each player
+    own_mobility = len(get_all_legal_moves(you_board, opponent_board))
+    # Simulate opponent's turn to get their mobility
+    opp_mobility = len(get_all_legal_moves(opponent_board, you_board))
+    
+    # Isolation penalty: count own pieces with no adjacent empty spaces (can't move)
+    isolation_penalty = 0
+    directions = [(-1, 0), (1, 0), (0, 1), (0, -1)]
+    for r in range(5):
+        for c in range(6):
+            if you_board[r, c] == 1:
+                has_empty_neighbor = False
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 5 and 0 <= nc < 6 and you_board[nr, nc] == 0 and opponent_board[nr, nc] == 0:
+                        has_empty_neighbor = True
+                        break
+                if not has_empty_neighbor:
+                    isolation_penalty += 1
+    
+    # Heuristic: favor having more pieces and mobility, penalize isolation
+    score = (own_pieces - opp_pieces) * 10 + (own_mobility - opp_mobility) * 5 - isolation_penalty * 3
+    
+    return score
+
+def simulate_move(you_board: np.ndarray, opponent_board: np.ndarray, move: str) -> Tuple[np.ndarray, np.ndarray]:
+    """Simulate a move and return the new board state (you, opponent)"""
+    r, c, dir_name = parse_move(move)
+    dr, dc = get_direction_vector(dir_name)
+    nr, nc = r + dr, c + dc
+    
+    # Create new board states
+    new_you = you_board.copy()
+    new_opponent = opponent_board.copy()
+    
+    # Move your piece: remove from start, place at captured position, remove captured piece
+    new_you[r, c] = 0  # vacate original position
+    new_you[nr, nc] = 1  # occupy opponent's position
+    new_opponent[nr, nc] = 0  # capture opponent's piece
+    
+    return new_you, new_opponent
+
+def minimax_search(you_board: np.ndarray, opponent_board: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool) -> Optional[str]:
+    """
+    Minimax search with alpha-beta pruning
+    Returns the best move as a string, or None if no moves
+    """
+    # Get all legal moves
+    all_moves = get_all_legal_moves(you_board, opponent_board)
+    if len(all_moves) == 0:
+        return None  # no moves, game over
+    
+    # Leaf node: evaluate if depth 0
+    if depth == 0:
+        return None  # don't return a move, just use evaluation for parent
+    
+    best_move = all_moves[0]
+    
+    # If maximizing player: you
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in all_moves:
+            new_you, new_opponent = simulate_move(you_board, opponent_board, move)
+            eval_score = minimax_eval(new_you, new_opponent, depth - 1, alpha, beta, False)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = move
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break  # beta cutoff
+        return best_move
+    
+    # If minimizing player: opponent's turn
+    else:
+        min_eval = float('inf')
+        for move in all_moves:
+            new_you, new_opponent = simulate_move(you_board, opponent_board, move)
+            eval_score = minimax_eval(new_you, new_opponent, depth - 1, alpha, beta, True)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = move
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break  # alpha cutoff
+        return best_move
+
+def minimax_eval(you_board: np.ndarray, opponent_board: np.ndarray, depth: int, alpha: float, beta: float, maximizing_player: bool) -> float:
+    """
+    Evaluation function for minimax; returns the heuristic score
+    """
+    # If depth is 0, return heuristic
+    if depth == 0:
+        return evaluate_position(you_board, opponent_board)
+    
+    # Get legal moves
+    legal_moves = get_all_legal_moves(you_board, opponent_board)
+    
+    # Terminal state: no moves left
+    if len(legal_moves) == 0:
+        # Current player cannot move -> loses
+        if maximizing_player:
+            return -1000  # bad for maximizing player
+        else:
+            return 1000   # good for maximizing player (bad for opponent)
+    
+    # If we have moves, continue search
+    if maximizing_player:
+        max_eval = -float('inf')
+        for move in legal_moves:
+            new_you, new_opponent = simulate_move(you_board, opponent_board, move)
+            eval_score = minimax_eval(new_you, new_opponent, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in legal_moves:
+            new_you, new_opponent = simulate_move(you_board, opponent_board, move)
+            eval_score = minimax_eval(new_you, new_opponent, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+</code>

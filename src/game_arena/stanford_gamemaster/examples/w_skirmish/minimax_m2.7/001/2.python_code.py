@@ -1,0 +1,269 @@
+
+import copy
+
+# ----------------------------------------------------------------------
+# Constants and helper data
+# ----------------------------------------------------------------------
+FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
+FILE_TO_IDX = {f: i for i, f in enumerate(FILES)}
+IDX_TO_FILE = {i: f for i, f in enumerate(FILES)}
+
+PIECE_VALUE = {
+    'pawn': 1,
+    'knight': 3,
+    'bishop': 3,
+    'rook': 5,
+    'queen': 9,
+    'king': 11
+}
+
+# Movement vectors
+KNIGHT_OFFSETS = [(-2, -1), (-2, 1), (-1, -2), (-1, 2),
+                 (1, -2), (1, 2), (2, -1), (2, 1)]
+KING_OFFSETS = [(-1, -1), (-1, 0), (-1, 1),
+                (0, -1),          (0, 1),
+                (1, -1),  (1, 0), (1, 1)]
+BISHOP_DIRS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+ROOK_DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+QUEEN_DIRS = BISHOP_DIRS + ROOK_DIRS
+
+# ----------------------------------------------------------------------
+# State parsing
+# ----------------------------------------------------------------------
+def parse_state(state):
+    """Convert the list of propositions into a usable board dictionary
+    and score information."""
+    board = {}                     # (file, rank) -> (color, type, id)
+    scores = {'white': None, 'black': None}
+    control = None
+    step = None
+    for fact in state:
+        if not fact:
+            continue
+        if fact[0] == 'location':
+            cell = fact[1]                 # ["cell", "a", "8"]
+            file = cell[1]
+            rank = int(cell[2])
+            piece = fact[2]               # ["piece", "white", "knight", "1"]
+            color = piece[1]
+            ptype = piece[2]
+            pid = piece[3]
+            board[(file, rank)] = (color, ptype, pid)
+        elif fact[0] == 'white':
+            scores['white'] = int(fact[1])
+        elif fact[0] == 'black':
+            scores['black'] = int(fact[1])
+        elif fact[0] == 'control':
+            control = fact[1]
+        elif fact[0] == 'step':
+            step = int(fact[1])
+    return board, scores, control, step
+
+# ----------------------------------------------------------------------
+# Move generation
+# ----------------------------------------------------------------------
+def generate_moves(board, color):
+    """Return a list of moves for the given color.
+    Each move is a tuple:
+        (src_file, src_rank, dst_file, dst_rank,
+         captured_piece_or_None, ptype, pid)
+    """
+    moves = []
+    for (file, rank), piece in board.items():
+        if piece[0] != color:
+            continue
+        pcolor, ptype, pid = piece
+
+        # ---------------- pawn ----------------
+        if ptype == 'pawn':
+            direction = 1 if pcolor == 'white' else -1
+            start_rank = 2 if pcolor == 'white' else 7
+            # forward one square
+            new_rank = rank + direction
+            if 1 <= new_rank <= 8:
+                # promotion is not allowed
+                if not ((pcolor == 'white' and new_rank == 8) or
+                        (pcolor == 'black' and new_rank == 1)):
+                    if (file, new_rank) not in board:
+                        moves.append((file, rank, file, new_rank,
+                                      None, ptype, pid))
+                        # double step only from starting rank
+                        if rank == start_rank:
+                            double_rank = rank + 2 * direction
+                            if not ((pcolor == 'white' and double_rank == 8) or
+                                    (pcolor == 'black' and double_rank == 1)):
+                                if (file, double_rank) not in board:
+                                    moves.append((file, rank, file, double_rank,
+                                                  None, ptype, pid))
+            # captures
+            for delta in (-1, 1):
+                nf_idx = FILE_TO_IDX[file] + delta
+                if 0 <= nf_idx < 8:
+                    nf = IDX_TO_FILE[nf_idx]
+                    new_rank = rank + direction
+                    if 1 <= new_rank <= 8:
+                        if not ((pcolor == 'white' and new_rank == 8) or
+                                (pcolor == 'black' and new_rank == 1)):
+                            dest = (nf, new_rank)
+                            if dest in board:
+                                cap = board[dest]
+                                if cap[0] != pcolor:
+                                    moves.append((file, rank, nf, new_rank,
+                                                  cap, ptype, pid))
+
+        # ---------------- knight ----------------
+        elif ptype == 'knight':
+            for dr, dc in KNIGHT_OFFSETS:
+                nr = rank + dr
+                nf_idx = FILE_TO_IDX[file] + dc
+                if 0 <= nf_idx < 8 and 1 <= nr <= 8:
+                    nf = IDX_TO_FILE[nf_idx]
+                    dest = (nf, nr)
+                    if dest not in board:
+                        moves.append((file, rank, nf, nr,
+                                      None, ptype, pid))
+                    else:
+                        cap = board[dest]
+                        if cap[0] != pcolor:
+                            moves.append((file, rank, nf, nr,
+                                          cap, ptype, pid))
+
+        # ---------------- sliding pieces ----------------
+        elif ptype in ('bishop', 'rook', 'queen'):
+            if ptype == 'bishop':
+                dirs = BISHOP_DIRS
+            elif ptype == 'rook':
+                dirs = ROOK_DIRS
+            else:  # queen
+                dirs = QUEEN_DIRS
+
+            for dr, dc in dirs:
+                nr = rank + dr
+                nf_idx = FILE_TO_IDX[file] + dc
+                while 0 <= nf_idx < 8 and 1 <= nr <= 8:
+                    nf = IDX_TO_FILE[nf_idx]
+                    dest = (nf, nr)
+                    if dest not in board:
+                        moves.append((file, rank, nf, nr,
+                                      None, ptype, pid))
+                    else:
+                        cap = board[dest]
+                        if cap[0] != pcolor:
+                            moves.append((file, rank, nf, nr,
+                                          cap, ptype, pid))
+                        break          # blocked beyond
+                    nr += dr
+                    nf_idx += dc
+
+        # ---------------- king ----------------
+        elif ptype == 'king':
+            for dr, dc in KING_OFFSETS:
+                nr = rank + dr
+                nf_idx = FILE_TO_IDX[file] + dc
+                if 0 <= nf_idx < 8 and 1 <= nr <= 8:
+                    nf = IDX_TO_FILE[nf_idx]
+                    dest = (nf, nr)
+                    if dest not in board:
+                        moves.append((file, rank, nf, nr,
+                                      None, ptype, pid))
+                    else:
+                        cap = board[dest]
+                        if cap[0] != pcolor:
+                            moves.append((file, rank, nf, nr,
+                                          cap, ptype, pid))
+
+    return moves
+
+# ----------------------------------------------------------------------
+# Apply a move to a copy of the board and update scores
+# ----------------------------------------------------------------------
+def apply_move(board, scores, player, move):
+    """Return a new board and scores after performing `move`."""
+    src_file, src_rank, dst_file, dst_rank, captured, ptype, pid = move
+    new_board = copy.copy(board)
+    new_scores = copy.copy(scores)
+
+    src = (src_file, src_rank)
+    dst = (dst_file, dst_rank)
+    piece = new_board[src]          # (color, ptype, pid)
+
+    if captured is not None:
+        # Update scores: capture value is added to the mover,
+        # subtracted from the opponent.
+        cap_color = captured[0]
+        cap_type = captured[1]
+        val = PIECE_VALUE[cap_type]
+        if player == 'white':
+            new_scores['white'] += val
+            new_scores['black'] -= val
+        else:
+            new_scores['black'] += val
+            new_scores['white'] -= val
+        # Remove captured piece
+        del new_board[dst]
+
+    # Move the piece
+    del new_board[src]
+    new_board[dst] = piece
+    return new_board, new_scores
+
+# ----------------------------------------------------------------------
+# Main policy function
+# ----------------------------------------------------------------------
+def policy(state, role):
+    """
+    Choose the best legal move for `role` given the current `state`.
+    Returns a move string such as
+    ``move(piece(white,knight,1),cell(a,3))``.
+    """
+    board, scores, control, step = parse_state(state)
+
+    # In the (unlikely) case we have no legal moves we must still return something.
+    my_moves = generate_moves(board, role)
+    if not my_moves:
+        # Fallback: try to move any piece of `role` to any empty square.
+        for (file, rank), piece in board.items():
+            if piece[0] == role:
+                for f in FILES:
+                    for r in range(1, 9):
+                        if (f, r) not in board:
+                            return f"move(piece({role},{piece[1]},{piece[2]}),cell({f},{r}))"
+        # Absolute fallback – should never be reached.
+        return f"move(piece({role},pawn,1),cell(a,2))"
+
+    opponent = 'black' if role == 'white' else 'white'
+    best_move = None
+    best_value = -float('inf')
+
+    # Examine each of our moves
+    for move in my_moves:
+        # Apply our move
+        board2, scores2 = apply_move(board, scores, role, move)
+
+        # Generate opponent replies
+        opp_moves = generate_moves(board2, opponent)
+        if not opp_moves:
+            # Opponent cannot move → game ends, our score is scores2[role]
+            worst_own = scores2[role]
+        else:
+            worst_own = float('inf')
+            # Evaluate opponent's best reply (the one that minimises our score)
+            for opp_move in opp_moves:
+                board3, scores3 = apply_move(board2, scores2, opponent, opp_move)
+                own_score = scores3[role]
+                if own_score < worst_own:
+                    worst_own = own_score
+                # Pruning: if the worst we can achieve is already no better
+                # than the best we have found, stop searching further replies.
+                if worst_own <= best_value:
+                    break
+
+        # Keep the move with the highest worst‑case score
+        if worst_own > best_value:
+            best_value = worst_own
+            best_move = move
+
+    # Construct the returned move string
+    src_file, src_rank, dst_file, dst_rank, captured, ptype, pid = best_move
+    # pid may be a string; output it as is (e.g. "1")
+    return f"move(piece({role},{ptype},{pid}),cell({dst_file},{dst_rank}))"

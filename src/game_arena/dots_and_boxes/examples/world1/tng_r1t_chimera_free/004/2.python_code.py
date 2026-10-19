@@ -1,0 +1,99 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    def count_captures(move_row, move_col, is_horizontal):
+        count = 0
+        if is_horizontal:
+            # Check top box
+            if move_row > 0:
+                top = horizontal[move_row-1, move_col] != 0
+                left = vertical[move_row-1, move_col] != 0
+                right = vertical[move_row-1, move_col+1] != 0 if (move_col+1 < 5) else False
+                if top and left and right:
+                    count += 1
+            # Check bottom box
+            if move_row < 4:
+                bottom = horizontal[move_row+1, move_col] != 0
+                left = vertical[move_row, move_col] != 0
+                right = vertical[move_row, move_col+1] != 0 if (move_col+1 < 5) else False
+                if bottom and left and right:
+                    count += 1
+        else:
+            # Check left box
+            if move_col > 0:
+                left_v = vertical[move_row, move_col-1] != 0
+                top_h = horizontal[move_row, move_col-1] != 0
+                bottom_h = horizontal[move_row+1, move_col-1] != 0 if (move_row+1 < 5) else False
+                if left_v and top_h and bottom_h:
+                    count += 1
+            # Check right box
+            if move_col < 4:
+                top_h = horizontal[move_row, move_col] != 0
+                right_v = vertical[move_row, move_col+1] != 0 if (move_col+1 < 5) else False
+                bottom_h = horizontal[move_row+1, move_col] != 0 if (move_row+1 < 5) else False
+                if top_h and right_v and bottom_h:
+                    count += 1
+        return count
+
+    def vulnerability_score(move_row, move_col, is_horizontal):
+        score = 0
+        if is_horizontal:
+            if move_row > 0:
+                top = horizontal[move_row-1, move_col] != 0
+                left = vertical[move_row-1, move_col] != 0
+                right = vertical[move_row-1, move_col+1] != 0 if (move_col+1 < 5) else False
+                s = top + left + right
+                if s == 2:
+                    score += 1
+            if move_row < 4:
+                bottom = horizontal[move_row+1, move_col] != 0
+                left = vertical[move_row, move_col] != 0
+                right = vertical[move_row, move_col+1] != 0 if (move_col+1 < 5) else False
+                s = bottom + left + right
+                if s == 2:
+                    score += 1
+        else:
+            if move_col > 0:
+                left_v = vertical[move_row, move_col-1] != 0
+                top_h = horizontal[move_row, move_col-1] != 0
+                bottom_h = horizontal[move_row+1, move_col-1] != 0 if (move_row+1 < 5) else False
+                s = left_v + top_h + bottom_h
+                if s == 2:
+                    score += 1
+            if move_col < 4:
+                top_h = horizontal[move_row, move_col] != 0
+                right_v = vertical[move_row, move_col+1] != 0 if (move_col+1 < 5) else False
+                bottom_h = horizontal[move_row+1, move_col] != 0 if (move_row+1 < 5) else False
+                s = top_h + right_v + bottom_h
+                if s == 2:
+                    score += 1
+        return score
+
+    legal_moves = []
+    for row in range(5):
+        for col in range(5):
+            if horizontal[row, col] == 0:
+                legal_moves.append((row, col, 'H'))
+            if vertical[row, col] == 0:
+                legal_moves.append((row, col, 'V'))
+    
+    capturing_moves = []
+    non_capturing_moves = []
+    for move_row, move_col, move_dir in legal_moves:
+        is_h = move_dir == 'H'
+        captures = count_captures(move_row, move_col, is_h)
+        if captures > 0:
+            capturing_moves.append((move_row, move_col, move_dir, captures))
+        else:
+            score = vulnerability_score(move_row, move_col, is_h)
+            non_capturing_moves.append((move_row, move_col, move_dir, score))
+    
+    if capturing_moves:
+        capturing_moves.sort(key=lambda x: (-x[3], x[0], x[1], 0 if x[2]=='H' else 1))
+        best = capturing_moves[0]
+    else:
+        non_capturing_moves.sort(key=lambda x: (x[3], x[0], x[1], 0 if x[2]=='H' else 1))
+        best = non_capturing_moves[0]
+    
+    return f"{best[0]},{best[1]},{best[2]}"

@@ -1,0 +1,555 @@
+# Chess Policy Strategy
+
+For this chess policy, I'll implement a position evaluation-based move selector that balances speed with smart decision-making. The strategy focuses on:
+
+1. **Immediate threats**: Detect and execute checkmates first
+2. **Material advantage**: Prioritize captures using MVV-LVA (Most Valuable Victim, Least Valuable Attacker)
+3. **Positional scoring**: Use piece-square tables to evaluate move quality
+4. **King safety**: Reward moves that improve king shielding
+5. **Central control**: Prioritize center squares for better position
+
+The implementation will parse the board state, score each legal move using a combination of material evaluation and positional heuristics, and select the highest-scoring move. This approach is computationally efficient while still providing competitive play.
+<code>
+import math
+from collections import defaultdict
+
+# Piece values for material evaluation
+PIECE_VALUES = {
+    'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+}
+
+# Piece-square tables for positional evaluation
+# Positive values encourage piece placement
+PAWN_PST = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [50, 50, 50, 50, 50, 50, 50, 50],
+    [10, 10, 20, 30, 30, 20, 10, 10],
+    [5,  5, 10, 25, 25, 10,  5,  5],
+    [0,  0,  0, 20, 20,  0,  0,  0],
+    [5, -5,-10,  0,  0,-10, -5,  5],
+    [5, 10, 10,-20,-20, 10, 10,  5],
+    [0,  0,  0,  0,  0,  0,  0,  0]
+]
+
+KNIGHT_PST = [
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+    [-40,-20,  0,  0,  0,  0,-20,-40],
+    [-30,  0, 10, 15, 15, 10,  0,-30],
+    [-30,  5, 15, 20, 20, 15,  5,-30],
+    [-30,  0, 15, 20, 20, 15,  0,-30],
+    [-30,  5, 10, 15, 15, 10,  5,-30],
+    [-40,-20,  0,  5,  5,  0,-20,-40],
+    [-50,-40,-30,-30,-30,-30,-40,-50]
+]
+
+BISHOP_PST = [
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5, 10, 10,  5,  0,-10],
+    [-10,  5,  5, 10, 10,  5,  5,-10],
+    [-10,  0, 10, 10, 10, 10,  0,-10],
+    [-10, 10, 10, 10, 10, 10, 10,-10],
+    [-10,  5,  0,  0,  0,  0,  5,-10],
+    [-20,-10,-10,-10,-10,-10,-10,-20]
+]
+
+ROOK_PST = [
+    [0,  0,  0,  0,  0,  0,  0,  0],
+    [5, 10, 10, 10, 10, 10, 10,  5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [-5,  0,  0,  0,  0,  0,  0, -5],
+    [0,  0,  0,  5,  5,  0,  0,  0]
+]
+
+QUEEN_PST = [
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5,  5,  5,  5,  0,-10],
+    [-5,  0,  5,  5,  5,  5,  0, -5],
+    [0,  0,  5,  5,  5,  5,  0, -5],
+    [-10,  5,  5,  5,  5,  5,  0,-10],
+    [-10,  0,  5,  0,  0,  0,  0,-10],
+    [-20,-10,-10, -5, -5,-10,-10,-20]
+]
+
+KING_MIDDLE_PST = [
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-20,-30,-30,-40,-40,-30,-30,-20],
+    [-10,-20,-20,-20,-20,-20,-20,-10],
+    [20, 20,  0,  0,  0,  0, 20, 20],
+    [20, 30, 10,  0,  0, 10, 30, 20]
+]
+
+KING_END_PST = [
+    [-50,-40,-30,-20,-20,-30,-40,-50],
+    [-30,-20,-10,  0,  0,-10,-20,-30],
+    [-30,-10, 20, 30, 30, 20,-10,-30],
+    [-30,-10, 30, 40, 40, 30,-10,-30],
+    [-30,-10, 30, 40, 40, 30,-10,-30],
+    [-30,-10, 20, 30, 30, 20,-10,-30],
+    [-30,-30,  0,  0,  0,  0,-30,-30],
+    [-50,-30,-30,-30,-30,-30,-30,-50]
+]
+
+def square_to_coords(square):
+    """Convert algebraic notation to (row, col) coordinates."""
+    col = ord(square[0]) - ord('a')
+    row = 8 - int(square[1])  # Convert to 0-based from white's perspective
+    return row, col
+
+def coords_to_square(row, col):
+    """Convert (row, col) coordinates to algebraic notation."""
+    file = chr(ord('a') + col)
+    rank = str(8 - row)
+    return file + rank
+
+def parse_move(move_str, pieces, to_play):
+    """Parse a move string to get source and destination squares."""
+    # Handle castling
+    if move_str in ['O-O', 'O-O-O']:
+        color = 'w' if to_play == 'white' else 'b'
+        king_sq = 'e1' if color == 'w' else 'e8'
+        if move_str == 'O-O':
+            return king_sq, 'g1' if color == 'w' else 'g8'
+        else:
+            return king_sq, 'c1' if color == 'w' else 'c8'
+    
+    # Handle promotion
+    if '=' in move_str:
+        move_str = move_str.split('=')[0]
+    
+    # Remove check/mate symbols
+    move_str = move_str.replace('+', '').replace('#', '').replace('x', '')
+    
+    # Handle disambiguation (e.g., 'Nec3' means knight from e file to c3)
+    if len(move_str) == 4 and move_str[0].isupper() and move_str[0] not in 'abcdefgh':
+        # File disambiguation (e.g., 'Nec3')
+        source_file = move_str[1]
+        dest = move_str[2:4]
+        piece_type = move_str[0]
+        for sq, piece in pieces.items():
+            if piece[1] == piece_type and piece[0] == ('w' if to_play == 'white' else 'b'):
+                if sq[0] == source_file:
+                    # Verify this move is legal by checking if it can reach dest
+                    row, col = square_to_coords(sq)
+                    dest_row, dest_col = square_to_coords(dest)
+                    dr, dc = dest_row - row, dest_col - col
+                    if piece_type == 'N' and ((abs(dr), abs(dc)) == (1, 2) or (abs(dr), abs(dc)) == (2, 1)):
+                        return sq, dest
+    elif len(move_str) == 4 and move_str[0].islower():
+        # Rank disambiguation (e.g., '3e4')
+        source_rank = move_str[0]
+        dest = move_str[1:3]
+        for sq, piece in pieces.items():
+            if sq[1] == source_rank:
+                row, col = square_to_coords(sq)
+                dest_row, dest_col = square_to_coords(dest)
+                dr, dc = dest_row - row, dest_col - col
+                if piece[1] == 'P' and abs(dc) == 0 and dr == (-1 if to_play == 'white' else 1):
+                    return sq, dest
+    elif len(move_str) == 5 and move_str[0].isupper():
+        # Full disambiguation (e.g., 'Ne2e4')
+        piece_type = move_str[0]
+        source = move_str[1:3]
+        dest = move_str[3:5]
+        return source, dest
+    
+    # Standard move parsing
+    if len(move_str) == 2:
+        # Simple pawn move (e.g., 'e4')
+        return None, move_str
+    elif len(move_str) == 3:
+        # Pawn capture or piece move (e.g., 'exd5' or 'Nf3')
+        if move_str[0].islower():
+            # Pawn capture
+            source_file = move_str[0]
+            dest = move_str[1:3]
+            for sq, piece in pieces.items():
+                if piece[1] == 'P' and piece[0] == ('w' if to_play == 'white' else 'b'):
+                    if sq[0] == source_file:
+                        row, col = square_to_coords(sq)
+                        dest_row, dest_col = square_to_coords(dest)
+                        dr, dc = dest_row - row, dest_col - col
+                        if dc != 0 and dr == (-1 if to_play == 'white' else 1):
+                            return sq, dest
+        else:
+            # Piece move (e.g., 'Nf3')
+            piece_type = move_str[0]
+            dest = move_str[1:3]
+            for sq, piece in pieces.items():
+                if piece[1] == piece_type and piece[0] == ('w' if to_play == 'white' else 'b'):
+                    row, col = square_to_coords(sq)
+                    dest_row, dest_col = square_to_coords(dest)
+                    dr, dc = dest_row - row, dest_col - col
+                    if piece_type == 'N' and ((abs(dr), abs(dc)) == (1, 2) or (abs(dr), abs(dc)) == (2, 1)):
+                        return sq, dest
+                    elif piece_type == 'B' and abs(dr) == abs(dc) and dr != 0:
+                        return sq, dest
+                    elif piece_type == 'R' and (dr == 0 or dc == 0) and (dr != 0 or dc != 0):
+                        return sq, dest
+                    elif piece_type == 'Q' and (abs(dr) == abs(dc) or dr == 0 or dc == 0) and (dr != 0 or dc != 0):
+                        return sq, dest
+                    elif piece_type == 'K' and max(abs(dr), abs(dc)) == 1:
+                        return sq, dest
+    elif len(move_str) == 4:
+        # Capture (e.g., 'Nxf3')
+        if move_str[1] == 'x':
+            piece_type = move_str[0]
+            dest = move_str[2:4]
+            for sq, piece in pieces.items():
+                if piece[1] == piece_type and piece[0] == ('w' if to_play == 'white' else 'b'):
+                    row, col = square_to_coords(sq)
+                    dest_row, dest_col = square_to_coords(dest)
+                    dr, dc = dest_row - row, dest_col - col
+                    if piece_type == 'N' and ((abs(dr), abs(dc)) == (1, 2) or (abs(dr), abs(dc)) == (2, 1)):
+                        return sq, dest
+                    elif piece_type == 'B' and abs(dr) == abs(dc) and dr != 0:
+                        return sq, dest
+                    elif piece_type == 'R' and (dr == 0 or dc == 0) and (dr != 0 or dc != 0):
+                        return sq, dest
+                    elif piece_type == 'Q' and (abs(dr) == abs(dc) or dr == 0 or dc == 0) and (dr != 0 or dc != 0):
+                        return sq, dest
+                    elif piece_type == 'K' and max(abs(dr), abs(dc)) == 1:
+                        return sq, dest
+        else:
+            # Disambiguation with file (e.g., 'Nbd7')
+            piece_type = move_str[0]
+            source_file = move_str[1]
+            dest = move_str[2:4]
+            for sq, piece in pieces.items():
+                if piece[1] == piece_type and piece[0] == ('w' if to_play == 'white' else 'b') and sq[0] == source_file:
+                    return sq, dest
+    
+    # Fallback - try to find any matching move
+    for sq in pieces:
+        row, col = square_to_coords(sq)
+        # Check if this piece can reach the destination implied by the move
+        pass
+    
+    return None, None
+
+def simulate_move(pieces, move_str, to_play):
+    """Simulate a move and return the new pieces dictionary."""
+    new_pieces = pieces.copy()
+    source, dest = parse_move(move_str, pieces, to_play)
+    
+    if source is None:
+        # Try to infer source
+        if len(move_str) >= 2:
+            dest = move_str[-2:] if not move_str[-2:].isdigit() else move_str[-2:]
+            for sq, piece in pieces.items():
+                if piece[0] == ('w' if to_play == 'white' else 'b'):
+                    row, col = square_to_coords(sq)
+                    dest_row, dest_col = square_to_coords(dest)
+                    dr, dc = dest_row - row, dest_col - col
+                    piece_type = piece[1]
+                    valid = False
+                    if piece_type == 'P':
+                        direction = -1 if to_play == 'white' else 1
+                        if dc == 0 and dr == direction:
+                            valid = True
+                        elif dc == 0 and dr == 2*direction and ((to_play == 'white' and row == 6) or (to_play == 'black' and row == 1)):
+                            valid = True
+                        elif dc != 0 and dr == direction and dest in pieces:
+                            valid = True
+                    elif piece_type == 'N' and ((abs(dr), abs(dc)) == (1, 2) or (abs(dr), abs(dc)) == (2, 1)):
+                        valid = True
+                    elif piece_type == 'B' and abs(dr) == abs(dc) and dr != 0:
+                        valid = True
+                    elif piece_type == 'R' and (dr == 0 or dc == 0) and (dr != 0 or dc != 0):
+                        valid = True
+                    elif piece_type == 'Q' and (abs(dr) == abs(dc) or dr == 0 or dc == 0) and (dr != 0 or dc != 0):
+                        valid = True
+                    elif piece_type == 'K' and max(abs(dr), abs(dc)) == 1:
+                        valid = True
+                    if valid:
+                        source = sq
+                        break
+    
+    if source is None or dest is None:
+        return new_pieces
+    
+    piece = new_pieces.pop(source)
+    
+    # Handle promotion
+    if '=' in move_str:
+        promotion_piece = move_str.split('=')[1]
+        piece = piece[0] + promotion_piece
+    
+    new_pieces[dest] = piece
+    
+    # Handle castling (move rook)
+    if move_str in ['O-O', 'O-O-O']:
+        color = 'w' if to_play == 'white' else 'b'
+        if move_str == 'O-O':
+            if color == 'w':
+                new_pieces['f1'] = new_pieces.pop('h1')
+            else:
+                new_pieces['f8'] = new_pieces.pop('h8')
+        else:
+            if color == 'w':
+                new_pieces['d1'] = new_pieces.pop('a1')
+            else:
+                new_pieces['d8'] = new_pieces.pop('a8')
+    
+    return new_pieces
+
+def is_check(pieces, player):
+    """Check if the given player is in check."""
+    color = 'w' if player == 'white' else 'b'
+    opp_color = 'b' if color == 'w' else 'w'
+    
+    # Find king
+    king_sq = None
+    for sq, piece in pieces.items():
+        if piece == color + 'K':
+            king_sq = sq
+            break
+    
+    if king_sq is None:
+        return False
+    
+    king_row, king_col = square_to_coords(king_sq)
+    
+    # Check for attacks from opponent pieces
+    for sq, piece in pieces.items():
+        if piece[0] != opp_color:
+            continue
+        
+        piece_type = piece[1]
+        row, col = square_to_coords(sq)
+        dr, dc = king_row - row, king_col - col
+        
+        if piece_type == 'P':
+            # Pawns attack diagonally
+            direction = -1 if opp_color == 'w' else 1
+            if dc != 0 and dr == direction:
+                return True
+        elif piece_type == 'N':
+            if (abs(dr), abs(dc)) == (1, 2) or (abs(dr), abs(dc)) == (2, 1):
+                return True
+        elif piece_type == 'K':
+            if max(abs(dr), abs(dc)) == 1:
+                return True
+        elif piece_type == 'B':
+            if abs(dr) == abs(dc) and dr != 0:
+                # Check for blocking pieces
+                step_r = 1 if dr > 0 else -1
+                step_c = 1 if dc > 0 else -1
+                r, c = row + step_r, col + step_c
+                while (r, c) != (king_row, king_col):
+                    if coords_to_square(r, c) in pieces:
+                        break
+                    r += step_r
+                    c += step_c
+                else:
+                    return True
+        elif piece_type == 'R':
+            if dr == 0 or dc == 0:
+                # Check for blocking pieces
+                step_r = 1 if dr > 0 else (-1 if dr < 0 else 0)
+                step_c = 1 if dc > 0 else (-1 if dc < 0 else 0)
+                r, c = row + step_r, col + step_c
+                while (r, c) != (king_row, king_col):
+                    if coords_to_square(r, c) in pieces:
+                        break
+                    r += step_r
+                    c += step_c
+                else:
+                    return True
+        elif piece_type == 'Q':
+            if abs(dr) == abs(dc) or dr == 0 or dc == 0:
+                step_r = 1 if dr > 0 else (-1 if dr < 0 else 0)
+                step_c = 1 if dc > 0 else (-1 if dc < 0 else 0)
+                r, c = row + step_r, col + step_c
+                while (r, c) != (king_row, king_col):
+                    if coords_to_square(r, c) in pieces:
+                        break
+                    r += step_r
+                    c += step_c
+                else:
+                    return True
+    
+    return False
+
+def is_checkmate(pieces, player, moves):
+    """Check if the player is checkmated."""
+    if not is_check(pieces, player):
+        return False
+    return len(moves) == 0
+
+def count_material(pieces, color):
+    """Count material for a given color."""
+    total = 0
+    for piece in pieces.values():
+        if piece[0] == color:
+            total += PIECE_VALUES.get(piece[1], 0)
+    return total
+
+def evaluate_position(pieces, to_play):
+    """Evaluate the position from the perspective of to_play."""
+    white_material = count_material(pieces, 'w')
+    black_material = count_material(pieces, 'b')
+    
+    # Simple material evaluation
+    if to_play == 'white':
+        score = white_material - black_material
+    else:
+        score = black_material - white_material
+    
+    # Add positional bonuses
+    for sq, piece in pieces.items():
+        row, col = square_to_coords(sq)
+        # Flip row for black pieces
+        if piece[0] == 'b':
+            row = 7 - row
+        
+        piece_type = piece[1]
+        pst = None
+        if piece_type == 'P':
+            pst = PAWN_PST
+        elif piece_type == 'N':
+            pst = KNIGHT_PST
+        elif piece_type == 'B':
+            pst = BISHOP_PST
+        elif piece_type == 'R':
+            pst = ROOK_PST
+        elif piece_type == 'Q':
+            pst = QUEEN_PST
+        elif piece_type == 'K':
+            # Use different PST based on game phase
+            total_material = white_material + black_material
+            if total_material > 3000:
+                pst = KING_MIDDLE_PST
+            else:
+                pst = KING_END_PST
+        
+        if pst is not None:
+            pos_value = pst[row][col]
+            if piece[0] == 'w':
+                score += pos_value
+            else:
+                score -= pos_value
+    
+    return score
+
+def get_piece_at_square(pieces, square):
+    """Get piece at a square, or None if empty."""
+    return pieces.get(square)
+
+def score_move(move_str, pieces, to_play, legal_moves):
+    """Score a move based on various heuristics."""
+    score = 0
+    source, dest = parse_move(move_str, pieces, to_play)
+    
+    # Highest priority: checkmate
+    new_pieces = simulate_move(pieces, move_str, to_play)
+    opp = 'black' if to_play == 'white' else 'white'
+    if is_checkmate(new_pieces, opp, []):
+        return 1000000 + score
+    
+    # High priority: check
+    if is_check(new_pieces, opp):
+        score += 500
+    
+    # Capture scoring (MVV-LVA)
+    captured_piece = get_piece_at_square(pieces, dest) if dest else None
+    if captured_piece:
+        captured_value = PIECE_VALUES.get(captured_piece[1], 0)
+        moving_piece = get_piece_at_square(pieces, source) if source else None
+        attacker_value = PIECE_VALUES.get(moving_piece[1], 0) if moving_piece else 0
+        # Most Valuable Victim, Least Valuable Attacker
+        score += 10000 + captured_value - attacker_value
+    
+    # Promotion scoring
+    if '=' in move_str:
+        score += 900  # Queen promotion value
+    
+    # Castling bonus (king safety)
+    if move_str in ['O-O', 'O-O-O']:
+        score += 100
+    
+    # Positional scoring
+    if dest:
+        dest_row, dest_col = square_to_coords(dest)
+        piece = get_piece_at_square(pieces, source) if source else None
+        if piece:
+            piece_type = piece[1]
+            row = dest_row
+            col = dest_col
+            if piece[0] == 'b':
+                row = 7 - row
+            
+            pst = None
+            if piece_type == 'P':
+                pst = PAWN_PST
+            elif piece_type == 'N':
+                pst = KNIGHT_PST
+            elif piece_type == 'B':
+                pst = BISHOP_PST
+            elif piece_type == 'R':
+                pst = ROOK_PST
+            elif piece_type == 'Q':
+                pst = QUEEN_PST
+            
+            if pst:
+                score += pst[row][col]
+    
+    # Center control bonus
+    if dest:
+        dest_row, dest_col = square_to_coords(dest)
+        if dest in ['d4', 'd5', 'e4', 'e5']:
+            score += 30
+        if dest in ['c4', 'c5', 'd3', 'd6', 'e3', 'e6', 'f4', 'f5']:
+            score += 15
+    
+    # Development bonus (move pieces from starting squares)
+    if source:
+        if source in ['b1', 'c1', 'f1', 'g1', 'b8', 'c8', 'f8', 'g8']:
+            piece = get_piece_at_square(pieces, source)
+            if piece and piece[1] in ['N', 'B']:
+                score += 20
+    
+    # Add small random factor to break ties
+    score += len(move_str) * 0.1
+    
+    return score
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Select the best move based on position evaluation.
+    
+    Args:
+        pieces: Dictionary mapping squares to piece codes
+        to_play: 'white' or 'black'
+        legal_moves: List of legal move strings
+    
+    Returns:
+        The best move string
+    """
+    if not legal_moves:
+        return ""
+    
+    # Check for checkmate first
+    if is_checkmate(pieces, to_play, legal_moves):
+        # No legal moves means checkmate - shouldn't happen for player to move
+        return legal_moves[0]
+    
+    # Score all moves
+    best_move = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        score = score_move(move, pieces, to_play, legal_moves)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+</code>

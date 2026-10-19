@@ -1,0 +1,330 @@
+The strategy for this policy is:
+
+- Represent the 5x6 board as two 30-bit bitboards for speed.
+- Generate all legal Clobber moves exactly.
+- Use iterative deepening alpha-beta search with a transposition table.
+- Search deeper in small/endgame positions and as deep as time allows in larger positions.
+- Evaluate positions mainly by:
+  - whether the side to move has legal moves,
+  - mobility difference,
+  - piece count difference,
+  - active pieces (pieces adjacent to capturable enemies),
+  - mild centrality.
+- Order moves well using:
+  - transposition-table best move first,
+  - moves that reduce opponent mobility,
+  - slight preference for central destinations.
+- Always fall back to a guaranteed legal move if time runs low.
+
+This gives a strong, fast policy while ensuring a legal move is always returned.
+
+<code>
+import time
+from typing import List, Tuple, Dict
+
+ROWS = 5
+COLS = 6
+N = ROWS * COLS
+FULL_MASK = (1 << N) - 1
+
+DIRS = [(-1, 0, 'U'), (0, 1, 'R'), (1, 0, 'D'), (0, -1, 'L')]
+
+# Precomputed geometry
+NEIGHBORS = [[] for _ in range(N)]          # (dest, dir_char)
+ADJ_MASK = [0] * N
+CENTRALITY = [0] * N
+
+for r in range(ROWS):
+    for c in range(COLS):
+        i = r * COLS + c
+        # Mild central preference
+        CENTRALITY[i] = 4 - abs(r - 2) - abs(c - 2.5)
+        for dr, dc, ch in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < ROWS and 0 <= nc < COLS:
+                j = nr * COLS + nc
+                NEIGHBORS[i].append((j, ch))
+                ADJ_MASK[i] |= 1 << j
+
+
+def _popcount(x: int) -> int:
+    return x.bit_count()
+
+
+def _iter_bits(x: int):
+    while x:
+        lsb = x & -x
+        i = lsb.bit_length() - 1
+        yield i
+        x ^= lsb
+
+
+def _to_bitboards(you, opponent) -> Tuple[int, int]:
+    y = 0
+    o = 0
+    # Works for nested lists or numpy arrays
+    for r in range(ROWS):
+        yr = you[r]
+        orow = opponent[r]
+        base = r * COLS
+        for c in range(COLS):
+            if int(yr[c]):
+                y |= 1 << (base + c)
+            elif int(orow[c]):
+                o |= 1 << (base + c)
+    return y, o
+
+
+def _move_to_str(src: int, dst: int) -> str:
+    r, c = divmod(src, COLS)
+    if dst == src - COLS:
+        d = 'U'
+    elif dst == src + 1:
+        d = 'R'
+    elif dst == src + COLS:
+        d = 'D'
+    else:
+        d = 'L'
+    return f"{r},{c},{d}"
+
+
+def _generate_moves(y: int, o: int) -> List[Tuple[int, int]]:
+    moves = []
+    yy = y
+    while yy:
+        lsb = yy & -yy
+        s = lsb.bit_length() - 1
+        # Any adjacent opponent?
+        opp_adj = ADJ_MASK[s] & o
+        while opp_adj:
+            dl = opp_adj & -opp_adj
+            d = dl.bit_length() - 1
+            moves.append((s, d))
+            opp_adj ^= dl
+        yy ^= lsb
+    return moves
+
+
+def _count_moves(y: int, o: int) -> int:
+    cnt = 0
+    yy = y
+    while yy:
+        lsb = yy & -yy
+        s = lsb.bit_length() - 1
+        cnt += _popcount(ADJ_MASK[s] & o)
+        yy ^= lsb
+    return cnt
+
+
+def _active_pieces(y: int, o: int) -> int:
+    cnt = 0
+    yy = y
+    while yy:
+        lsb = yy & -yy
+        s = lsb.bit_length() - 1
+        if ADJ_MASK[s] & o:
+            cnt += 1
+        yy ^= lsb
+    return cnt
+
+
+def _centrality_sum(bits: int) -> int:
+    s = 0
+    bb = bits
+    while bb:
+        lsb = bb & -bb
+        i = lsb.bit_length() - 1
+        s += CENTRALITY[i]
+        bb ^= lsb
+    return s
+
+
+def _apply_move(y: int, o: int, mv: Tuple[int, int]) -> Tuple[int, int]:
+    s, d = mv
+    # Move current player's piece from s to d; capture opponent at d.
+    y2 = (y ^ (1 << s)) | (1 << d)
+    o2 = o ^ (1 << d)
+    return y2, o2
+
+
+def _evaluate(y: int, o: int) -> int:
+    my_moves = _count_moves(y, o)
+    if my_moves == 0:
+        return -1000000
+    opp_moves = _count_moves(o, y)
+    if opp_moves == 0:
+        return 1000000
+
+    piece_diff = _popcount(y) - _popcount(o)
+    active_diff = _active_pieces(y, o) - _active_pieces(o, y)
+    central_diff = _centrality_sum(y) - _centrality_sum(o)
+
+    # Mobility dominates in Clobber.
+    return (
+        120 * (my_moves - opp_moves)
+        + 18 * piece_diff
+        + 25 * active_diff
+        + 2 * central_diff
+    )
+
+
+class Searcher:
+    def __init__(self, time_limit: float):
+        self.start = time.perf_counter()
+        self.time_limit = time_limit
+        self.tt: Dict[Tuple[int, int], Tuple[int, int, int, Tuple[int, int] or None]] = {}
+        # key -> (depth, flag, value, best_move)
+        # flag: 0 exact, -1 upper, 1 lower
+        self.best_move = None
+        self.nodes = 0
+
+    def time_up(self) -> bool:
+        return (time.perf_counter() - self.start) >= self.time_limit
+
+    def order_moves(self, y: int, o: int, moves: List[Tuple[int, int]], tt_move):
+        scored = []
+        for mv in moves:
+            y2, o2 = _apply_move(y, o, mv)
+            # Next player is opponent; want to reduce their mobility.
+            opp_mob = _count_moves(o2, y2)
+            # Prefer central destination a bit.
+            score = -50 * opp_mob + 3 * CENTRALITY[mv[1]]
+            if tt_move is not None and mv == tt_move:
+                score += 100000
+            scored.append((score, mv))
+        scored.sort(reverse=True)
+        return [mv for _, mv in scored]
+
+    def negamax(self, y: int, o: int, depth: int, alpha: int, beta: int) -> int:
+        self.nodes += 1
+        if self.time_up():
+            raise TimeoutError
+
+        alpha_orig = alpha
+        key = (y, o)
+        tt_entry = self.tt.get(key)
+        tt_move = None
+        if tt_entry is not None:
+            tt_depth, tt_flag, tt_val, tt_move = tt_entry
+            if tt_depth >= depth:
+                if tt_flag == 0:
+                    return tt_val
+                elif tt_flag == 1:
+                    alpha = max(alpha, tt_val)
+                else:
+                    beta = min(beta, tt_val)
+                if alpha >= beta:
+                    return tt_val
+
+        moves = _generate_moves(y, o)
+        if not moves:
+            return -1000000 + (30 - _popcount(y | o))
+
+        if depth == 0:
+            return _evaluate(y, o)
+
+        ordered = self.order_moves(y, o, moves, tt_move)
+
+        best_val = -10**9
+        best_mv = ordered[0]
+
+        for mv in ordered:
+            y2, o2 = _apply_move(y, o, mv)
+            # Swap perspective: opponent to move next
+            val = -self.negamax(o2, y2, depth - 1, -beta, -alpha)
+            if val > best_val:
+                best_val = val
+                best_mv = mv
+            if val > alpha:
+                alpha = val
+            if alpha >= beta:
+                break
+
+        flag = 0
+        if best_val <= alpha_orig:
+            flag = -1
+        elif best_val >= beta:
+            flag = 1
+        self.tt[key] = (depth, flag, best_val, best_mv)
+        return best_val
+
+    def choose(self, y: int, o: int) -> Tuple[int, int]:
+        moves = _generate_moves(y, o)
+        if not moves:
+            return None
+
+        # Safe fallback: first legal move.
+        fallback = moves[0]
+
+        total_pieces = _popcount(y | o)
+        # Dynamic max depth: deeper in smaller positions.
+        if total_pieces <= 8:
+            max_depth = 20
+        elif total_pieces <= 12:
+            max_depth = 14
+        elif total_pieces <= 18:
+            max_depth = 10
+        else:
+            max_depth = 8
+
+        # Quick ordering for root
+        ordered = self.order_moves(y, o, moves, None)
+        self.best_move = ordered[0] if ordered else fallback
+
+        # Iterative deepening
+        for depth in range(1, max_depth + 1):
+            if self.time_up():
+                break
+            try:
+                alpha = -10**9
+                beta = 10**9
+                best_val = -10**9
+                best_mv = self.best_move
+
+                tt_entry = self.tt.get((y, o))
+                tt_move = tt_entry[3] if tt_entry is not None else None
+                root_moves = self.order_moves(y, o, moves, tt_move)
+
+                for mv in root_moves:
+                    if self.time_up():
+                        raise TimeoutError
+                    y2, o2 = _apply_move(y, o, mv)
+                    val = -self.negamax(o2, y2, depth - 1, -beta, -alpha)
+                    if val > best_val:
+                        best_val = val
+                        best_mv = mv
+                    if val > alpha:
+                        alpha = val
+
+                self.best_move = best_mv
+                self.tt[(y, o)] = (depth, 0, best_val, best_mv)
+            except TimeoutError:
+                break
+
+        return self.best_move if self.best_move is not None else fallback
+
+
+def policy(you: List[List[int]], opponent: List[List[int]]) -> str:
+    y, o = _to_bitboards(you, opponent)
+
+    # Guaranteed legal move if any exist
+    legal = _generate_moves(y, o)
+    if not legal:
+        # No legal move exists; return a placeholder.
+        # Arena states should normally avoid calling policy on terminal positions.
+        return "0,0,U"
+
+    # Keep a little safety margin under 1 second.
+    searcher = Searcher(time_limit=0.93)
+    mv = searcher.choose(y, o)
+    if mv is None:
+        mv = legal[0]
+
+    # Final legality fallback
+    s, d = mv
+    if not ((y >> s) & 1) or not ((o >> d) & 1) or not (ADJ_MASK[s] & (1 << d)):
+        mv = legal[0]
+        s, d = mv
+
+    return _move_to_str(s, d)
+</code>

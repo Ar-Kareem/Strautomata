@@ -1,0 +1,152 @@
+
+from typing import List, Tuple
+
+# ----------------------------------------------------------------------
+# Pre‑computed data
+# ----------------------------------------------------------------------
+# Winning lines: 4 rows, 4 columns, 2 diagonals (4 cells each)
+_WIN_MASKS = [
+    0x000F, 0x00F0, 0x0F00, 0xF000,   # rows 0..3
+    0x1111, 0x2222, 0x4444, 0x8888,   # columns 0..3
+    0x8421, 0x1248,                 # main and anti diagonal
+]
+
+# Static move ordering: centre 2×2, then corners, then edges
+_ORDER = [
+    1 << 5, 1 << 6, 1 << 9, 1 << 10,   # (1,1),(1,2),(2,1),(2,2)
+    1 << 0, 1 << 3, 1 << 12, 1 << 15,  # corners
+    1 << 1, 1 << 2, 1 << 4, 1 << 7,
+    1 << 8, 1 << 11, 1 << 13, 1 << 14,
+]
+
+def _check_win(bits: int) -> bool:
+    """Return True iff 'bits' contains a full line of 4."""
+    for m in _WIN_MASKS:
+        if (bits & m) == m:
+            return True
+    return False
+
+def _evaluate(me: int, opp: int) -> int:
+    """
+    Heuristic score from the perspective of the player 'me'.
+    Sum of 10**(k-1) for each open line with k friendly pieces.
+    Subtract opponent's equivalent.
+    """
+    score = 0
+    for m in _WIN_MASKS:
+        my_cnt = (me & m).bit_count()
+        op_cnt = (opp & m).bit_count()
+        if my_cnt and op_cnt:
+            continue          # blocked line
+        if my_cnt:
+            score += 10 ** (my_cnt - 1)
+        elif op_cnt:
+            score -= 10 ** (op_cnt - 1)
+    return score
+
+def _negamax(me: int, opp: int, depth: int, alpha: int, beta: int) -> int:
+    """
+    Negamax search with alpha‑beta pruning.
+    Returns a high positive score for a win, negative for a loss.
+    """
+    if _check_win(me):
+        return 10000
+    if _check_win(opp):
+        return -10000
+    if depth == 0:
+        return _evaluate(me, opp)
+    if (me | opp) == 0xFFFF:   # board full
+        return 0
+
+    empty = (~(me | opp)) & 0xFFFF
+    best = -100000
+    for bit in _ORDER:
+        if (bit & empty) == 0:
+            continue
+        new_me = me | bit
+        # Opponent becomes the player to move in the child node
+        val = -_negamax(opp, new_me, depth - 1, -beta, -alpha)
+        if val > best:
+            best = val
+            if best > alpha:
+                alpha = best
+                if alpha >= beta:
+                    break
+    return best
+
+# ----------------------------------------------------------------------
+# Public API
+# ----------------------------------------------------------------------
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Choose the next move for the 4×4 board.
+    board[r][c] == 0  -> empty
+    board[r][c] == 1  -> our piece
+    board[r][c] == -1 -> opponent piece
+    Returns (row, col) with 0‑based indices.
+    """
+    me = 0
+    opp = 0
+    for r in range(4):
+        base = r * 4
+        row = board[r]
+        for c in range(4):
+            v = row[c]
+            if v == 1:
+                me |= 1 << (base + c)
+            elif v == -1:
+                opp |= 1 << (base + c)
+
+    empty = (~(me | opp)) & 0xFFFF
+
+    # 1) Immediate win
+    e = empty
+    while e:
+        bit = e & -e
+        e -= bit
+        if _check_win(me | bit):
+            idx = bit.bit_length() - 1
+            return (idx // 4, idx % 4)
+
+    # 2) Block opponent win
+    e = empty
+    while e:
+        bit = e & -e
+        e -= bit
+        if _check_win(opp | bit):
+            idx = bit.bit_length() - 1
+            return (idx // 4, idx % 4)
+
+    # 3) Decide search depth based on remaining empties
+    n_empty = empty.bit_count()
+    if n_empty >= 12:
+        depth = 4
+    elif n_empty >= 8:
+        depth = 5
+    elif n_empty >= 4:
+        depth = 6
+    else:
+        depth = n_empty   # full search near the end
+
+    # 4) Find best move via alpha‑beta
+    best_bit = None
+    best_score = -1000000
+    for bit in _ORDER:
+        if (bit & empty) == 0:
+            continue
+        new_me = me | bit
+        score = -_negamax(opp, new_me, depth - 1, -1000000, 1000000)
+        if score > best_score:
+            best_score = score
+            best_bit = bit
+            if score > 9000:          # forced win found
+                break
+
+    # (should never happen) fallback to first empty cell
+    if best_bit is None:
+        bit = empty & -empty
+        idx = bit.bit_length() - 1
+        return (idx // 4, idx % 4)
+
+    idx = best_bit.bit_length() - 1
+    return (idx // 4, idx % 4)

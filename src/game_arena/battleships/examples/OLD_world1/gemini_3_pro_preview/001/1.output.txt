@@ -1,0 +1,135 @@
+```python
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Implements a Probability Density Function (PDF) targeting strategy for Battleship.
+    
+    The algorithm operates in two phases based on the board state:
+    1. Probability Map Calculation:
+       It iterates through every possible valid placement of the remaining ships 
+       (lengths 5, 4, 3, 3, 2) on the grid. A placement is valid if it fits within 
+       bounds and does not overlap a known Miss (-1).
+    
+    2. Scoring:
+       - Hunt Mode: If a placement covers only Unknown cells (0), it adds a small 
+         weight to those cells. This creates a heatmap of where ships are most likely to fit.
+       - Target Mode: If a placement covers existing Hits (1), it adds a massive weight 
+         to the adjacent Unknown cells. This prioritizes finishing off found ships.
+    
+    3. Optimization (Parity):
+       In Hunt Mode (when no obvious targets exist), the scores of cells matching a 
+       checkerboard pattern ((row+col)%2 == 0) are boosted. Since the smallest ship 
+       is length 2, hitting only one color of the checkerboard guarantees finding every ship 
+       while reducing the search space by 50%.
+    """
+    
+    rows = 10
+    cols = 10
+    ships = [5, 4, 3, 3, 2]
+    
+    # 0 = Unknown, -1 = Miss, 1 = Hit
+    # prob_map accumulates the weighted likelihood of a ship occurring in a cell
+    prob_map = [[0.0] * cols for _ in range(rows)]
+    
+    # Constants to tune behavior
+    # A placement that overlaps a Hit is effectively a "Target" hypothesis.
+    # We weight these significantly higher to force the AI to resolve hits.
+    WEIGHT_HUNT = 1
+    WEIGHT_TARGET_MULTIPLIER = 1000 
+
+    # --- 1. Build Probability Density Map ---
+    for ship_len in ships:
+        
+        # Check Horizontal placements
+        for r in range(rows):
+            for c in range(cols - ship_len + 1):
+                # Get board values for this potential ship segment
+                segment = board[r][c : c + ship_len]
+                
+                # Constraint: Cannot overlap a Miss
+                if -1 in segment: 
+                    continue 
+                
+                hits = segment.count(1)
+                unknowns = segment.count(0)
+                
+                # If no unknowns, this placement is fully explored; skip it.
+                if unknowns == 0: 
+                    continue
+                
+                # Calculate Score
+                # If we see hits, this placement explains them -> High Priority
+                if hits > 0:
+                    weight = WEIGHT_HUNT + (hits * WEIGHT_TARGET_MULTIPLIER)
+                else:
+                    weight = WEIGHT_HUNT
+                
+                # Add weight to the unknown cells in this specific placement
+                for k in range(ship_len):
+                    if board[r][c + k] == 0:
+                        prob_map[r][c+k] += weight
+
+        # Check Vertical placements
+        for c in range(cols):
+            for r in range(rows - ship_len + 1):
+                segment = [board[r+k][c] for k in range(ship_len)]
+                
+                if -1 in segment: 
+                    continue
+                
+                hits = segment.count(1)
+                unknowns = segment.count(0)
+                
+                if unknowns == 0: 
+                    continue
+                
+                if hits > 0:
+                    weight = WEIGHT_HUNT + (hits * WEIGHT_TARGET_MULTIPLIER)
+                else:
+                    weight = WEIGHT_HUNT
+                
+                for k in range(ship_len):
+                    if board[r+k][c] == 0:
+                        prob_map[r+k][c] += weight
+
+    # --- 2. Select Best Move ---
+    max_score = -1
+    candidates = []
+    
+    # Determine if we are in Hunt Mode (no high-value target stacks found)
+    # If the max probability on the board is low, it means no placements aligned with hits.
+    grid_max = max(max(row) for row in prob_map)
+    is_hunting = grid_max < WEIGHT_TARGET_MULTIPLIER
+
+    for r in range(rows):
+        for c in range(cols):
+            # Only consider valid targets (Unknown cells)
+            if board[r][c] != 0:
+                continue
+                
+            score = prob_map[r][c]
+            
+            # Parity Heuristic (Checkerboard)
+            # Only apply when Hunting. 
+            # Strategically, only scanning (r+c)%2==0 is sufficient to find all ships >= size 2.
+            if is_hunting:
+                if (r + c) % 2 == 0:
+                    score *= 2  # Bias towards parity cells
+            
+            if score > max_score:
+                max_score = score
+                candidates = [(r, c)]
+            elif score == max_score:
+                candidates.append((r, c))
+    
+    # Fallback if no candidates (e.g. board is full or error state)
+    if not candidates:
+        valid_cells = [(r, c) for r in range(rows) for c in range(cols) if board[r][c] == 0]
+        if valid_cells:
+            return random.choice(valid_cells)
+        return (0, 0)
+
+    # Random choice among ties to prevent deterministic loops
+    return random.choice(candidates)
+```

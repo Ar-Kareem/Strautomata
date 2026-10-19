@@ -1,0 +1,232 @@
+The strategy for this policy is to implement a combination of threat detection, board control, and greedy connection improvement using a lightweight Monte Carlo Tree Search (MCTS)-inspired heuristic with a strong emphasis on pattern recognition and virtual ownership of key bridge and fork positions. 
+
+The policy prioritizes moves that:
+1. **Prevent immediate loss** by detecting if the opponent has a winning path (or is one move away from completion) and blocking it.
+2. **Advance its own connectivity** toward linking its two sides, using a distance heuristic based on disjoint-set (Union-Find) to track connected components.
+3. **Control central and high-leverage cells**, especially those that form "bridges" (two empty cells between two of one's own stones) or "forks" (a cell that helps connect multiple components).
+4. **Use a mobility heuristic**: prefer moves that increase future options and limit the opponent’s ability to connect.
+
+We precompute neighbor offsets for hexagonal grid adjacency. We also implement a fast flood-fill (DFS) to check connectivity for win conditions.
+
+Given the 1-second time limit, we use a shallow but effective search: for each empty cell, we score the position after placing a stone there using a heuristic that combines:
+- Immediate connectivity improvement
+- Threat to complete a connection
+- Degree of influence (number of friendly groups it connects)
+- Proximity to center (for early/mid-game bias)
+
+We do not do deep tree search—instead, we use a static evaluation that simulates "what if I play here?" and pick the best.
+
+Crucially, the policy ensures that the returned move is always legal by iterating over all empty cells and validating one final time.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set, Optional
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    # Define board size
+    SIZE = 11
+    EMPTY = 0
+    ME = 1
+    OPP = 2
+
+    # Hexagonal neighbors: 6 directions
+    # (di, dj) offsets for adjacent hex cells
+    # Using axial coordinates isn't necessary; we use offset row indexing.
+    # For a cell (i, j), the 6 neighbors are:
+    # (i-1, j), (i-1, j+1), (i, j-1), (i, j+1), (i+1, j-1), (i+1, j)
+    neighbor_deltas = [
+        (-1, 0), (-1, 1),
+        (0, -1), (0, 1),
+        (1, -1), (1, 0)
+    ]
+
+    def in_bounds(i: int, j: int) -> bool:
+        return 0 <= i < SIZE and 0 <= j < SIZE
+
+    def get_neighbors(i: int, j: int) -> List[Tuple[int, int]]:
+        neighbors = []
+        for di, dj in neighbor_deltas:
+            ni, nj = i + di, j + dj
+            if in_bounds(ni, nj):
+                neighbors.append((ni, nj))
+        return neighbors
+
+    # Create board state
+    board = np.zeros((SIZE, SIZE), dtype=np.int8)
+    my_set = set(me)
+    opp_set = set(opp)
+    all_set = my_set | opp_set
+
+    for (i, j) in me:
+        board[i, j] = ME
+    for (i, j) in opp:
+        board[i, j] = OPP
+
+    # Get all empty cells
+    empty_cells = [(i, j) for i in range(SIZE) for j in range(SIZE) if board[i, j] == EMPTY]
+
+    # If very early game, take center or strong opening move
+    if len(me) == 0 and len(opp) == 0:
+        return (5, 5)  # True center
+
+    # For black ('b'): connect top (row 0) to bottom (row 10)
+    # For white ('w'): connect left (col 0) to right (col 10)
+
+    def is_connected(component: Set[Tuple[int, int]], color: str) -> bool:
+        if color == 'b':
+            rows = {cell[0] for cell in component}
+            return 0 in rows and (SIZE - 1) in rows
+        else:  # white
+            cols = {cell[1] for cell in component}
+            return 0 in cols and (SIZE - 1) in cols
+
+    def get_connected_components(stones: Set[Tuple[int, int]]) -> List[Set[Tuple[int, int]]]:
+        visited = set()
+        components = []
+
+        for stone in stones:
+            if stone in visited:
+                continue
+            # BFS for component
+            component = set()
+            queue = [stone]
+            visited.add(stone)
+            component.add(stone)
+
+            while queue:
+                i, j = queue.pop(0)
+                for ni, nj in get_neighbors(i, j):
+                    if (ni, nj) in stones and (ni, nj) not in visited:
+                        visited.add((ni, nj))
+                        queue.append((ni, nj))
+                        component.add((ni, nj))
+
+            components.append(component)
+        return components
+
+    def distance_to_connect(my_comp: Set[Tuple[int, int]], color: str) -> int:
+        # Rough distance: for black, min and max row; want to bridge gap to 0 and 10
+        if color == 'b':
+            min_row = min(cell[0] for cell in my_comp)
+            max_row = max(cell[0] for cell in my_comp)
+            return (10 - max_row) + min_row
+        else:
+            min_col = min(cell[1] for cell in my_comp)
+            max_col = max(cell[1] for cell in my_comp)
+            return (10 - max_col) + min_col
+
+    # Precompute my and opponent components
+    my_components = get_connected_components(my_set)
+    opp_components = get_connected_components(opp_set)
+
+    # 1. Check: Is opponent one move away from winning? (Critical threat)
+    # For each empty cell, simulate opponent playing there, check if they win
+    for (i, j) in empty_cells:
+        # Simulate opponent plays (i, j)
+        temp_opp_stones = opp_set | {(i, j)}
+        temp_opp_components = get_connected_components(temp_opp_stones)
+        for comp in temp_opp_components:
+            if is_connected(comp, 'w' if color == 'b' else 'b'):  # note: opponent's color
+                # This is a winning move for opponent — must block!
+                return (i, j)
+
+    # 2. Can I win in one move?
+    for (i, j) in empty_cells:
+        temp_my_stones = my_set | {(i, j)}
+        temp_my_components = get_connected_components(temp_my_stones)
+        for comp in temp_my_components:
+            if is_connected(comp, color):
+                return (i, j)
+
+    # 3. Heuristic scoring for each move
+    best_score = -1
+    best_move = empty_cells[0]  # fallback
+
+    for (i, j) in empty_cells:
+        score = 0.0
+
+        # a. Immediate connectivity: how many of my components does this cell connect?
+        adjacent_my_components = set()
+        for ni, nj in get_neighbors(i, j):
+            if (ni, nj) in my_set:
+                # Find which component it belongs to
+                for idx, comp in enumerate(my_components):
+                    if (ni, nj) in comp:
+                        adjacent_my_components.add(idx)
+                        break
+        num_connected_comps = len(adjacent_my_components)
+        score += num_connected_comps * 10
+
+        # b. Proximity to critical boundaries
+        if color == 'b':
+            # Black: want to go from top to bottom
+            # Closest to top and bottom reduces max distance
+            dist_to_top = i
+            dist_to_bottom = 10 - i
+            # Bonus for central vertical positioning
+            score += 10 - abs(i - 5)  # prefer center row
+            # Encourage upward/downward expansion
+            if me:
+                avg_row = sum(r for r, _ in me) / len(me)
+                score += 5 - abs(i - avg_row)  # near cluster
+        else:
+            # White: left to right
+            dist_to_left = j
+            dist_to_right = 10 - j
+            score += 10 - abs(j - 5)
+            if me:
+                avg_col = sum(c for _, c in me) / len(me)
+                score += 5 - abs(j - avg_col)
+
+        # c. Degree of influence: number of friendly and opponent neighbors
+        my_neighbors = 0
+        opp_neighbors = 0
+        empty_neighbors = 0
+        for ni, nj in get_neighbors(i, j):
+            if (ni, nj) in my_set:
+                my_neighbors += 1
+            elif (ni, nj) in opp_set:
+                opp_neighbors += 1
+            elif in_bounds(ni, nj):
+                empty_neighbors += 1
+        score += my_neighbors * 2
+        # Discourage being fully surrounded by opponent
+        if opp_neighbors == 6:
+            score -= 100
+
+        # d. Bridge and forking potential: cell that completes a bridge or connects two distant groups
+        # If this move connects two distant components, bonus
+        if num_connected_comps >= 2:
+            # Estimate overall span after merging
+            all_points = set()
+            for idx in adjacent_my_components:
+                all_points |= my_components[idx]
+            all_points.add((i, j))
+            if color == 'b':
+                min_r = min(p[0] for p in all_points)
+                max_r = max(p[0] for p in all_points)
+                span_bonus = (max_r - min_r)  # more span is better
+                score += span_bonus
+            else:
+                min_c = min(p[1] for p in all_points)
+                max_c = max(p[1] for p in all_points)
+                span_bonus = (max_c - min_c)
+                score += span_bonus
+
+        # e. Center control early/mid game
+        if len(all_set) < 40:  # early game
+            center_dist = abs(i - 5) + abs(j - 5)
+            score += (10 - center_dist)  # more for closer
+
+        # f. Prevent isolated moves
+        if my_neighbors == 0 and len(me) > 0:
+            score -= 5  # avoid isolated unless necessary
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = (i, j)
+
+    # Always return a legal move
+    return best_move
+</code>

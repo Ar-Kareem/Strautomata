@@ -1,0 +1,98 @@
+My strategy: Use a heuristic evaluation with threat detection - check for immediate wins, block opponent wins, then evaluate moves based on line potential.
+
+<code>
+import numpy as np
+
+def policy(you, opponent) -> str:
+    you = np.array(you, dtype=np.int8)
+    opponent = np.array(opponent, dtype=np.int8)
+    
+    quad_slices = [
+        (slice(0,3), slice(0,3)),
+        (slice(0,3), slice(3,6)),
+        (slice(3,6), slice(0,3)),
+        (slice(3,6), slice(3,6)),
+    ]
+    
+    def rotate(board, quad, direction):
+        b = board.copy()
+        rs, cs = quad_slices[quad]
+        sub = b[rs, cs].copy()
+        if direction == 'L':
+            b[rs, cs] = np.rot90(sub, 1)
+        else:
+            b[rs, cs] = np.rot90(sub, -1)
+        return b
+    
+    def has_five(board):
+        for r in range(6):
+            for c in range(2):
+                if board[r, c:c+5].sum() == 5: return True
+        for c in range(6):
+            for r in range(2):
+                if board[r:r+5, c].sum() == 5: return True
+        for r in range(2):
+            for c in range(2):
+                s = sum(board[r+i, c+i] for i in range(5))
+                if s == 5: return True
+        for r in range(2):
+            for c in range(4, 6):
+                s = sum(board[r+i, c-i] for i in range(5))
+                if s == 5: return True
+        return False
+    
+    def count_lines(board, opp):
+        score = 0
+        lines = []
+        for r in range(6):
+            for c in range(2):
+                lines.append([(r,c+i) for i in range(5)])
+        for c in range(6):
+            for r in range(2):
+                lines.append([(r+i,c) for i in range(5)])
+        for r in range(2):
+            for c in range(2):
+                lines.append([(r+i,c+i) for i in range(5)])
+        for r in range(2):
+            for c in range(4,6):
+                lines.append([(r+i,c-i) for i in range(5)])
+        for line in lines:
+            mine = sum(board[r][c] for r,c in line)
+            theirs = sum(opp[r][c] for r,c in line)
+            if theirs == 0 and mine > 0:
+                score += 10 ** mine
+            if mine == 0 and theirs > 0:
+                score -= 10 ** theirs * 0.9
+        return score
+    
+    empty_cells = [(r,c) for r in range(6) for c in range(6) if you[r,c]==0 and opponent[r,c]==0]
+    rotations = [(q,d) for q in range(4) for d in ['L','R']]
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for r,c in empty_cells:
+        for q,d in rotations:
+            new_you = you.copy()
+            new_you[r,c] = 1
+            ry = rotate(new_you, q, d)
+            ro = rotate(opponent, q, d)
+            
+            my_win = has_five(ry)
+            opp_win = has_five(ro)
+            
+            if my_win and not opp_win:
+                return f"{r+1},{c+1},{q},{d}"
+            if my_win and opp_win:
+                score = 50000
+            elif opp_win:
+                score = -100000
+            else:
+                score = count_lines(ry, ro)
+            
+            if score > best_score:
+                best_score = score
+                best_move = f"{r+1},{c+1},{q},{d}"
+    
+    return best_move
+</code>

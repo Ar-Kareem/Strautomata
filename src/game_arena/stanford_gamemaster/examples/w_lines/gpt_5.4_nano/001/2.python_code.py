@@ -1,0 +1,175 @@
+
+import random
+from typing import List, Tuple, Optional
+
+def policy(state: list[list[object]], role: str) -> str:
+    # --- Helpers to extract facts ---
+    # Board seems to use coordinates like letters a..i and numbers 1..9, with a hex shape.
+    # We infer legal unoccupied cells by scanning for all cell(...) facts' coordinates
+    # plus all line_count ids that appear to be coordinates (e.g., a5, a9, b4, c3, ...).
+    #
+    # In the given examples, empty cells are not represented as facts. So we must
+    # reconstruct the full set of usable coordinates by parsing all coordinates seen
+    # either in cell facts (occupied) or inferred from line identifiers.
+    #
+    # We'll do two-stage:
+    # 1) Collect occupied cells from cell facts.
+    # 2) Infer candidate full cell set from line_count ids that look like coordinate tokens
+    #    (e.g., "a5", "b9", ..., and also "a", "b", etc. are line ids not cells).
+    # 3) Remove any coordinates that are clearly non-existent by only keeping those
+    #    whose tokens match letter+number with number 1..9.
+    #
+    # If inference fails (rare), fall back to a hardcoded candidate list based on observed format.
+
+    opponent = "blue" if role == "red" else "red"
+
+    def is_cell_fact(f) -> bool:
+        return len(f) == 4 and f[0] == "cell"
+
+    occupied = set()
+    line_count_values = {}  # (line_id, color) -> n
+    # Also store line_count max n per color to gauge threats
+    max_n_by_color = {role: 0, opponent: 0}
+
+    # Collect all line_count ids seen that could correspond to cells (like a5)
+    coord_tokens = set()
+    for fact in state:
+        if not fact:
+            continue
+        if isinstance(fact, list) and len(fact) >= 1:
+            if fact[0] == "cell" and len(fact) == 4:
+                _, x, y, c = fact
+                occupied.add((str(x), str(y), str(c)))
+            elif fact[0] == "line_count" and len(fact) == 4:
+                _, lid, color, n = fact
+                lid = str(lid)
+                color = str(color)
+                n = int(n)
+                line_count_values[(lid, color)] = n
+                if color == role:
+                    max_n_by_color[role] = max(max_n_by_color[role], n)
+                else:
+                    max_n_by_color[opponent] = max(max_n_by_color[opponent], n)
+                # infer cell tokens from lid patterns like a5, b4, c9 etc.
+                if len(lid) == 2 and lid[0].isalpha() and lid[1].isdigit():
+                    coord_tokens.add(lid[0] + lid[1])
+                elif len(lid) == 3 and lid[0].isalpha() and lid[1].isdigit() and lid[2].isdigit():
+                    # e.g., "a10" not expected; ignore
+                    pass
+                elif len(lid) == 2:
+                    # could still be coordinate token like "e9"
+                    if lid[0] in "abcdefghi" and lid[1] in "123456789":
+                        coord_tokens.add(lid[0] + lid[1])
+
+    # Build candidate coordinates from coord_tokens
+    candidates = []
+    # fallback known coordinate range
+    fallback_letters = [chr(ord('a') + i) for i in range(9)]  # a..i
+    fallback_numbers = list("123456789")
+    fallback_cells = set(f"{L}{N}" for L in fallback_letters for N in fallback_numbers)
+
+    if coord_tokens:
+        coord_set = coord_tokens
+    else:
+        coord_set = fallback_cells
+
+    # Helper parse "a5" to (letter, number)
+    def split_token(tok: str) -> Tuple[str, str]:
+        return tok[0], tok[1:]
+
+    # Determine occupied set of (x,y) regardless of color
+    occupied_xy = {(x, y) for (x, y, c) in occupied}
+
+    for tok in coord_set:
+        x, y = split_token(tok)
+        # ensure usable coordinates match the hex board: in examples all are within a..i and 1..9
+        if x in fallback_letters and y in fallback_numbers:
+            if (x, y) not in occupied_xy:
+                candidates.append((x, y))
+
+    # If still empty, try a slightly broader fallback by scanning all combinations
+    if not candidates:
+        for L in fallback_letters:
+            for N in fallback_numbers:
+                if (L, N) not in occupied_xy:
+                    candidates.append((L, N))
+
+    # If still empty, pick deterministic dummy (should not happen)
+    if not candidates:
+        return "place(a,1)"
+
+    # --- Move scoring ---
+    # We don't know exact local line geometry, but we can exploit that in this game
+    # the line_count facts are indexed by "line_id". For cell coordinates, many
+    # line_ids appear as coordinate-like tokens (a5 etc.) which represent how many
+    # stones that player has on that specific "line segment" (as seen with a, a5, etc.).
+    #
+    # We'll use a heuristic:
+    # - Prefer moves at (x,y) that maximize line_count for that coordinate token
+    #   for the current player, and also for the related row/col identifiers if present
+    #   in state as line_count entries.
+    # - Block opponent: if opponent has high line_count for that same token, penalize.
+
+    def coord_token(x: str, y: str) -> str:
+        return f"{x}{y}"
+
+    # Additional line identifiers sometimes are just x (a..i) or y (1..9) in examples.
+    # We'll include those since line_count has entries like ("a", color, n) and ("5", color, n).
+    def score_move(x: str, y: str) -> int:
+        tok = coord_token(x, y)
+        s = 0
+
+        # Own progress
+        own_tok = line_count_values.get((tok, role), 0)
+        opp_tok = line_count_values.get((tok, opponent), 0)
+
+        # row/col style ids
+        own_x = line_count_values.get((x, role), 0)
+        opp_x = line_count_values.get((x, opponent), 0)
+        own_y = line_count_values.get((y, role), 0)
+        opp_y = line_count_values.get((y, opponent), 0)
+
+        # Heavily reward high values (majority thresholds seem around 3/4/5)
+        def reward(n: int) -> int:
+            # convex reward
+            if n >= 6:
+                return 200
+            if n == 5:
+                return 160
+            if n == 4:
+                return 90
+            if n == 3:
+                return 40
+            if n == 2:
+                return 15
+            if n == 1:
+                return 5
+            return 0
+
+        s += reward(own_tok)
+        s += reward(own_x)
+        s += reward(own_y)
+
+        # Block: penalize opponent high counts at those same ids
+        s -= 2 * reward(opp_tok)
+        s -= 1 * reward(opp_x)
+        s -= 1 * reward(opp_y)
+
+        # Encourage moves that increase overall max threat relative to opponent
+        # even without exact geometry:
+        s += (own_tok - opp_tok)
+
+        # Small randomness for tie-break
+        s += random.randint(0, 3)
+        return s
+
+    best = None
+    best_score = None
+    for x, y in candidates:
+        sc = score_move(x, y)
+        if best_score is None or sc > best_score:
+            best_score = sc
+            best = (x, y)
+
+    x, y = best
+    return f"place({x},{y})"

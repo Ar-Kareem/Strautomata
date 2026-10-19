@@ -1,0 +1,55 @@
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    best_move = None
+    best_score = -1
+
+    for row in range(5):
+        for col in range(6):
+            if you[row][col] == 1:
+                # Check all four directions for possible moves
+                # Up
+                if row > 0 and opponent[row-1][col] == 1:
+                    # Calculate score for this move
+                    score = 0
+                    r, c = row-1, col
+                    if r > 0 and opponent[r-1][c] == 1: score += 1
+                    if r < 4 and opponent[r+1][c] == 1: score += 1
+                    if c > 0 and opponent[r][c-1] == 1: score += 1
+                    if c < 5 and opponent[r][c+1] == 1: score += 1
+                    if score > best_score:
+                        best_move = f"{row},{col},U"
+                        best_score = score
+                # Down
+                if row < 4 and opponent[row+1][col] == 1:
+                    score = 0
+                    r, c = row+1, col
+                    if r > 0 and opponent[r-1][c] == 1: score += 1
+                    if r < 4 and opponent[r+1][c] == 1: score += 1
+                    if c > 0 and opponent[r][c-1] == 1: score += 1
+                    if c < 5 and opponent[r][c+1] == 1: score += 1
+                    if score > best_score:
+                        best_move = f"{row},{col},D"
+                        best_score = score
+                # Left
+                if col > 0 and opponent[row][col-1] == 1:
+                    score = 0
+                    r, c = row, col-1
+                    if r > 0 and opponent[r-1][c] == 1: score += 1
+                    if r < 4 and opponent[r+1][c] == 1: score += 1
+                    if c > 0 and opponent[r][c-1] == 1: score += 1
+                    if c < 5 and opponent[r][c+1] == 1: score += 1
+                    if score > best_score:
+                        best_move = f"{row},{col},L"
+                        best_score = score
+                # Right
+                if col < 5 and opponent[row][col+1] == 1:
+                    score = 0
+                    r, c = row, col+1
+                    if r > 0 and opponent[r-1][c] == 1: score += 1
+                    if r < 4 and opponent[r+1][c] == 1: score += 1
+                    if c > 0 and opponent[r][c-1] == 1: score += 1
+                    if c < 5 and opponent[r][c+1] == 1: score += 1
+                    if score > best_score:
+                        best_move = f"{row},{col},R"
+                        best_score = score
+    return best_move

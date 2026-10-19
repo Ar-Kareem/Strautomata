@@ -1,0 +1,92 @@
+
+import random
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game.
+
+    Args:
+        board: A 4x4 list of lists representing the game board.
+               0: Empty, 1: Player (AI), -1: Opponent.
+
+    Returns:
+        A tuple (row, col) indicating the chosen move.
+    """
+
+    player = 1
+    opponent = -1
+    board_size = 4
+
+    # 1. Check for a winning move
+    for r in range(board_size):
+        for c in range(board_size):
+            if board[r][c] == 0:
+                board[r][c] = player
+                if check_win(board, player):
+                    return (r, c)
+                board[r][c] = 0  # Undo the move
+
+    # 2. Check for blocking an opponent's winning move
+    for r in range(board_size):
+        for c in range(board_size):
+            if board[r][c] == 0:
+                board[r][c] = opponent
+                if check_win(board, opponent):
+                    return (r, c)
+                board[r][c] = 0  # Undo the move
+
+    # 3. Try to take the center (if available, adaptable for 4x4)
+    # For a 4x4, there isn't a single "center". We can prioritize central squares.
+    center_coords = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    random.shuffle(center_coords) # Randomize center preference
+    for r, c in center_coords:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 4. Try to take a corner (if available)
+    corners = [(0, 0), (0, 3), (3, 0), (3, 3)]
+    random.shuffle(corners)
+    for r, c in corners:
+        if board[r][c] == 0:
+            return (r, c)
+
+    # 5. Take any available empty cell (randomly)
+    empty_cells = []
+    for r in range(board_size):
+        for c in range(board_size):
+            if board[r][c] == 0:
+                empty_cells.append((r, c))
+
+    if empty_cells:
+        return random.choice(empty_cells)
+
+    # Should not happen in a valid game unless board is full.
+    return (-1, -1)
+
+
+def check_win(board: list[list[int]], player: int) -> bool:
+    """
+    Checks if the given player has won the game.
+    """
+    board_size = 4
+
+    # Check rows
+    for r in range(board_size):
+        if all(board[r][c] == player for c in range(board_size)):
+            return True
+
+    # Check columns
+    for c in range(board_size):
+        if all(board[r][c] == player for r in range(board_size)):
+            return True
+
+    # Check main diagonal
+    if all(board[i][i] == player for i in range(board_size)):
+        return True
+
+    # Check anti-diagonal
+    if all(board[i][board_size - 1 - i] == player for i in range(board_size)):
+        return True
+
+    return False
+

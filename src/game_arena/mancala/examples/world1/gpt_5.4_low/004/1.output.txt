@@ -1,0 +1,351 @@
+The strategy for this policy is:
+
+- Use a strong game-tree search with alpha-beta pruning.
+- Model Kalah correctly, including:
+  - extra turns,
+  - captures,
+  - end-of-game seed collection.
+- Search with iterative deepening so the policy always has a legal fallback move even if time is tight.
+- Use a transposition table to reuse results across repeated states.
+- Order moves well:
+  - prefer extra turns,
+  - then strong captures,
+  - then moves that improve store / position.
+- Evaluate non-terminal positions with a heuristic based on:
+  - store difference,
+  - seeds on your side,
+  - extra-turn opportunities,
+  - capture opportunities,
+  - opponent threats.
+
+This gives a robust policy that is much stronger than a greedy one while still staying within the time limit.
+
+<code>
+import time
+from typing import List, Tuple, Dict
+
+# Global transposition table reused across calls.
+_TT: Dict[Tuple[Tuple[int, ...], Tuple[int, ...], int], Tuple[int, int]] = {}
+
+INF = 10**9
+
+
+def _legal_moves(you: List[int]) -> List[int]:
+    return [i for i in range(6) if you[i] > 0]
+
+
+def _finalize_if_terminal(you: List[int], opp: List[int]) -> bool:
+    """If game ended, sweep remaining seeds into stores. Return True iff terminal."""
+    you_empty = (you[0] | you[1] | you[2] | you[3] | you[4] | you[5]) == 0
+    opp_empty = (opp[0] | opp[1] | opp[2] | opp[3] | opp[4] | opp[5]) == 0
+    if not you_empty and not opp_empty:
+        return False
+    if not you_empty:
+        rem = sum(you[:6])
+        for i in range(6):
+            you[i] = 0
+        you[6] += rem
+    if not opp_empty:
+        rem = sum(opp[:6])
+        for i in range(6):
+            opp[i] = 0
+        opp[6] += rem
+    return True
+
+
+def _apply_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool, bool]:
+    """
+    Apply move for current player.
+    Returns (new_you, new_opp, extra_turn, terminal).
+    Orientation remains current player first if extra_turn;
+    otherwise still returns boards in original orientation, caller decides swap.
+    """
+    y = you[:]
+    o = opp[:]
+
+    seeds = y[move]
+    y[move] = 0
+
+    side = 0  # 0 = your side, 1 = opp side
+    idx = move + 1
+    last_side = None
+    last_idx = None
+
+    while seeds > 0:
+        if side == 0:
+            while idx <= 6 and seeds > 0:
+                y[idx] += 1
+                seeds -= 1
+                last_side = 0
+                last_idx = idx
+                idx += 1
+            side = 1
+            idx = 0
+        else:
+            while idx <= 5 and seeds > 0:  # skip opponent store
+                o[idx] += 1
+                seeds -= 1
+                last_side = 1
+                last_idx = idx
+                idx += 1
+            side = 0
+            idx = 0
+
+    extra = (last_side == 0 and last_idx == 6)
+
+    # Capture
+    if last_side == 0 and 0 <= last_idx <= 5 and y[last_idx] == 1 and o[5 - last_idx] > 0:
+        y[6] += y[last_idx] + o[5 - last_idx]
+        y[last_idx] = 0
+        o[5 - last_idx] = 0
+
+    terminal = _finalize_if_terminal(y, o)
+    return y, o, extra, terminal
+
+
+def _count_extra_turn_moves(you: List[int]) -> int:
+    c = 0
+    for i in range(6):
+        s = you[i]
+        if s <= 0:
+            continue
+        # From house i, own store is reached after (6 - i) steps.
+        if s % 13 == (6 - i):
+            c += 1
+    return c
+
+
+def _capture_potential(you: List[int], opp: List[int]) -> int:
+    """
+    Cheap estimate of possible captures available in one move.
+    """
+    total = 0
+    for i in range(6):
+        s = you[i]
+        if s <= 0:
+            continue
+        # Simulate only landing position enough to detect own-side last landing.
+        pos = i
+        side = 0
+        steps = s
+        while steps > 0:
+            pos += 1
+            if side == 0:
+                if pos == 7:
+                    side = 1
+                    pos = 0
+                else:
+                    steps -= 1
+                    if steps == 0:
+                        if pos <= 5:
+                            # Approximate emptiness check from current board only when no wrap revisits.
+                            if you[pos] == 0 and opp[5 - pos] > 0:
+                                total += 1 + opp[5 - pos]
+                        break
+            else:
+                if pos == 6:
+                    side = 0
+                    pos = 0
+                else:
+                    steps -= 1
+                    if steps == 0:
+                        break
+    return total
+
+
+def _evaluate(you: List[int], opp: List[int]) -> int:
+    # Terminal check
+    if (you[0] | you[1] | you[2] | you[3] | you[4] | you[5]) == 0 or (opp[0] | opp[1] | opp[2] | opp[3] | opp[4] | opp[5]) == 0:
+        y = you[:]
+        o = opp[:]
+        _finalize_if_terminal(y, o)
+        return 10000 * (y[6] - o[6])
+
+    store_diff = you[6] - opp[6]
+    house_diff = sum(you[:6]) - sum(opp[:6])
+
+    my_extras = _count_extra_turn_moves(you)
+    opp_extras = _count_extra_turn_moves(opp)
+
+    my_caps = _capture_potential(you, opp)
+    opp_caps = _capture_potential(opp, you)
+
+    # Encourage stones in houses nearer to store a bit.
+    shape_you = you[5] * 3 + you[4] * 2 + you[3]
+    shape_opp = opp[5] * 3 + opp[4] * 2 + opp[3]
+
+    return (
+        120 * store_diff
+        + 8 * house_diff
+        + 25 * (my_extras - opp_extras)
+        + 12 * (my_caps - opp_caps)
+        + 2 * (shape_you - shape_opp)
+    )
+
+
+def _move_order(you: List[int], opp: List[int], moves: List[int]) -> List[int]:
+    scored = []
+    for m in moves:
+        y, o, extra, terminal = _apply_move(you, opp, m)
+        if terminal:
+            score = 10**7 + (y[6] - o[6]) * 1000
+        else:
+            gain = y[6] - you[6]
+            if extra:
+                score = 50000 + gain * 100
+                score += _evaluate(y, o) // 10
+            else:
+                score = gain * 100
+                score += _evaluate(o, y) // -10
+        scored.append((score, m))
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+
+def _negamax(
+    you: List[int],
+    opp: List[int],
+    depth: int,
+    alpha: int,
+    beta: int,
+    end_time: float
+) -> int:
+    if time.perf_counter() >= end_time:
+        raise TimeoutError
+
+    key = (tuple(you), tuple(opp), depth)
+    tt = _TT.get(key)
+    if tt is not None:
+        tt_val, tt_flag = tt
+        # flag: 0 exact, -1 upperbound, 1 lowerbound
+        if tt_flag == 0:
+            return tt_val
+        if tt_flag == 1 and tt_val > alpha:
+            alpha = tt_val
+        elif tt_flag == -1 and tt_val < beta:
+            beta = tt_val
+        if alpha >= beta:
+            return tt_val
+
+    if depth == 0:
+        val = _evaluate(you, opp)
+        _TT[key] = (val, 0)
+        return val
+
+    moves = _legal_moves(you)
+    if not moves:
+        # Should not happen per problem statement, but keep safe.
+        y = you[:]
+        o = opp[:]
+        _finalize_if_terminal(y, o)
+        val = 10000 * (y[6] - o[6])
+        _TT[key] = (val, 0)
+        return val
+
+    alpha_orig = alpha
+    best = -INF
+
+    ordered = _move_order(you, opp, moves)
+    for m in ordered:
+        y, o, extra, terminal = _apply_move(you, opp, m)
+        if terminal:
+            val = 10000 * (y[6] - o[6])
+        elif extra:
+            val = _negamax(y, o, depth - 1, alpha, beta, end_time)
+        else:
+            val = -_negamax(o, y, depth - 1, -beta, -alpha, end_time)
+
+        if val > best:
+            best = val
+        if val > alpha:
+            alpha = val
+        if alpha >= beta:
+            break
+
+    flag = 0
+    if best <= alpha_orig:
+        flag = -1
+    elif best >= beta:
+        flag = 1
+    _TT[key] = (best, flag)
+    return best
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    moves = _legal_moves(you)
+    if not moves:
+        return 0  # Safety fallback; should never be needed.
+    if len(moves) == 1:
+        return moves[0]
+
+    # Immediate tactical checks first.
+    best_legal = moves[0]
+
+    # Winning terminal move if available.
+    best_terminal = None
+    best_terminal_score = -INF
+    for m in moves:
+        y, o, extra, terminal = _apply_move(you, opponent, m)
+        if terminal:
+            score = y[6] - o[6]
+            if score > best_terminal_score:
+                best_terminal_score = score
+                best_terminal = m
+    if best_terminal is not None:
+        return best_terminal
+
+    start = time.perf_counter()
+    end_time = start + 0.92
+
+    # Good initial move by ordering.
+    ordered = _move_order(you, opponent, moves)
+    best_move = ordered[0]
+
+    # Iterative deepening.
+    depth = 1
+    try:
+        while True:
+            if time.perf_counter() >= end_time:
+                break
+
+            local_best_move = best_move
+            local_best_score = -INF
+
+            alpha = -INF
+            beta = INF
+
+            for m in ordered:
+                if time.perf_counter() >= end_time:
+                    raise TimeoutError
+                y, o, extra, terminal = _apply_move(you, opponent, m)
+                if terminal:
+                    val = 10000 * (y[6] - o[6])
+                elif extra:
+                    val = _negamax(y, o, depth - 1, alpha, beta, end_time)
+                else:
+                    val = -_negamax(o, y, depth - 1, -beta, -alpha, end_time)
+
+                if val > local_best_score:
+                    local_best_score = val
+                    local_best_move = m
+                if val > alpha:
+                    alpha = val
+
+            best_move = local_best_move
+
+            # Reorder for next iteration: principal variation first.
+            ordered = [best_move] + [m for m in ordered if m != best_move]
+            depth += 1
+
+            # Optional cap to avoid pathological deep searches.
+            if depth > 14:
+                break
+
+    except TimeoutError:
+        pass
+    except Exception:
+        # Never fail to return a legal move.
+        return best_move if you[best_move] > 0 else best_legal
+
+    return best_move if you[best_move] > 0 else best_legal
+</code>

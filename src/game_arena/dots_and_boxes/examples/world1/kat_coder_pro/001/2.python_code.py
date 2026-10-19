@@ -1,0 +1,137 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Find all legal moves
+    legal_moves = []
+    
+    # Check horizontal edges
+    for row in range(5):
+        for col in range(4):
+            if horizontal[row, col] == 0:
+                legal_moves.append((row, col, 'H'))
+    
+    # Check vertical edges
+    for row in range(4):
+        for col in range(5):
+            if vertical[row, col] == 0:
+                legal_moves.append((row, col, 'V'))
+    
+    if not legal_moves:
+        # Fallback - should not happen in normal play
+        return "0,0,H"
+    
+    # Evaluate each move
+    best_move = None
+    best_score = -1000
+    
+    for move in legal_moves:
+        row, col, dir = move
+        score = evaluate_move(row, col, dir, horizontal, vertical, capture)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"
+
+def evaluate_move(row: int, col: int, dir: str, horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> int:
+    score = 0
+    
+    # Copy the board state to simulate the move
+    h_copy = horizontal.copy()
+    v_copy = vertical.copy()
+    c_copy = capture.copy()
+    
+    # Apply the move
+    if dir == 'H':
+        h_copy[row, col] = 1
+    else:  # dir == 'V'
+        v_copy[row, col] = 1
+    
+    # Check for captures
+    captures = 0
+    
+    if dir == 'H':
+        # Check box above the edge
+        if row > 0:
+            if (h_copy[row-1, col] != 0 and v_copy[row-1, col] != 0 and 
+                v_copy[row-1, col+1] != 0 and h_copy[row, col] != 0):
+                captures += 1
+                c_copy[row-1, col] = 1
+        
+        # Check box below the edge
+        if row < 4:
+            if (h_copy[row, col] != 0 and v_copy[row, col] != 0 and 
+                v_copy[row, col+1] != 0 and h_copy[row+1, col] != 0):
+                captures += 1
+                c_copy[row, col] = 1
+    else:  # dir == 'V'
+        # Check box to the left of the edge
+        if col > 0:
+            if (v_copy[row, col-1] != 0 and h_copy[row, col-1] != 0 and 
+                h_copy[row+1, col-1] != 0 and v_copy[row, col] != 0):
+                captures += 1
+                c_copy[row, col-1] = 1
+        
+        # Check box to the right of the edge
+        if col < 4:
+            if (v_copy[row, col] != 0 and h_copy[row, col] != 0 and 
+                h_copy[row+1, col] != 0 and v_copy[row, col+1] != 0):
+                captures += 1
+                c_copy[row, col] = 1
+    
+    # Scoring
+    score += captures * 10  # Strong preference for captures
+    
+    if captures > 0:
+        # If we capture, we get another turn - prefer moves that give us more captures
+        return score
+    
+    # If no captures, avoid giving opponent easy captures
+    # Check if this move creates a box with exactly three sides filled
+    danger = 0
+    
+    if dir == 'H':
+        # Check box above
+        if row > 0:
+            sides = (1 if h_copy[row-1, col] != 0 else 0) + \
+                    (1 if v_copy[row-1, col] != 0 else 0) + \
+                    (1 if v_copy[row-1, col+1] != 0 else 0)
+            if sides == 3:
+                danger += 5
+        
+        # Check box below
+        if row < 4:
+            sides = (1 if v_copy[row, col] != 0 else 0) + \
+                    (1 if v_copy[row, col+1] != 0 else 0) + \
+                    (1 if h_copy[row+1, col] != 0 else 0)
+            if sides == 3:
+                danger += 5
+    else:  # dir == 'V'
+        # Check box to the left
+        if col > 0:
+            sides = (1 if v_copy[row, col-1] != 0 else 0) + \
+                    (1 if h_copy[row, col-1] != 0 else 0) + \
+                    (1 if h_copy[row+1, col-1] != 0 else 0)
+            if sides == 3:
+                danger += 5
+        
+        # Check box to the right
+        if col < 4:
+            sides = (1 if h_copy[row, col] != 0 else 0) + \
+                    (1 if h_copy[row+1, col] != 0 else 0) + \
+                    (1 if v_copy[row, col+1] != 0 else 0)
+            if sides == 3:
+                danger += 5
+    
+    # Position preference: corners first, then edges, then centers
+    position_score = 0
+    if (row in [0, 4] and col in [0, 4]):  # Corner
+        position_score = 1
+    elif (row in [0, 4] or col in [0, 4]):  # Edge
+        position_score = 2
+    else:  # Center
+        position_score = 3
+    
+    return score - danger - position_score

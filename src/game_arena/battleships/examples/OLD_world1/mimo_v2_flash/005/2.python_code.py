@@ -1,0 +1,410 @@
+
+import random
+import numpy as np
+
+# Known ship lengths for Battleship-like game
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Implements a targeting policy for a Battleship-like game.
+    
+    Strategy:
+    1. Hunt Mode: Use a checkerboard parity pattern to minimize shots needed to find ships.
+       Prioritize cells with higher probability based on remaining ship placements.
+    2. Target Mode: If hits exist, perform constraint satisfaction to find the most probable 
+       continuation (using hits as anchors and remaining ship lengths).
+    
+    Returns:
+        (row, col): The coordinates to shoot next.
+    """
+    rows = len(board)
+    cols = len(board[0])
+    
+    # Convert board to numpy array for easier processing
+    grid = np.array(board, dtype=int)
+    
+    # Identify unknown cells, hits, and misses
+    unknown = (grid == 0)
+    hits = (grid == 1)
+    misses = (grid == -1)
+    
+    # If no hits, we are in "Hunt" mode
+    if not np.any(hits):
+        # Calculate valid unknown cells
+        valid_cells = np.argwhere(unknown)
+        
+        # If we have no information, return a random unshot cell
+        if len(valid_cells) == 0:
+            return None # Should not happen if game logic is correct, but safe fallback
+            
+        # Priority 1: Checkerboard Pattern (Parity)
+        # We prefer cells where (r+c) is even (or odd), effectively halving search space
+        # Randomly choose the starting parity to avoid predictability
+        parity_preference = random.choice([0, 1])
+        
+        # Priority 2: Density (Probability Weighting)
+        # We calculate a 'heat map' based on how many ships *could* occupy a cell
+        heat_map = np.zeros((rows, cols), dtype=float)
+        
+        # Pre-calculate potential placements for each ship length
+        # Note: We only care about unknown cells. If a placement hits a miss, it's invalid.
+        
+        # To optimize: iterate through all possible ship placements on unknown grid
+        # and add 1 to the heat map for every cell covered by a valid placement.
+        
+        # Optimization: Since we are in Hunt mode (no hits), we only need to consider 
+        # clear paths (unknown cells).
+        
+        # Vectorized approach is complex here, so we loop. 
+        # With 10x10 grid and 5 ship lengths, this is very fast.
+        
+        for length in SHIP_LENGTHS:
+            # Horizontal placements
+            for r in range(rows):
+                for c in range(cols - length + 1):
+                    # Check if this placement is valid (only covers unknown cells)
+                    # We can check the slice against the unknown mask
+                    if np.all(unknown[r, c:c+length]):
+                        heat_map[r, c:c+length] += 1
+            
+            # Vertical placements
+            for r in range(rows - length + 1):
+                for c in range(cols):
+                    if np.all(unknown[r:r+length, c]):
+                        heat_map[r:r+length, c] += 1
+                        
+        # Mask the heat map to only unknown cells
+        heat_map[~unknown] = 0
+        
+        # Combine Checkerboard and Heat Map
+        # We create a mask for the preferred parity
+        parity_mask = np.zeros((rows, cols), dtype=bool)
+        for r in range(rows):
+            for c in range(cols):
+                if (r + c) % 2 == parity_preference:
+                    parity_mask[r, c] = True
+                    
+        # Zero out non-preferred parity cells in the heat map
+        heat_map[~parity_mask] = 0
+        
+        # Find the maximum value
+        max_val = np.max(heat_map)
+        
+        # If the parity mask covers everything (unlikely) or no valid cells with parity found,
+        # fallback to just max heat map
+        if max_val == 0:
+            # Fallback to any max heat map cell
+            heat_map[~parity_mask] = 0 # Reset
+            # Actually, if max is 0, just pick a random unknown cell with preferred parity
+            # or just any unknown cell if that yields nothing.
+            candidates = np.argwhere(unknown)
+            # Filter by parity
+            parity_candidates = [tuple(c) for c in candidates if (c[0] + c[1]) % 2 == parity_preference]
+            if parity_candidates:
+                return tuple(random.choice(parity_candidates))
+            else:
+                return tuple(random.choice(candidates.tolist()))
+                
+        # Get all cells with the max heat value
+        best_cells = np.argwhere(heat_map == max_val)
+        
+        # Randomly select among the best cells
+        chosen = random.choice(best_cells)
+        return int(chosen[0]), int(chosen[1])
+
+    # --- TARGET MODE ---
+    # If there are hits, we analyze them to find the most likely next shot.
+    # We group hits into potential ships and calculate valid extensions.
+    
+    # We will generate candidate next shots with weights.
+    # 1. Analyze potential ships based on current hits.
+    # 2. Assign scores to candidate cells.
+    # 3. Return highest score.
+    
+    # To avoid getting stuck, we also consider "Hunt" mode behavior if target mode is inconclusive.
+    
+    # Get coordinates of hits
+    hit_coords = np.argwhere(hits)
+    
+    # Map of next move scores
+    scores = {}
+    
+    # Strategy: Analyze each hit. Look at adjacent unknown cells.
+    # However, we must respect remaining ship lengths and existing misses.
+    # A robust way is to iterate remaining ship lengths, and for each length,
+    # see if there is a consistent placement covering a hit and a specific unknown cell.
+    
+    # First, determine which ships are likely sunk or remaining.
+    # We don't strictly know, but we can assume if we have a contiguous line of hits
+    # equal to a ship length, that ship is sunk (and we shouldn't target it).
+    # However, since we only target UNKNOWN cells, we don't shoot sunk ships anyway.
+    
+    # Let's perform a constraint check for every unknown cell.
+    # "Can this unknown cell be part of a remaining ship that also touches a hit?"
+    
+    # Helper: Check if a specific placement (start, end, orientation) is valid
+    def is_valid_placement(r, c, length, horizontal):
+        if horizontal:
+            if c + length > cols: return False
+            for i in range(length):
+                if grid[r][c+i] == -1: return False # Hits a miss
+                if grid[r][c+i] == 1: pass # Hits a hit (ok)
+                if grid[r][c+i] == 0: pass # Hits unknown (ok)
+            return True
+        else:
+            if r + length > rows: return False
+            for i in range(length):
+                if grid[r+i][c] == -1: return False
+                if grid[r+i][c] == 1: pass
+                if grid[r+i][c] == 0: pass
+            return True
+
+    # Weights
+    HIT_EXTENSION_WEIGHT = 10  # High priority to finish off a ship
+    
+    # Iterate all unknown cells to calculate score
+    # To be faster, we only iterate around hits.
+    
+    # Get unique hits (as tuples) for easy lookup
+    hit_set = set((r, c) for r, c in hit_coords)
+    
+    # Get list of remaining ships (simplified assumption: we don't know exactly which are sunk)
+    # But we can infer. If we have a line of hits of length L, and L is in SHIP_LENGTHS,
+    # we assume that ship is sunk. This prevents chasing a sunk ship.
+    # However, standard rules usually announce sink. Assuming standard rules, we know when sunk.
+    # Since we don't get explicit "sunk" info, we assume if a run of hits matches a ship length
+    # AND is bounded by misses/edges, it's sunk.
+    
+    # Let's identify connected components of hits
+    visited = set()
+    groups = []
+    for r, c in hit_coords:
+        if (r,c) in visited: continue
+        # BFS to find connected hits
+        group = []
+        q = [(r,c)]
+        while q:
+            curr = q.pop()
+            if curr in visited: continue
+            visited.add(curr)
+            group.append(curr)
+            # Check neighbors
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nr, nc = curr[0]+dr, curr[1]+dc
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    if grid[nr][nc] == 1 and (nr, nc) not in visited:
+                        q.append((nr, nc))
+        groups.append(group)
+    
+    # Determine sunk ships based on groups
+    sunk_lengths = []
+    for group in groups:
+        # Check if this group is a straight line (Battleship ships are straight)
+        # If not straight, it's likely two ships crossing (rare in placement but possible if 1 cell overlap is allowed, 
+        # usually not allowed). We assume straight.
+        # We'll try to fit a ship length.
+        if not group: continue
+        
+        min_r = min(r for r,c in group)
+        max_r = max(r for r,c in group)
+        min_c = min(c for r,c in group)
+        max_c = max(c for r,c in group)
+        
+        length = 0
+        is_horizontal = min_r == max_r
+        is_vertical = min_c == max_c
+        
+        if is_horizontal:
+            length = max_c - min_c + 1
+        elif is_vertical:
+            length = max_r - min_r + 1
+        else:
+            # Not straight - treat as individual hits
+            continue
+        
+        # Check if this group is "sunk".
+        # Heuristic: If the group length is one of the ship lengths, it's likely sunk.
+        # To be safer, we check if there are unknown cells adjacent to the group. 
+        # If not, and length matches a ship, it's sunk.
+        # Since we don't know ship orientation for sure until sunk, we check if length is valid.
+        
+        # Actually, let's just assume if the group length equals a ship length, it's sunk.
+        # This prevents us from endlessly scanning the same line if we have bad misses.
+        if length in SHIP_LENGTHS:
+            sunk_lengths.append(length)
+            
+    # Remove sunk lengths from consideration for "extension" logic
+    # We can do this by pretending the hits on that line are "handled"
+    remaining_lengths = [l for l in SHIP_LENGTHS if l not in sunk_lengths]
+    if not remaining_lengths: remaining_lengths = SHIP_LENGTHS # Fallback if logic fails
+
+    # Now, score unknown cells
+    # We iterate through remaining_lengths and valid orientations around hits
+    
+    # Optimization: Only look at neighbors of hits
+    candidates = set()
+    for r, c in hit_coords:
+        for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                if grid[nr][nc] == 0:
+                    candidates.add((nr, nc))
+    
+    # If no candidates around hits (e.g. all surrounded by misses), 
+    # we must revert to hunt mode on the rest of the board
+    if not candidates:
+        # Force hunt mode logic by clearing hits temporarily in logic flow
+        # (But we already handled hit-check in the first if condition, so we just fall back to hunt logic below)
+        pass 
+    else:
+        # Score candidates
+        best_score = -1
+        best_move = None
+        
+        for (r, c) in candidates:
+            score = 0
+            
+            # Check 1: Does this cell extend a current hit line to a valid length?
+            # We check both Horizontal and Vertical.
+            
+            # Horizontal Check
+            # Find left extent of hits
+            left_dist = 0
+            curr = c - 1
+            while curr >= 0 and grid[r][curr] == 1:
+                left_dist += 1
+                curr -= 1
+            # Check left boundary (is it a miss or edge?)
+            left_blocked = (curr < 0 or grid[r][curr] == -1)
+            
+            right_dist = 0
+            curr = c + 1
+            while curr < cols and grid[r][curr] == 1:
+                right_dist += 1
+                curr += 1
+            right_blocked = (curr >= cols or grid[r][curr] == -1)
+            
+            # If we fill the gap between blockages, what is the total length?
+            # Actually, we want to know: if we place a ship here, does it align with hits
+            # such that the total length is valid (<= max ship) and doesn't hit misses?
+            # More precisely: Does adding this cell create a segment of hits that can be part of a valid ship?
+            
+            # Let's calculate the potential segment length if we shoot here
+            potential_len_h = left_dist + 1 + right_dist
+            
+            # Is this potential segment part of a valid ship?
+            # It must be <= max(remaining_lengths)
+            # And it must not be blocked by misses on the ends (we checked left_blocked/right_blocked)
+            
+            if not left_blocked and not right_blocked:
+                # It's an open segment. 
+                # If this segment length is <= max(remaining_lengths), it's a valid candidate.
+                if potential_len_h <= max(remaining_lengths):
+                    score += HIT_EXTENSION_WEIGHT
+
+            # Vertical Check
+            up_dist = 0
+            curr = r - 1
+            while curr >= 0 and grid[curr][c] == 1:
+                up_dist += 1
+                curr -= 1
+            up_blocked = (curr < 0 or grid[curr][c] == -1)
+            
+            down_dist = 0
+            curr = r + 1
+            while curr < rows and grid[curr][c] == 1:
+                down_dist += 1
+                curr += 1
+            down_blocked = (curr >= rows or grid[curr][c] == -1)
+            
+            potential_len_v = up_dist + 1 + down_dist
+            
+            if not up_blocked and not down_blocked:
+                if potential_len_v <= max(remaining_lengths):
+                    score += HIT_EXTENSION_WEIGHT
+                    
+            # Check 2: Probability Density (Pivot from Hunt Mode)
+            # If this cell isn't directly extending a hit, it might still be the only spot 
+            # for a ship to fit near a hit cluster.
+            # We can reuse the heat map logic from Hunt Mode, but restricted to 'candidates'.
+            
+            # Simplified: Add a small base score so we prefer targets over random hunt
+            score += 1 
+            
+            if score > best_score:
+                best_score = score
+                best_move = (r, c)
+            elif score == best_score:
+                # Tie break randomly
+                if random.random() < 0.5:
+                    best_move = (r, c)
+        
+        if best_move is not None:
+            return best_move
+
+    # --- FAILSAFE ---
+    # If we are in Target mode but the logic above found no candidates (e.g. isolated hits),
+    # we revert to a smart Hunt mode on the remaining board.
+    # This calculates probability density on the whole board (like Hunt mode) but ignores
+    # the "parity" constraint if we are desperate, or just runs the parity logic.
+    
+    # Re-run the Hunt logic code block here for the whole board
+    valid_cells = np.argwhere(unknown)
+    
+    if len(valid_cells) == 0:
+        # Should not happen
+        return (0, 0)
+        
+    # Re-calculate Heat Map
+    heat_map = np.zeros((rows, cols), dtype=float)
+    for length in SHIP_LENGTHS:
+        # Horizontal
+        for r in range(rows):
+            for c in range(cols - length + 1):
+                if np.all(unknown[r, c:c+length]):
+                    heat_map[r, c:c+length] += 1
+        # Vertical
+        for r in range(rows - length + 1):
+            for c in range(cols):
+                if np.all(unknown[r:r+length, c]):
+                    heat_map[r:r+length, c] += 1
+                    
+    heat_map[~unknown] = 0
+    
+    # Apply checkerboard parity (try even first, then odd if empty)
+    parity_preference = 0
+    parity_mask = np.zeros((rows, cols), dtype=bool)
+    for r in range(rows):
+        for c in range(cols):
+            if (r + c) % 2 == parity_preference:
+                parity_mask[r, c] = True
+                
+    temp_heat = heat_map.copy()
+    temp_heat[~parity_mask] = 0
+    
+    max_val = np.max(temp_heat)
+    if max_val > 0:
+        best_cells = np.argwhere(temp_heat == max_val)
+        chosen = random.choice(best_cells)
+        return int(chosen[0]), int(chosen[1])
+    else:
+        # If parity check gives nothing, try the other parity
+        parity_preference = 1
+        parity_mask = np.zeros((rows, cols), dtype=bool)
+        for r in range(rows):
+            for c in range(cols):
+                if (r + c) % 2 == parity_preference:
+                    parity_mask[r, c] = True
+        temp_heat = heat_map.copy()
+        temp_heat[~parity_mask] = 0
+        max_val = np.max(temp_heat)
+        if max_val > 0:
+            best_cells = np.argwhere(temp_heat == max_val)
+            chosen = random.choice(best_cells)
+            return int(chosen[0]), int(chosen[1])
+        else:
+            # Ultimate fallback: Random unknown
+            candidates = np.argwhere(unknown)
+            chosen = random.choice(candidates)
+            return int(chosen[0]), int(chosen[1])

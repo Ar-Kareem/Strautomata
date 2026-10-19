@@ -1,0 +1,199 @@
+
+import numpy as np
+from typing import Optional, Tuple
+
+def policy(board: list[list[int]]) -> int:
+    """
+    Given a 6x7 Connect 4 board, return the column index (0-6) to drop your disc.
+    """
+    # Convert to numpy array for easier manipulation
+    b = np.array(board, dtype=int)
+    # We'll use iterative deepening with time limit, but for simplicity,
+    # we'll do fixed-depth search with depth 6 (reasonable within 1 second).
+    depth = 6
+    
+    # Get list of possible columns (not full)
+    possible = [c for c in range(7) if b[0, c] == 0]
+    
+    # If any move leads to immediate win, take it.
+    for col in possible:
+        row = get_row(b, col)
+        if row is not None:
+            new_b = drop_disc(b, col, 1)
+            if check_winner(new_b) == 1:
+                return col
+    
+    # If opponent can win next move, block it.
+    for col in possible:
+        row = get_row(b, col)
+        if row is not None:
+            new_b = drop_disc(b, col, -1)
+            if check_winner(new_b) == -1:
+                return col
+    
+    # Otherwise, run minimax to choose best move.
+    best_move = possible[0]
+    best_score = -float('inf')
+    for col in possible:
+        row = get_row(b, col)
+        if row is None:
+            continue
+        new_b = drop_disc(b, col, 1)
+        score = minimax(new_b, depth-1, -float('inf'), float('inf'), False)
+        if score > best_score:
+            best_score = score
+            best_move = col
+    
+    return best_move
+
+def get_row(board: np.ndarray, col: int) -> Optional[int]:
+    """Return the lowest empty row in given column, or None if column is full."""
+    # Column is full if top cell is non-zero
+    if board[0, col] != 0:
+        return None
+    # Find first non-empty from bottom
+    for row in range(5, -1, -1):
+        if board[row, col] == 0:
+            return row
+    return None
+
+def drop_disc(board: np.ndarray, col: int, player: int) -> np.ndarray:
+    """Return a new board with disc dropped in column."""
+    new_board = board.copy()
+    row = get_row(board, col)
+    if row is not None:
+        new_board[row, col] = player
+    return new_board
+
+def check_winner(board: np.ndarray) -> int:
+    """
+    Return 1 if player 1 wins, -1 if player -1 wins, 0 otherwise.
+    """
+    # Horizontal
+    for r in range(6):
+        for c in range(4):
+            if board[r, c] == board[r, c+1] == board[r, c+2] == board[r, c+3] != 0:
+                return board[r, c]
+    
+    # Vertical
+    for r in range(3):
+        for c in range(7):
+            if board[r, c] == board[r+1, c] == board[r+2, c] == board[r+3, c] != 0:
+                return board[r, c]
+    
+    # Diagonal down-right
+    for r in range(3):
+        for c in range(4):
+            if board[r, c] == board[r+1, c+1] == board[r+2, c+2] == board[r+3, c+3] != 0:
+                return board[r, c]
+    
+    # Diagonal down-left
+    for r in range(3):
+        for c in range(3, 7):
+            if board[r, c] == board[r+1, c-1] == board[r+2, c-2] == board[r+3, c-3] != 0:
+                return board[r, c]
+    
+    return 0
+
+def evaluate(board: np.ndarray) -> float:
+    """
+    Evaluate the board from perspective of player 1.
+    Positive is good for player 1.
+    """
+    score = 0
+    # Prefer center columns
+    center_cols = [2, 3, 4]
+    for r in range(6):
+        for c in center_cols:
+            if board[r, c] == 1:
+                score += 1
+            elif board[r, c] == -1:
+                score -= 1
+    
+    # Evaluate all possible lines of 4
+    lines = []
+    # Horizontal
+    for r in range(6):
+        for c in range(4):
+            lines.append([(r, c), (r, c+1), (r, c+2), (r, c+3)])
+    # Vertical
+    for r in range(3):
+        for c in range(7):
+            lines.append([(r, c), (r+1, c), (r+2, c), (r+3, c)])
+    # Diagonal down-right
+    for r in range(3):
+        for c in range(4):
+            lines.append([(r, c), (r+1, c+1), (r+2, c+2), (r+3, c+3)])
+    # Diagonal down-left
+    for r in range(3):
+        for c in range(3, 7):
+            lines.append([(r, c), (r+1, c-1), (r+2, c-2), (r+3, c-3)])
+    
+    for line in lines:
+        values = [board[r, c] for r, c in line]
+        count1 = values.count(1)
+        count_neg1 = values.count(-1)
+        if count1 > 0 and count_neg1 == 0:
+            # Only our discs or empty
+            if count1 == 4:
+                score += 10000
+            elif count1 == 3:
+                score += 100
+            elif count1 == 2:
+                score += 10
+            elif count1 == 1:
+                score += 1
+        elif count_neg1 > 0 and count1 == 0:
+            # Only opponent discs
+            if count_neg1 == 4:
+                score -= 10000
+            elif count_neg1 == 3:
+                score -= 100
+            elif count_neg1 == 2:
+                score -= 10
+            elif count_neg1 == 1:
+                score -= 1
+        # Mixed lines are dead, ignore
+    
+    return score
+
+def minimax(board: np.ndarray, depth: int, alpha: float, beta: float, maximizing: bool) -> float:
+    """
+    Minimax with alpha-beta pruning.
+    Returns the evaluation score.
+    """
+    winner = check_winner(board)
+    if winner != 0:
+        return winner * 100000 * (depth + 1)  # Win sooner is better
+    
+    if depth == 0:
+        return evaluate(board)
+    
+    possible = [c for c in range(7) if board[0, c] == 0]
+    
+    if maximizing:
+        max_eval = -float('inf')
+        for col in possible:
+            row = get_row(board, col)
+            if row is None:
+                continue
+            new_b = drop_disc(board, col, 1)
+            eval_score = minimax(new_b, depth-1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for col in possible:
+            row = get_row(board, col)
+            if row is None:
+                continue
+            new_b = drop_disc(board, col, -1)
+            eval_score = minimax(new_b, depth-1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval

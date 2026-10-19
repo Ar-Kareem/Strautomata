@@ -1,0 +1,167 @@
+# Strategy
+
+My strategy will be a hybrid approach combining a probability-based targeting system with a smart hunting algorithm. Here's how it works:
+
+1. **Initial Phase (Scanning)**: I'll use a grid-based approach to scan the board efficiently, focusing on cells that are most likely to contain ships based on the remaining ship configurations.
+
+2. **Hit Phase (Hunting)**: Once I hit a ship, I'll immediately switch to a smart hunting mode, targeting adjacent cells in a pattern that maximizes the probability of finding the rest of the ship.
+
+3. **Probability Calculation**: I'll calculate the probability of each cell containing a ship by considering:
+   - How many valid ship placements include this cell
+   - The remaining ships to be sunk
+   - The pattern of previous hits and misses
+
+4. **Adaptive Strategy**: The algorithm will adapt based on the game state, switching between scanning and hunting modes as needed.
+
+The strategy balances exploration (finding new ships) with exploitation (sinking found ships) to maximize the number of hits per turn.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Battleship policy that uses probability-based targeting and smart hunting.
+    
+    Args:
+        board: 10x10 grid where 0=unknown, -1=miss, 1=hit
+        
+    Returns:
+        Tuple (row, col) of next move
+    """
+    
+    # Convert to numpy array for easier manipulation
+    board_array = np.array(board)
+    
+    # Find all unknown cells
+    unknown_cells = np.where(board_array == 0)
+    unknown_positions = list(zip(unknown_cells[0], unknown_cells[1]))
+    
+    # If no unknown cells, return a random unknown (this shouldn't happen)
+    if not unknown_positions:
+        return (0, 0)
+    
+    # Check if we're in hunting mode (have recent hits)
+    hunting_mode = _is_hunting_mode(board_array)
+    
+    if hunting_mode:
+        # Try to sink the current ship
+        move = _hunt_ship(board_array)
+        if move:
+            return move
+    
+    # Calculate probabilities for all unknown cells
+    probabilities = _calculate_probabilities(board_array)
+    
+    # Find the cell with highest probability
+    best_move = None
+    best_prob = -1
+    
+    for pos in unknown_positions:
+        row, col = pos
+        if probabilities[row, col] > best_prob:
+            best_prob = probabilities[row, col]
+            best_move = (row, col)
+    
+    # If we found a good move, return it
+    if best_move:
+        return best_move
+    
+    # Fallback to random unknown cell
+    return unknown_positions[0]
+
+def _is_hunting_mode(board: np.ndarray) -> bool:
+    """Check if we should be in hunting mode based on recent hits."""
+    hits = np.where(board == 1)
+    if len(hits[0]) == 0:
+        return False
+    
+    # Check if any hit has adjacent unknown cells
+    for i in range(len(hits[0])):
+        row, col = hits[0][i], hits[1][i]
+        # Check adjacent cells
+        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr, nc] == 0:
+                return True
+    
+    return False
+
+def _hunt_ship(board: np.ndarray) -> Tuple[int, int] | None:
+    """Hunt mode: target cells adjacent to hits to sink ships."""
+    hits = np.where(board == 1)
+    
+    if len(hits[0]) == 0:
+        return None
+    
+    # Find the most recent hit (we'll use the one with most adjacent unknowns)
+    best_target = None
+    max_unknowns = -1
+    
+    for i in range(len(hits[0])):
+        row, col = hits[0][i], hits[1][i]
+        
+        # Check adjacent cells for unknowns
+        adjacent_unknowns = []
+        for dr, dc in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            nr, nc = row + dr, col + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr, nc] == 0:
+                adjacent_unknowns.append((nr, nc))
+        
+        if len(adjacent_unknowns) > max_unknowns:
+            max_unknowns = len(adjacent_unknowns)
+            # If multiple hits have same number of unknowns, prioritize the one
+            # that forms a line (suggesting we're on a ship)
+            best_target = adjacent_unknowns[0] if adjacent_unknowns else None
+    
+    return best_target
+
+def _calculate_probabilities(board: np.ndarray) -> np.ndarray:
+    """Calculate probability of each cell containing a ship."""
+    probabilities = np.zeros((10, 10))
+    
+    # Remaining ships to place
+    remaining_ships = [5, 4, 3, 3, 2]
+    
+    # For each cell, calculate how many valid ship placements include it
+    for row in range(10):
+        for col in range(10):
+            if board[row, col] != 0:
+                continue
+                
+            total_placements = 0
+            
+            # Try horizontal placements
+            for ship_len in remaining_ships:
+                for offset in range(ship_len):
+                    start_col = col - offset
+                    if start_col >= 0 and start_col + ship_len <= 10:
+                        # Check if this horizontal placement is valid
+                        valid = True
+                        for i in range(ship_len):
+                            check_col = start_col + i
+                            if board[row, check_col] == -1:
+                                valid = False
+                                break
+                        if valid:
+                            total_placements += 1
+            
+            # Try vertical placements
+            for ship_len in remaining_ships:
+                for offset in range(ship_len):
+                    start_row = row - offset
+                    if start_row >= 0 and start_row + ship_len <= 10:
+                        # Check if this vertical placement is valid
+                        valid = True
+                        for i in range(ship_len):
+                            check_row = start_row + i
+                            if board[check_row, col] == -1:
+                                valid = False
+                                break
+                        if valid:
+                            total_placements += 1
+            
+            probabilities[row, col] = total_placements
+    
+    return probabilities
+</code>

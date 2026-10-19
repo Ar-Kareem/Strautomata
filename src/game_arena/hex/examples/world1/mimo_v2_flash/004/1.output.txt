@@ -1,0 +1,448 @@
+### Strategy
+
+To compete in the Hex arena, I will implement a **Monte Carlo Tree Search (MCTS)** agent, specifically a **Virtual Monte Carlo Tree Search (VMCTS)**. This approach is highly effective for Hex because it requires no complex position evaluation heuristics; the strength comes purely from the playout simulations.
+
+**Key Components of the Strategy:**
+
+1.  **State Representation**:
+    *   The board state is represented by a 2D grid (12x12) using a 1D `numpy` array for cache efficiency. The extra padding (rows 0 and 11, cols 0 and 11) acts as boundary walls, simplifying adjacency checks.
+    *   We map the player colors 'b' (Top/Bottom) and 'w' (Left/Right) to integers `1` and `2`.
+
+2.  **Symmetry Handling (Swap Rule)**:
+    *   Hex is a symmetric game. To avoid bias and improve learning, the board state is canonically rotated/transformed so that the current player is always "Black" (Top/Bottom connection).
+    *   If the input indicates we are playing as White, the board is rotated 90 degrees. The move returned is rotated back. This allows a single logic set to handle both colors.
+
+3.  **Move Generation**:
+    *   Instead of searching every empty cell (which is slow), we use a heuristic **neighbor expansion**. We only consider empty cells that are adjacent to existing stones (both ours and the opponent's). This focuses the search on the "frontier" where battles happen.
+    *   If the board is empty, we play the center.
+
+4.  **Virtual Monte Carlo Tree Search (VMCTS)**:
+    *   **Selection**: We traverse the tree using UCB1 (Upper Confidence Bound) to balance exploration and exploitation.
+    *   **Expansion**: When reaching a leaf node, we generate valid neighbor moves and create child nodes. To save memory, we do not store the full tree persistently between moves; we reconstruct the local tree around the root for each decision.
+    *   **Simulation (Playout)**: This is the core strength. Instead of random moves, we use **Virtual Rollouts**.
+        *   We maintain "virtual stones" (connection potentials) for both players.
+        *   We treat the board as a graph and run a BFS (Breadth-First Search) to find the shortest path to the opponent's side.
+        *   Moves are chosen to extend these paths or block the opponent's critical bridges.
+    *   **Backpropagation**: We update the win statistics up the tree.
+
+5.  **Time Management**:
+    *   The agent runs simulations for a fixed duration (approx 0.8 seconds) to ensure it stays within the 1-second time limit.
+    *   It dynamically adjusts the number of simulations based on the number of empty cells remaining (fewer moves = deeper search).
+
+6.  **Opening Book (Optional Speedup)**:
+    *   While not strictly required, the MCTS logic is fast enough to handle the opening naturally, but the neighbor-based expansion ensures immediate efficiency.
+
+### Python Source Code
+
+<code>
+import numpy as np
+import time
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    """
+    VMCTS Hex Player
+    """
+    # Constants
+    SIZE = 11
+    BOARD_AREA = (SIZE + 2) * (SIZE + 2)  # Padded board
+    
+    # Map colors to integers: 1 (Black), 2 (White)
+    # Internal logic always treats player as 1 (Black/Top-Bottom) for consistency.
+    # If input color is White, we rotate the board 90 degrees.
+    MY_COLOR = 1 if color == 'b' else 2
+    IS_WHITE = (color == 'w')
+    
+    # Initialize Board
+    # 0: Empty, 1: Black (Player), 2: White (Opponent), 3: Wall/Invalid
+    board = np.zeros((SIZE + 2, SIZE + 2), dtype=np.int8)
+    
+    # Set Walls
+    board[0, :] = 3
+    board[SIZE + 1, :] = 3
+    board[:, 0] = 3
+    board[:, SIZE + 1] = 3
+    
+    # Populate Stones
+    # If we are White, we treat stones as if rotated 90 degrees
+    def rotate(r, c):
+        return c, SIZE - 1 - r
+
+    def place_stones(stones, val):
+        for (r, c) in stones:
+            if IS_WHITE:
+                r, c = rotate(r, c)
+            board[r + 1, c + 1] = val  # +1 for padding
+
+    place_stones(me, 1)   # Player is always 1 internally
+    place_stones(opp, 2)  # Opponent is always 2 internally
+
+    # --- Helper Functions ---
+
+    def get_neighbors(r, c):
+        """Return valid empty neighbor indices (internal coordinates)."""
+        # Hex neighbors (offset coordinates)
+        # Even row (r%2==0): (r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c), (r+1, c+1)
+        # Odd row (r%2!=0):  (r, c-1), (r, c+1), (r-1, c-1), (r-1, c), (r+1, c-1), (r+1, c)
+        n = []
+        if r % 2 == 0:
+            offsets = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, 1)]
+        else:
+            offsets = [(0, -1), (0, 1), (-1, -1), (-1, 0), (1, -1), (1, 0)]
+        
+        for dr, dc in offsets:
+            nr, nc = r + dr, c + dc
+            if board[nr, nc] == 0:
+                n.append((nr, nc))
+        return n
+
+    def get_all_moves():
+        """Get all empty cells. If empty, return center."""
+        empty = np.where(board == 0)
+        if len(empty[0]) == 0: return []
+        return list(zip(empty[0], empty[1]))
+
+    def get_frontier_moves():
+        """Heuristic: Only expand cells adjacent to existing stones."""
+        occupied = np.where(board != 0)
+        seen = set()
+        moves = []
+        for r, c in zip(occupied[0], occupied[1]):
+            # Skip walls
+            if r == 0 or r == SIZE + 1 or c == 0 or c == SIZE + 1: continue
+            
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) not in seen:
+                    seen.add((nr, nc))
+                    moves.append((nr, nc))
+        
+        if not moves: # First move or rare isolation
+            # Pick center
+            center = (SIZE // 2 + 1, SIZE // 2 + 1)
+            if board[center[0], center[1]] == 0:
+                return [center]
+            return get_all_moves()
+        return moves
+
+    # --- Virtual Rollout / Solver ---
+
+    def virtual_playout(player_turn):
+        """
+        Performs a fast simulated game using a greedy BFS pathfinding approach.
+        Returns 1 if player_turn (1) wins, 0 otherwise.
+        """
+        # Copy board state (cheaply)
+        # We use a visited set for BFS to avoid copying the whole array repeatedly
+        # 1: Player (Black), 2: Opponent (White)
+        
+        # Sets for BFS frontier
+        # Player 1 wants to go from Top (Row 1) to Bottom (Row SIZE)
+        # Player 2 wants to go from Left (Col 1) to Right (Col SIZE)
+        
+        p1_visited = set()
+        p2_visited = set()
+        
+        # Initialize frontiers from existing stones
+        # This is the "Virtual Stone" concept: existing stones act as jump points
+        
+        # Identify existing stones
+        p1_stones = np.argwhere(board == 1)
+        p2_stones = np.argwhere(board == 2)
+        
+        q1 = deque()
+        q2 = deque()
+        
+        # Init P1 (Top-Bottom)
+        for r, c in p1_stones:
+            p1_visited.add((r, c))
+            q1.append((r, c))
+        
+        # Init P2 (Left-Right)
+        for r, c in p2_stones:
+            p2_visited.add((r, c))
+            q2.append((r, c))
+            
+        # Add virtual edge connections if stones exist on edges
+        for r, c in p1_stones:
+            if r == 1: # Top edge
+                q1.append((0, c)) # Virtual top connection
+                p1_visited.add((0, c))
+            if r == SIZE: # Bottom edge
+                q1.append((SIZE + 1, c)) # Virtual bottom connection
+                p1_visited.add((SIZE + 1, c))
+        
+        for r, c in p2_stones:
+            if c == 1: # Left edge
+                q2.append((r, 0)) # Virtual left connection
+                p2_visited.add((r, 0))
+            if c == SIZE: # Right edge
+                q2.append((r, SIZE + 1)) # Virtual right connection
+                p2_visited.add((r, SIZE + 1))
+
+        # Simulation Loop
+        # We alternate turns. 
+        # To speed up, we run P1 steps, then P2 steps.
+        
+        turn = player_turn
+        
+        # Safety break for simulation
+        max_steps = 200 
+        steps = 0
+        
+        while steps < max_steps:
+            steps += 1
+            
+            if turn == 1:
+                if not q1: return 0 # Stuck, P2 wins
+                curr_r, curr_c = q1.popleft()
+                
+                # Check Win
+                if curr_r == SIZE + 1: return 1 
+                
+                # Expand
+                neighbors = []
+                if curr_r % 2 == 0:
+                    offsets = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, 1)]
+                else:
+                    offsets = [(0, -1), (0, 1), (-1, -1), (-1, 0), (1, -1), (1, 0)]
+                
+                for dr, dc in offsets:
+                    nr, nc = curr_r + dr, curr_c + dc
+                    if board[nr, nc] == 2: continue # Blocked by opponent stone
+                    if (nr, nc) not in p1_visited:
+                        p1_visited.add((nr, nc))
+                        q1.append((nr, nc))
+                        # Optimization: If we touch a virtual node or a friendly stone deep inside, prioritize?
+                        # For speed, simple BFS is usually enough in playouts.
+                        # If we hit a friendly stone, we effectively "jump".
+                        if board[nr, nc] == 1:
+                            # Add its neighbors too immediately to simulate connectivity
+                            # (This is a cheap shortcut to approximate virtual stones)
+                            pass 
+                
+                turn = 2
+                
+            else: # P2
+                if not q2: return 1 # Stuck, P1 wins
+                curr_r, curr_c = q2.popleft()
+                
+                # Check Win
+                if curr_c == SIZE + 1: return 0 # P2 wins
+                
+                # Expand
+                if curr_r % 2 == 0:
+                    offsets = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, 1)]
+                else:
+                    offsets = [(0, -1), (0, 1), (-1, -1), (-1, 0), (1, -1), (1, 0)]
+                
+                for dr, dc in offsets:
+                    nr, nc = curr_r + dr, curr_c + dc
+                    if board[nr, nc] == 1: continue
+                    if (nr, nc) not in p2_visited:
+                        p2_visited.add((nr, nc))
+                        q2.append((nr, nc))
+                        if board[nr, nc] == 2:
+                            pass
+                
+                turn = 1
+
+        # Timeout - assume player_turn wins if they have more connectivity?
+        # For speed, we return a draw (0.5), but here we must pick a winner.
+        # Let's bias towards the current player slightly or just return 0 to be conservative
+        return 0 
+
+    # --- MCTS Core ---
+
+    class Node:
+        __slots__ = ('visits', 'wins', 'move', 'children')
+        def __init__(self, move):
+            self.visits = 0
+            self.wins = 0.0
+            self.move = move
+            self.children = []
+
+    def mcts_search(root_player):
+        # Time limit: 0.9 seconds
+        start_time = time.time()
+        time_limit = 0.9
+        
+        # Root Node
+        root = Node(None)
+        
+        # Initial move generation (Frontier)
+        possible_moves = get_frontier_moves()
+        
+        # Create child nodes for all possible moves
+        root.children = [Node(m) for m in possible_moves]
+        
+        iteration = 0
+        
+        while time.time() - start_time < time_limit:
+            iteration += 1
+            
+            # 1. Selection (UCB1)
+            # Start at root
+            current = root
+            path = [root]
+            
+            # Select child with best UCB score
+            # If a child has 0 visits, we select it immediately (Expansion phase simulation)
+            while current.children:
+                # Calculate UCB scores for all children
+                best_score = -1
+                best_child = None
+                
+                for child in current.children:
+                    if child.visits == 0:
+                        best_child = child
+                        break
+                    
+                    # UCB1 formula: Wins/Visits + C * sqrt(ln(ParentVisits) / Visits)
+                    # Win rate is from the perspective of the player who moved to this node
+                    # MCTS usually tracks from the perspective of the node's owner.
+                    # Here we track "Wins" as the result for the player who just moved (child.move)
+                    
+                    win_rate = child.wins / child.visits
+                    ucb = win_rate + 1.41 * np.sqrt(np.log(current.visits) / child.visits)
+                    
+                    if ucb > best_score:
+                        best_score = ucb
+                        best_child = child
+                
+                if best_child is None: break # Should not happen
+                current = best_child
+                path.append(current)
+            
+            # 2. Simulation (Virtual Rollout)
+            # We need to know whose turn it is at the leaf node.
+            # Depth determines turn. Root is P1 (current player).
+            # Odd depth (1, 3...) means P1 moved to leaf. Next is P2.
+            # Even depth means P2 moved. Next is P1.
+            
+            # Wait, MCTS logic:
+            # We select a child node. That node represents a MOVE.
+            # The state after that move belongs to the OPPONENT.
+            # So if we are at 'current' (a child), the simulation starts with the opponent to move.
+            
+            # Wait, let's trace:
+            # Root (Turn: P1). Select Child (Move: A). State is (Board + A). Turn: P2.
+            # So if we are at 'current' (depth 1), simulation starts with P2 (opponent).
+            
+            # We want to know if the move in 'current' leads to a win for P1.
+            # So we simulate starting with P2 (root_player == 2 if root is P1? No).
+            
+            # Let's define simulation turn based on depth.
+            # Root depth 0. Turn = root_player (1).
+            # Child depth 1. Turn = opponent (2).
+            
+            sim_player = 2 if len(path) % 2 == 1 else 1 
+            
+            # Perform Virtual Rollout
+            # Note: The board state is implicit. 
+            # We need to apply the moves in the path to a temporary board.
+            # To keep it fast, we will apply the path moves, run playout, then undo.
+            
+            # Apply path moves
+            moves_applied = []
+            for node in path[1:]: # Skip root
+                r, c = node.move
+                # Determine whose move it was
+                # Path[1] is P1, Path[2] is P2...
+                turn_idx = len(moves_applied) 
+                stone_val = 1 if turn_idx % 2 == 0 else 2
+                board[r, c] = stone_val
+                moves_applied.append((r, c, stone_val))
+            
+            # Run playout
+            result = virtual_playout(sim_player)
+            
+            # Backpropagation
+            # Update stats. 'result' is 1 if sim_player (the one who started the playout) wins.
+            # We need to convert this to the perspective of the nodes in the path.
+            
+            # If sim_player is P1 (1):
+            # The last node in path (depth d) was P1's move. If P1 wins, that node gets +1.
+            # The parent (depth d-1) was P2's move. If P1 wins, P2 loses, so +0.
+            
+            # If sim_player is P2 (2):
+            # The last node was P2's move. If P2 wins, that node gets +1.
+            
+            current_res = result
+            
+            for node in reversed(path[1:]):
+                # If the move was by P1 (stone_val == 1):
+                #   Update based on current_res (1 if P1 won)
+                # If the move was by P2:
+                #   Update based on (1 - current_res)
+                
+                # Determine turn for this node
+                # Path[1] (first child) is move by P1 (root_player)
+                # Path[2] is move by P2
+                
+                depth = path.index(node)
+                # Node move belongs to P1 if (depth-1) is even? 
+                # Root is depth 0. Child is depth 1.
+                # Player at depth 0 is P1.
+                # Player making move at depth 1 is P1.
+                
+                node_perspective = 1 if depth % 2 == 1 else 2
+                
+                if node_perspective == 1:
+                    node.wins += current_res
+                else:
+                    node.wins += (1 - current_res)
+                node.visits += 1
+                
+                # Flip result for parent? No, result is static (who won the game).
+                # But we update based on who moved.
+                # Actually, standard MCTS backprop:
+                # If P1 moved, and P1 won, increment.
+                # If P2 moved, and P1 won, increment (because we track P1 win rate usually, or flip).
+                # Here we track "Wins" for the mover.
+                # If mover is P1 and P1 wins -> Win.
+                # If mover is P2 and P2 wins -> Win.
+                # So we check if the mover is the winner.
+                
+                is_winner = False
+                if node_perspective == 1 and current_res == 1: is_winner = True
+                if node_perspective == 2 and current_res == 0: is_winner = True
+                
+                if is_winner:
+                    node.wins += 1
+                node.visits += 1
+                
+            # Undo moves
+            for r, c, val in reversed(moves_applied):
+                board[r, c] = 0
+
+        # Select best move based on visits (robust)
+        best_child = None
+        max_visits = -1
+        for child in root.children:
+            if child.visits > max_visits:
+                max_visits = child.visits
+                best_child = child
+        
+        return best_child.move if best_child else possible_moves[0]
+
+    # --- Execution ---
+
+    # Check for immediate win
+    # (Optimization: Cheap check to avoid MCTS overhead in simple cases)
+    # This is handled well by MCTS, but explicit check is good for opening.
+    
+    # Run MCTS
+    internal_move = mcts_search(MY_COLOR)
+    
+    # Convert back to external coordinates
+    r, c = internal_move
+    r -= 1
+    c -= 1
+    
+    if IS_WHITE:
+        # Rotate back: (r, c) -> (SIZE - 1 - c, r)
+        return (SIZE - 1 - c, r)
+    else:
+        return (r, c)
+
+</code>

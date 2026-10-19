@@ -1,0 +1,239 @@
+The strategy for this policy is a strong, safe 4x4 Tic Tac Toe player built around these priorities:
+
+1. Play any immediate winning move.
+2. Block any immediate opponent winning move.
+3. Use minimax with alpha-beta pruning on the mid/end game when the branching factor is manageable.
+4. In earlier positions, use a strong heuristic evaluation:
+   - prefer lines with many of our marks and no opponent marks,
+   - block lines with many opponent marks,
+   - prefer central and high-connectivity squares,
+   - create forks and avoid giving them away.
+5. Always fall back to a legal move, guaranteeing valid output.
+
+This policy assumes the standard objective on 4x4 Tic Tac Toe is to make 4 in a row horizontally, vertically, or diagonally.
+
+<code>
+from typing import List, Tuple
+import math
+
+N = 4
+EMPTY = 0
+ME = 1
+OPP = -1
+
+# Precompute all winning lines (rows, cols, diagonals)
+LINES = []
+
+for r in range(N):
+    LINES.append([(r, c) for c in range(N)])
+for c in range(N):
+    LINES.append([(r, c) for r in range(N)])
+LINES.append([(i, i) for i in range(N)])
+LINES.append([(i, N - 1 - i) for i in range(N)])
+
+# Cell participation count in winning lines, used as a positional prior
+CELL_WEIGHT = [[0] * N for _ in range(N)]
+for line in LINES:
+    for r, c in line:
+        CELL_WEIGHT[r][c] += 1
+
+# Slightly prefer central cells
+for r in range(N):
+    for c in range(N):
+        if 1 <= r <= 2 and 1 <= c <= 2:
+            CELL_WEIGHT[r][c] += 0.5
+
+def legal_moves(board: List[List[int]]) -> List[Tuple[int, int]]:
+    moves = []
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == EMPTY:
+                moves.append((r, c))
+    return moves
+
+def winner(board: List[List[int]]) -> int:
+    for line in LINES:
+        s = sum(board[r][c] for r, c in line)
+        if s == N:
+            return ME
+        if s == -N:
+            return OPP
+    return 0
+
+def is_terminal(board: List[List[int]]) -> bool:
+    return winner(board) != 0 or all(board[r][c] != EMPTY for r in range(N) for c in range(N))
+
+def immediate_wins(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    wins = []
+    for r, c in legal_moves(board):
+        board[r][c] = player
+        w = winner(board)
+        board[r][c] = EMPTY
+        if w == player:
+            wins.append((r, c))
+    return wins
+
+def evaluate(board: List[List[int]]) -> float:
+    w = winner(board)
+    if w == ME:
+        return 1_000_000
+    if w == OPP:
+        return -1_000_000
+
+    score = 0.0
+
+    # Positional score
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == ME:
+                score += CELL_WEIGHT[r][c]
+            elif board[r][c] == OPP:
+                score -= CELL_WEIGHT[r][c]
+
+    # Line-based score
+    # Reward uncontested lines; heavily weight 3-in-line threats
+    for line in LINES:
+        vals = [board[r][c] for r, c in line]
+        me_count = vals.count(ME)
+        opp_count = vals.count(OPP)
+        empty_count = vals.count(EMPTY)
+
+        if opp_count == 0 and me_count > 0:
+            if me_count == 1:
+                score += 3
+            elif me_count == 2:
+                score += 15
+            elif me_count == 3 and empty_count == 1:
+                score += 200
+        elif me_count == 0 and opp_count > 0:
+            if opp_count == 1:
+                score -= 3
+            elif opp_count == 2:
+                score -= 18
+            elif opp_count == 3 and empty_count == 1:
+                score -= 250
+
+    # Fork potential: count immediate wins available after one move
+    my_wins = len(immediate_wins(board, ME))
+    opp_wins = len(immediate_wins(board, OPP))
+    score += 120 * my_wins
+    score -= 140 * opp_wins
+
+    return score
+
+def ordered_moves(board: List[List[int]], player: int) -> List[Tuple[int, int]]:
+    moves = legal_moves(board)
+
+    # First prioritize immediate wins/blocks-like structure via move ordering
+    scored = []
+    for r, c in moves:
+        priority = 0.0
+
+        board[r][c] = player
+        if winner(board) == player:
+            priority += 1_000_000
+        board[r][c] = EMPTY
+
+        board[r][c] = -player
+        if winner(board) == -player:
+            priority += 500_000
+        board[r][c] = EMPTY
+
+        priority += CELL_WEIGHT[r][c] * 10
+
+        # Small tactical lookahead: resulting immediate wins
+        board[r][c] = player
+        priority += len(immediate_wins(board, player)) * 200
+        priority -= len(immediate_wins(board, -player)) * 50
+        board[r][c] = EMPTY
+
+        scored.append((priority, (r, c)))
+
+    scored.sort(reverse=True)
+    return [m for _, m in scored]
+
+def minimax(board: List[List[int]], depth: int, alpha: float, beta: float, player: int) -> float:
+    w = winner(board)
+    if w == ME:
+        return 1_000_000 + depth
+    if w == OPP:
+        return -1_000_000 - depth
+
+    moves = legal_moves(board)
+    if not moves:
+        return 0.0
+    if depth == 0:
+        return evaluate(board)
+
+    if player == ME:
+        value = -math.inf
+        for r, c in ordered_moves(board, player):
+            board[r][c] = player
+            value = max(value, minimax(board, depth - 1, alpha, beta, -player))
+            board[r][c] = EMPTY
+            alpha = max(alpha, value)
+            if alpha >= beta:
+                break
+        return value
+    else:
+        value = math.inf
+        for r, c in ordered_moves(board, player):
+            board[r][c] = player
+            value = min(value, minimax(board, depth - 1, alpha, beta, -player))
+            board[r][c] = EMPTY
+            beta = min(beta, value)
+            if alpha >= beta:
+                break
+        return value
+
+def choose_depth(board: List[List[int]]) -> int:
+    empties = sum(1 for r in range(N) for c in range(N) if board[r][c] == EMPTY)
+    # Deeper in later game where tree is smaller
+    if empties >= 12:
+        return 3
+    if empties >= 9:
+        return 4
+    if empties >= 6:
+        return 6
+    return 10
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    moves = legal_moves(board)
+    if not moves:
+        return (0, 0)  # Should not happen in valid gameplay, but keeps function total.
+
+    # 1. Immediate win
+    my_wins = immediate_wins(board, ME)
+    if my_wins:
+        return my_wins[0]
+
+    # 2. Immediate block
+    opp_wins = immediate_wins(board, OPP)
+    if opp_wins:
+        # If multiple blocks exist, choose best-positioned one
+        opp_wins.sort(key=lambda mv: CELL_WEIGHT[mv[0]][mv[1]], reverse=True)
+        return opp_wins[0]
+
+    # 3. Search
+    depth = choose_depth(board)
+    best_move = None
+    best_score = -math.inf
+
+    for r, c in ordered_moves(board, ME):
+        board[r][c] = ME
+        score = minimax(board, depth - 1, -math.inf, math.inf, OPP)
+        board[r][c] = EMPTY
+
+        # Mild tie-break with positional preference
+        score += CELL_WEIGHT[r][c] * 0.01
+
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    # 4. Guaranteed legal fallback
+    if best_move is not None and board[best_move[0]][best_move[1]] == EMPTY:
+        return best_move
+
+    return moves[0]
+</code>

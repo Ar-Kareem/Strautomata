@@ -1,0 +1,417 @@
+
+import numpy as np
+import time
+from typing import List, Tuple, Dict, Optional
+
+# 4x4 boxes => 5x4 horizontal edges (20) and 4x5 vertical edges (20) => 40 edges total.
+# We'll index edges globally:
+#   H edges: gidx 0..19, mapping (r,c) with r in [0..4], c in [0..3], idx = r*4 + c
+#   V edges: gidx 20..39, mapping (r,c) with r in [0..3], c in [0..4], idx = 20 + r*5 + c
+#
+# Boxes are indexed 0..15: b = r*4 + c with r,c in [0..3].
+#
+# State (internal):
+#   emask: 40-bit occupancy mask (1 means edge drawn by either player)
+#   mine:  16-bit mask of boxes captured by us
+#   opp:   16-bit mask of boxes captured by opponent
+#
+# Player to move in search: +1 (us) or -1 (opponent). Captures set bits in mine/opp accordingly.
+
+BOX_MASKS: List[int] = []
+EDGE_TO_BOXES: List[List[int]] = [[] for _ in range(40)]
+
+# Precompute box edge masks and edge->adjacent boxes
+for br in range(4):
+    for bc in range(4):
+        b = br * 4 + bc
+        top = br * 4 + bc
+        bot = (br + 1) * 4 + bc
+        left = 20 + br * 5 + bc
+        right = 20 + br * 5 + (bc + 1)
+        m = (1 << top) | (1 << bot) | (1 << left) | (1 << right)
+        BOX_MASKS.append(m)
+        EDGE_TO_BOXES[top].append(b)
+        EDGE_TO_BOXES[bot].append(b)
+        EDGE_TO_BOXES[left].append(b)
+        EDGE_TO_BOXES[right].append(b)
+
+# Edge index -> (row,col,dir)
+EDGE_INFO: List[Tuple[int, int, str]] = []
+for g in range(40):
+    if g < 20:
+        r, c = divmod(g, 4)
+        EDGE_INFO.append((r, c, "H"))
+    else:
+        v = g - 20
+        r, c = divmod(v, 5)
+        EDGE_INFO.append((r, c, "V"))
+
+
+def _popcount(x: int) -> int:
+    return x.bit_count()
+
+
+def _legal_moves(emask: int) -> List[int]:
+    # Return global edge indices that are empty
+    # (Iterating 0..39 is fast enough.)
+    moves = []
+    inv = ~emask
+    for g in range(40):
+        if (inv >> g) & 1:
+            moves.append(g)
+    return moves
+
+
+def _would_capture(emask: int, mine: int, opp: int, gidx: int) -> int:
+    # How many boxes would be captured by playing edge gidx (by either side),
+    # ignoring whose turn it is. Only counts currently unclaimed boxes.
+    new_em = emask | (1 << gidx)
+    claimed = mine | opp
+    gained = 0
+    for b in EDGE_TO_BOXES[gidx]:
+        if (claimed >> b) & 1:
+            continue
+        if (new_em & BOX_MASKS[b]) == BOX_MASKS[b]:
+            gained += 1
+    return gained
+
+
+def _apply_move(emask: int, mine: int, opp: int, gidx: int, player: int) -> Tuple[int, int, int, int, int]:
+    # Returns (new_emask, new_mine, new_opp, gained, next_player)
+    new_em = emask | (1 << gidx)
+    claimed = mine | opp
+    gained_boxes = 0
+    if player == 1:
+        new_mine = mine
+        new_opp = opp
+        for b in EDGE_TO_BOXES[gidx]:
+            if (claimed >> b) & 1:
+                continue
+            if (new_em & BOX_MASKS[b]) == BOX_MASKS[b]:
+                new_mine |= (1 << b)
+                gained_boxes += 1
+        next_player = player if gained_boxes > 0 else -player
+        return new_em, new_mine, new_opp, gained_boxes, next_player
+    else:
+        new_mine = mine
+        new_opp = opp
+        for b in EDGE_TO_BOXES[gidx]:
+            if (claimed >> b) & 1:
+                continue
+            if (new_em & BOX_MASKS[b]) == BOX_MASKS[b]:
+                new_opp |= (1 << b)
+                gained_boxes += 1
+        next_player = player if gained_boxes > 0 else -player
+        return new_em, new_mine, new_opp, gained_boxes, next_player
+
+
+def _is_safe_move(emask: int, mine: int, opp: int, gidx: int) -> bool:
+    # Safe means: after playing this edge, no adjacent unclaimed box becomes 3-sided.
+    # (Only adjacent boxes can change.)
+    new_em = emask | (1 << gidx)
+    claimed = mine | opp
+    for b in EDGE_TO_BOXES[gidx]:
+        if (claimed >> b) & 1:
+            continue
+        cnt = _popcount(new_em & BOX_MASKS[b])
+        if cnt == 3:
+            return False
+    return True
+
+
+def _safe_move_key(emask: int, mine: int, opp: int, gidx: int) -> Tuple[int, int, int, int]:
+    # Lower is better:
+    #  1) prefer boundary edges (touch 1 box) over interior (touch 2)
+    #  2) minimize max adjacent box side count after move
+    #  3) minimize sum adjacent box side counts after move
+    #  4) deterministic tie-breaker based on state+move
+    new_em = emask | (1 << gidx)
+    claimed = mine | opp
+    adj = len(EDGE_TO_BOXES[gidx])
+    max_cnt = 0
+    sum_cnt = 0
+    for b in EDGE_TO_BOXES[gidx]:
+        if (claimed >> b) & 1:
+            continue
+        cnt = _popcount(new_em & BOX_MASKS[b])
+        if cnt > max_cnt:
+            max_cnt = cnt
+        sum_cnt += cnt
+    # simple deterministic pseudo-random tie-break:
+    t = (emask ^ (mine << 40) ^ (opp << 56) ^ (gidx * 0x9E3779B97F4A7C15)) & ((1 << 64) - 1)
+    return (adj, max_cnt, sum_cnt, int(t))
+
+
+def _capture_move_key(emask: int, mine: int, opp: int, gidx: int) -> Tuple[int, int]:
+    # Higher gained first; then deterministic tie-break.
+    gained = _would_capture(emask, mine, opp, gidx)
+    t = (emask ^ (mine << 40) ^ (opp << 56) ^ (gidx * 0xD1B54A32D192ED03)) & ((1 << 64) - 1)
+    return (-gained, int(t))
+
+
+def _forced_capture_greedy(emask: int, mine: int, opp: int, player: int) -> Tuple[int, int, int, int]:
+    # Greedily take captures until none exist for 'player'.
+    # Returns (new_emask, new_mine, new_opp, total_captured_by_player_in_run)
+    total = 0
+    while True:
+        best_g = -1
+        best_gain = 0
+        # scan for capture moves
+        inv = ~emask
+        for g in range(40):
+            if (inv >> g) & 1:
+                gain = _would_capture(emask, mine, opp, g)
+                if gain > best_gain:
+                    best_gain = gain
+                    best_g = g
+        if best_gain == 0:
+            break
+        emask, mine, opp, gained, next_player = _apply_move(emask, mine, opp, best_g, player)
+        # next_player should remain 'player' because gained > 0
+        total += gained
+    return emask, mine, opp, total
+
+
+def _gift_size_if_play(emask: int, mine: int, opp: int, gidx: int, player: int) -> int:
+    # If player plays gidx and does NOT capture (typical in loony phase),
+    # estimate how many boxes the opponent can then force-capture immediately.
+    new_em, new_m, new_o, gained, next_player = _apply_move(emask, mine, opp, gidx, player)
+    if gained > 0:
+        return 0
+    # now opponent to move
+    _, _, _, total = _forced_capture_greedy(new_em, new_m, new_o, next_player)
+    return total
+
+
+def _eval(mine: int, opp: int) -> int:
+    return _popcount(mine) - _popcount(opp)
+
+
+class _Timeout(Exception):
+    pass
+
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Build internal masks from arrays (ignore edge ownership sign; only occupancy matters).
+    # Only use valid edge ranges for 4x4 boxes:
+    #   H: rows 0..4, cols 0..3
+    #   V: rows 0..3, cols 0..4
+    emask = 0
+    # Horizontal occupancy
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] != 0:
+                g = r * 4 + c
+                emask |= (1 << g)
+    # Vertical occupancy
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] != 0:
+                g = 20 + r * 5 + c
+                emask |= (1 << g)
+
+    mine = 0
+    opp = 0
+    for r in range(4):
+        for c in range(4):
+            v = int(capture[r, c])
+            b = r * 4 + c
+            if v == 1:
+                mine |= (1 << b)
+            elif v == -1:
+                opp |= (1 << b)
+
+    legal = _legal_moves(emask)
+    if not legal:
+        # Extremely unlikely (terminal). Try any zero in provided arrays as fallback.
+        for r in range(5):
+            for c in range(5):
+                if horizontal[r, c] == 0:
+                    return f"{r},{c},H"
+        for r in range(5):
+            for c in range(5):
+                if vertical[r, c] == 0:
+                    return f"{r},{c},V"
+        return "0,0,H"  # last resort
+
+    # Root move filtering (domain knowledge):
+    captures = [g for g in legal if _would_capture(emask, mine, opp, g) > 0]
+    if captures:
+        candidates = sorted(captures, key=lambda g: _capture_move_key(emask, mine, opp, g))
+    else:
+        safe = [g for g in legal if _is_safe_move(emask, mine, opp, g)]
+        if safe:
+            candidates = sorted(safe, key=lambda g: _safe_move_key(emask, mine, opp, g))
+        else:
+            # No safe moves: order by estimated gift size (smallest first).
+            tmp = []
+            for g in legal:
+                gift = _gift_size_if_play(emask, mine, opp, g, player=1)
+                tmp.append((gift, g))
+            tmp.sort(key=lambda x: (x[0], x[1]))
+            candidates = [g for _, g in tmp]
+
+    # Always have at least one candidate
+    best_move = candidates[0]
+
+    # Time-bounded alpha-beta minimax with quiescence (capture-only) at leaves.
+    start = time.perf_counter()
+    deadline = start + 0.95  # keep margin under 1 second
+    nodes = 0
+    tt: Dict[Tuple[int, int, int, int, int], int] = {}
+
+    def _check_time():
+        nonlocal nodes
+        nodes += 1
+        if (nodes & 1023) == 0:
+            if time.perf_counter() > deadline:
+                raise _Timeout()
+
+    def _gen_moves_filtered(em: int, mi: int, op: int) -> List[int]:
+        moves = _legal_moves(em)
+        if not moves:
+            return moves
+        caps = [g for g in moves if _would_capture(em, mi, op, g) > 0]
+        if caps:
+            caps.sort(key=lambda g: _capture_move_key(em, mi, op, g))
+            return caps
+        saf = [g for g in moves if _is_safe_move(em, mi, op, g)]
+        if saf:
+            saf.sort(key=lambda g: _safe_move_key(em, mi, op, g))
+            return saf
+        # no safe: light ordering by gift size, but cap work by only sorting a short list
+        # (still include all moves to remain correct, just ordered)
+        gifts = [(_gift_size_if_play(em, mi, op, g, player=1), g) for g in moves]
+        gifts.sort(key=lambda x: (x[0], x[1]))
+        return [g for _, g in gifts]
+
+    def qsearch(em: int, mi: int, op: int, player: int, alpha: int, beta: int) -> int:
+        _check_time()
+        key = (em, mi, op, player, -1)
+        if key in tt:
+            return tt[key]
+
+        moves = _legal_moves(em)
+        cap_moves = [g for g in moves if _would_capture(em, mi, op, g) > 0]
+        if not cap_moves:
+            val = _eval(mi, op)
+            tt[key] = val
+            return val
+
+        cap_moves.sort(key=lambda g: _capture_move_key(em, mi, op, g))
+        if player == 1:
+            best = -10**9
+            for g in cap_moves:
+                nem, nmi, nop, gained, nplayer = _apply_move(em, mi, op, g, player)
+                val = qsearch(nem, nmi, nop, nplayer, alpha, beta)
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+        else:
+            best = 10**9
+            for g in cap_moves:
+                nem, nmi, nop, gained, nplayer = _apply_move(em, mi, op, g, player)
+                val = qsearch(nem, nmi, nop, nplayer, alpha, beta)
+                if val < best:
+                    best = val
+                if best < beta:
+                    beta = best
+                if alpha >= beta:
+                    break
+
+        tt[key] = best
+        return best
+
+    def minimax(em: int, mi: int, op: int, player: int, depth: int, alpha: int, beta: int) -> int:
+        _check_time()
+        if depth <= 0:
+            return qsearch(em, mi, op, player, alpha, beta)
+
+        # terminal
+        if _popcount(em) == 40:
+            return _eval(mi, op)
+
+        key = (em, mi, op, player, depth)
+        if key in tt:
+            return tt[key]
+
+        moves = _gen_moves_filtered(em, mi, op)
+        if not moves:
+            val = _eval(mi, op)
+            tt[key] = val
+            return val
+
+        if player == 1:
+            best = -10**9
+            for g in moves:
+                nem, nmi, nop, gained, nplayer = _apply_move(em, mi, op, g, player)
+                val = minimax(nem, nmi, nop, nplayer, depth - 1, alpha, beta)
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+        else:
+            best = 10**9
+            for g in moves:
+                nem, nmi, nop, gained, nplayer = _apply_move(em, mi, op, g, player)
+                val = minimax(nem, nmi, nop, nplayer, depth - 1, alpha, beta)
+                if val < best:
+                    best = val
+                if best < beta:
+                    beta = best
+                if alpha >= beta:
+                    break
+
+        tt[key] = best
+        return best
+
+    remaining = 40 - _popcount(emask)
+    if remaining <= 12:
+        target_depth = 12
+    elif remaining <= 18:
+        target_depth = 9
+    elif remaining <= 26:
+        target_depth = 7
+    else:
+        target_depth = 5
+
+    # Iterative deepening at root for robustness under time.
+    # Always keep a legal move in best_move.
+    try:
+        base_best = best_move
+        for depth in range(2, target_depth + 1, 2):
+            local_best_move = base_best
+            local_best_val = -10**9
+            alpha, beta = -10**9, 10**9
+
+            # Root uses our candidate list ordering; optionally trim in early game to save time.
+            root_moves = candidates
+            if remaining > 28 and len(root_moves) > 18:
+                root_moves = root_moves[:18]
+            elif remaining > 20 and len(root_moves) > 24:
+                root_moves = root_moves[:24]
+
+            for g in root_moves:
+                nem, nmi, nop, gained, nplayer = _apply_move(emask, mine, opp, g, player=1)
+                val = minimax(nem, nmi, nop, nplayer, depth - 1, alpha, beta)
+                if val > local_best_val:
+                    local_best_val = val
+                    local_best_move = g
+                if val > alpha:
+                    alpha = val
+
+            best_move = local_best_move
+            base_best = best_move
+    except _Timeout:
+        pass
+    except Exception:
+        # Safety: never crash; fall back to a legal move.
+        best_move = candidates[0] if candidates else legal[0]
+
+    r, c, d = EDGE_INFO[best_move]
+    return f"{r},{c},{d}"

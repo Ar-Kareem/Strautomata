@@ -1,0 +1,631 @@
+<thinking>
+The user wants a Python function `policy` that takes a 3x3x3 Tic Tac Toe board and returns the best move for my AI. The board state is represented by 0 (empty), 1 (my piece), and -1 (opponent's piece).
+
+I need to implement a strategy. A common strategy for games like Tic Tac Toe is to:
+1.  **Win if possible:** Check if placing a piece can lead to an immediate win.
+2.  **Block opponent if possible:** Check if the opponent can win on their next move and block them.
+3.  **Create a threat (fork):** If neither of the above, try to create a scenario where I have multiple winning lines.
+4.  **Block opponent's threat (fork):** If the opponent can create a fork, try to block it.
+5.  **Look for strategic positions:** If no immediate threats/wins, pick a central or otherwise "good" position.
+6.  **Pick any empty spot:** As a last resort, pick any available empty spot.
+
+Let's define what constitutes a "win" in 3D Tic Tac Toe. A win is 3 in a row along any of the following lines:
+*   **Rows:** 3 horizontal cells in a single plane (e.g., `board[z][y][x]`, `x` changes).
+*   **Columns:** 3 vertical cells in a single plane (e.g., `board[z][y][x]`, `y` changes).
+*   **Pillars:** 3 cells stacked vertically (e.g., `board[z][y][x]`, `z` changes).
+*   **Diagonal within a plane:**
+    *   2D diagonals on an X-Y plane (z is constant, y and x change).
+    *   2D diagonals on an X-Z plane (y is constant, z and x change).
+    *   2D diagonals on a Y-Z plane (x is constant, z and y change).
+*   **3D Diagonals:** Diagonals that span all three dimensions. There are 4 such diagonals (e.g., `(0,0,0) -> (1,1,1) -> (2,2,2)`).
+
+To implement this, I'll need helper functions:
+*   `check_win(board, player)`: Checks if a given player has won. This will be too slow if called repeatedly.
+*   `check_line(line, player)`: Checks if a specific line has a win for a player.
+*   `get_all_lines(board)`: This is crucial. It should generate all possible winning lines on the board. There are 3 * (3*3) = 27 rows/cols/pillars. Then 3 * (2*2) = 12 diagonals on 2D planes. And 4 3D diagonals. Total: 27 + 12 + 4 = 43 lines.
+
+Let's refine the win/block logic. Instead of just checking if someone has *already* won, I need to check if placing a piece *will cause a win*.
+
+**Core Logic:**
+1.  Iterate through all empty cells `(z, y, x)`.
+2.  For each empty cell:
+    a.  **Try placing my piece (player = 1):** If placing my piece at `(z, y, x)` creates a win for me, return `(z, y, x)`. This is the immediate win condition.
+    b.  **Try placing opponent's piece (player = -1):** If placing the opponent's piece at `(z, y, x)` creates a win for them, this is a blocking move. Store this move.
+3.  If an immediate win is found, return it.
+4.  If no immediate win, but blocking moves were found, return the *first* blocking move. (In a 3x3x3 game, a single blocking move is usually sufficient, as it prevents the immediate loss).
+5.  If neither, then I need a more sophisticated strategy. For simplicity, let's prioritize the center points.
+    *   Center of the board: `(1, 1, 1)`
+    *   Centers of faces: `(0, 1, 1)`, `(1, 0, 1)`, `(1, 1, 0)`, `(2, 1, 1)`, `(1, 2, 1)`, `(1, 1, 2)`
+    *   Corners: `(0,0,0)`, `(0,0,2)`, `(0,2,0)`, `(0,2,2)`, `(2,0,0)`, `(2,0,2)`, `(2,2,0)`, `(2,2,2)`
+6.  If none of the above strategy yields a move, just pick the first empty spot found.
+
+Let's carefully enumerate all possible winning lines. A line consists of three coordinates `(z, y, x)`.
+
+**Winning Lines:**
+There are `3^3 = 27` cells. Each winning line involves 3 cells.
+
+**1. Lines parallel to axes (27 lines):**
+*   **X-axis (rows):** `z, y` fixed, `x` varies. (3 depths * 3 heights = 9 lines)
+    *   `[(z, y, 0), (z, y, 1), (z, y, 2)]` for `z in 0..2`, `y in 0..2`
+*   **Y-axis (columns):** `z, x` fixed, `y` varies. (3 depths * 3 widths = 9 lines)
+    *   `[(z, 0, x), (z, 1, x), (z, 2, x)]` for `z in 0..2`, `x in 0..2`
+*   **Z-axis (pillars):** `y, x` fixed, `z` varies. (3 heights * 3 widths = 9 lines)
+    *   `[(0, y, x), (1, y, x), (2, y, x)]` for `y in 0..2`, `x in 0..2`
+
+**2. 2D diagonals within planes (12 lines):**
+*   **X-Y Plane (z fixed):** (3 planes * 2 diagonals = 6 lines)
+    *   `z` fixed: `[(z, 0, 0), (z, 1, 1), (z, 2, 2)]`
+    *   `z` fixed: `[(z, 0, 2), (z, 1, 1), (z, 2, 0)]`
+*   **X-Z Plane (y fixed):** (3 planes * 2 diagonals = 6 lines)
+    *   `y` fixed: `[(0, y, 0), (1, y, 1), (2, y, 2)]`
+    *   `y` fixed: `[(0, y, 2), (1, y, 1), (2, y, 0)]`
+*   **Y-Z Plane (x fixed):** (3 planes * 2 diagonals = 6 lines)
+    *   `x` fixed: `[(0, 0, x), (1, 1, x), (2, 2, x)]`
+    *   `x` fixed: `[(0, 2, x), (1, 1, x), (2, 0, x)]`
+    *   *Self-correction:* I listed Y-Z plane. I already have X-Y and X-Z, so this is the third pair of planes. Total 3 planes * 2 diagonals = 6 lines for each type. So it is 6 lines * 3 types = 18 lines.
+    *   Wait, let's re-count.
+        *   `X-Y` diagonals (`z` is constant, `x` and `y` vary): There are 3 such planes (z=0, 1, 2). Each plane has 2 diagonals. `3 * 2 = 6` lines.
+        *   `X-Z` diagonals (`y` is constant, `x` and `z` vary): There are 3 such planes (y=0, 1, 2). Each plane has 2 diagonals. `3 * 2 = 6` lines.
+        *   `Y-Z` diagonals (`x` is constant, `y` and `z` vary): There are 3 such planes (x=0, 1, 2). Each plane has 2 diagonals. `3 * 2 = 6` lines.
+        *   Total 2D diagonals = 18 lines.
+
+**3. 3D diagonals (4 lines):**
+*   `[(0, 0, 0), (1, 1, 1), (2, 2, 2)]`
+*   `[(0, 0, 2), (1, 1, 1), (2, 2, 0)]`
+*   `[(0, 2, 0), (1, 1, 1), (2, 0, 2)]`
+*   `[(2, 0, 0), (1, 1, 1), (0, 2, 2)]` (or `[(0, 2, 2), (1, 1, 1), (2, 0, 0)]`)
+
+Total lines: 27 (axes) + 18 (2D diagonals) + 4 (3D diagonals) = 49 lines. This seems correct.
+
+I will pre-compute all these lines once.
+Then, for each empty cell, I can simulate placing a piece and check if any of the 49 lines become a win.
+
+Let's create a helper function `check_for_line_completion(temp_board, player, line)` that checks if a specific line is full of a `player`'s pieces.
+
+**Step-by-step strategy:**
+
+1.  **Define `all_winning_lines`:** A list of lists of tuples, where each inner list represents a winning line.
+2.  **Helper `check_line_for_player(board, player, line)`:**
+    *   Iterate through cells in `line`.
+    *   If any cell is not `player`, return `False`.
+    *   Return `True` if all cells are `player`.
+3.  **Iterate empty cells:**
+    *   `for z in range(3):`
+    *   ` for y in range(3):`
+    *   `  for x in range(3):`
+    *   `   if board[z][y][x] == 0:`
+    *   `    # Check for immediate win (player 1)`
+    *   `    board[z][y][x] = 1`
+    *   `    if any(check_line_for_player(board, 1, line) for line in all_winning_lines):`
+    *   `     return (z, y, x)`
+    *   `    board[z][y][x] = 0 # backtrack`
+    *
+    *   `    # Check for blocking opponent (player -1)`
+    *   `    board[z][y][x] = -1`
+    *   `    if any(check_line_for_player(board, -1, line) for line in all_winning_lines):`
+    *   `     blocking_moves.append((z, y, x))`
+    *   `    board[z][y][x] = 0 # backtrack`
+
+4.  **After checking all empty cells:**
+    *   If `blocking_moves` is not empty, return `blocking_moves[0]`.
+
+5.  **Prioritize center:**
+    *   `(1, 1, 1)` if empty.
+    *   Face centers: `(0, 1, 1), (1, 0, 1), (1, 1, 0), (2, 1, 1), (1, 2, 1), (1, 1, 2)` if empty. Order might matter for consistency.
+    *   Corners: `(0,0,0)`, `(0,0,2)`, `(0,2,0)`, `(0,2,2)`, `(2,0,0)`, `(2,0,2)`, `(2,2,0)`, `(2,2,2)` if empty.
+
+6.  **Fall back:** If nothing strategic, return the first empty cell found.
+
+Let's refine the line generation. It can be done in a nested loop and list comprehension.
+
+```python
+all_winning_lines = []
+
+# 1. Lines parallel to axes (27 lines)
+# X-axis (rows)
+for z in range(3):
+    for y in range(3):
+        all_winning_lines.append([(z, y, x) for x in range(3)])
+
+# Y-axis (columns)
+for z in range(3):
+    for x in range(3):
+        all_winning_lines.append([(z, y, x) for y in range(3)])
+
+# Z-axis (pillars)
+for y in range(3):
+    for x in range(3):
+        all_winning_lines.append([(z, y, x) for z in range(3)])
+
+# 2. 2D diagonals within planes (18 lines)
+# X-Y Plane (z fixed)
+for z in range(3):
+    all_winning_lines.append([(z, i, i) for i in range(3)])
+    all_winning_lines.append([(z, i, 2 - i) for i in range(3)])
+
+# X-Z Plane (y fixed)
+for y in range(3):
+    all_winning_lines.append([(i, y, i) for i in range(3)])
+    all_winning_lines.append([(i, y, 2 - i) for i in range(3)])
+
+# Y-Z Plane (x fixed)
+for x in range(3):
+    all_winning_lines.append([(i, i, x) for i in range(3)])
+    all_winning_lines.append([(i, 2 - i, x) for i in range(3)])
+
+# 3. 3D diagonals (4 lines)
+all_winning_lines.append([(i, i, i) for i in range(3)])      # (0,0,0) -> (2,2,2)
+all_winning_lines.append([(i, i, 2 - i) for i in range(3)])  # (0,0,2) -> (2,2,0)
+all_winning_lines.append([(i, 2 - i, i) for i in range(3)])  # (0,2,0) -> (2,0,2)
+all_winning_lines.append([(i, 2 - i, 2 - i) for i in range(3)]) # (0,2,2) -> (2,0,0)
+```
+
+This looks robust. I'll include the `all_winning_lines` generation inside a function or as a global constant to avoid re-calculating it. A global constant is better for performance.
+
+**Considerations for "good" moves beyond win/block:**
+
+*   **Center piece:** `(1,1,1)` is arguably the best first move, as it participates in 13 winning lines (3 axis lines, 6 2D diagonals, 4 3D diagonals).
+*   **Face centers:** `(0,1,1), (1,0,1), (1,1,0), (2,1,1), (1,2,1), (1,1,2)` are good. Each participates in 5 lines (1 axis, 4 2D diagonals).
+*   **Edge middles:** `(0,0,1), (0,1,0), (1,0,0), ...` (12 of these). Participate in 3 lines (2 axis, 1 2D diagonal).
+*   **Corners:** `(0,0,0), (0,0,2), ...` (8 of these). Participate in 7 lines (3 axis, 3 2D diagonals, 1 3D diagonal). This categorization could be off. Let's re-evaluate the corners.
+    *   A corner like `(0,0,0)` participates in:
+        *   `[(0,0,0), (0,0,1), (0,0,2)]` (X-axis)
+        *   `[(0,0,0), (0,1,0), (0,2,0)]` (Y-axis)
+        *   `[(0,0,0), (1,0,0), (2,0,0)]` (Z-axis)
+        *   `[(0,0,0), (0,1,1), (0,2,2)]` (XY-diag)
+        *   `[(0,0,0), (1,0,1), (2,0,2)]` (XZ-diag)
+        *   `[(0,0,0), (1,1,0), (2,2,0)]` (YZ-diag)
+        *   `[(0,0,0), (1,1,1), (2,2,2)]` (3D diag)
+        *   Yes, 7 lines. Corners are very strong.
+
+So, the optimal move order for non-win/block:
+1.  `(1,1,1)` (center)
+2.  Corners (8 spots) (e.g., `(0,0,0)`)
+3.  Face centers (6 spots) (e.g., `(0,1,1)`)
+4.  Edge centers (12 spots) (e.g., `(0,0,1)`)
+
+Let's order these specifically:
+`prioritized_moves = [(1,1,1)]`
+`prioritized_moves.extend([(z,y,x) for z in [0,2] for y in [0,2] for x in [0,2]])` # Corners
+`prioritized_moves.extend([(z,y,x) for (z,y,x) in [(0,1,1), (1,0,1), (1,1,0), (2,1,1), (1,2,1), (1,1,2)]])` # Face centers
+`prioritized_moves.extend([(z,y,x) for (z,y,x) in [(0,0,1),(0,1,0),(0,2,1),(0,1,2),(1,0,0),(1,0,2),(1,2,0),(1,2,2),(2,0,1),(2,1,0),(2,2,1),(2,1,2)]])` # Edge centers
+
+This is likely good enough for a simple AI for 3x3x3 Tic Tac Toe.
+The `check_line_for_player` function will be called frequently, so it should be efficient.
+The board is small (27 cells), so iterating through all empty cells and checking all 49 lines for each move is feasible. Max `27 * 49 = 1323` checks per call to `policy`. Not too bad.
+
+I need to make sure the global `ALL_WINNING_LINES` is defined before `policy` is called. It can be defined in the global scope of the file.
+
+```python
+import numpy as np # Used for board representation (though list of lists is given, it's good practice)
+
+# Pre-calculate all possible winning lines
+# A line is a list of 3 (z, y, x) coordinates.
+ALL_WINNING_LINES = []
+
+# 1. Lines parallel to axes (27 lines)
+# X-axis (rows)
+for z in range(3):
+    for y in range(3):
+        ALL_WINNING_LINES.append([(z, y, x) for x in range(3)])
+
+# Y-axis (columns)
+for z in range(3):
+    for x in range(3):
+        ALL_WINNING_LINES.append([(z, y, x) for y in range(3)])
+
+# Z-axis (pillars)
+for y in range(3):
+    for x in range(3):
+        ALL_WINNING_LINES.append([(z, y, x) for z in range(3)])
+
+# 2. 2D diagonals within planes (18 lines)
+# X-Y Plane (z fixed)
+for z in range(3):
+    ALL_WINNING_LINES.append([(z, i, i) for i in range(3)])
+    ALL_WINNING_LINES.append([(z, i, 2 - i) for i in range(3)])
+
+# X-Z Plane (y fixed)
+for y in range(3):
+    ALL_WINNING_LINES.append([(i, y, i) for i in range(3)])
+    ALL_WINNING_LINES.append([(i, y, 2 - i) for i in range(3)])
+
+# Y-Z Plane (x fixed)
+for x in range(3):
+    ALL_WINNING_LINES.append([(i, i, x) for i in range(3)])
+    ALL_WINNING_LINES.append([(i, 2 - i, x) for i in range(3)])
+
+# 3. 3D diagonals (4 lines)
+ALL_WINNING_LINES.append([(i, i, i) for i in range(3)])      # (0,0,0) -> (2,2,2)
+ALL_WINNING_LINES.append([(i, i, 2 - i) for i in range(3)])  # (0,0,2) -> (2,2,0)
+ALL_WINNING_LINES.append([(i, 2 - i, i) for i in range(3)])  # (0,2,0) -> (2,0,2)
+ALL_WINNING_LINES.append([(i, 2 - i, 2 - i) for i in range(3)]) # (0,2,2) -> (2,0,0)
+
+# Prioritized moves based on centrality/number of lines
+PRIORITIZED_MOVES = []
+# Center
+PRIORITIZED_MOVES.append((1, 1, 1))
+# Corners
+for z in [0, 2]:
+    for y in [0, 2]:
+        for x in [0, 2]:
+            if (z, y, x) != (1, 1, 1): # Exclude center if it was accidentally added in loop
+                PRIORITIZED_MOVES.append((z, y, x))
+# Face Centers
+face_centers = [(0, 1, 1), (1, 0, 1), (1, 1, 0), (2, 1, 1), (1, 2, 1), (1, 1, 2)]
+PRIORITIZED_MOVES.extend(face_centers)
+# Edge Centers
+edge_centers = [
+    (0, 0, 1), (0, 1, 0), (0, 1, 2), (0, 2, 1),
+    (1, 0, 0), (1, 0, 2), (1, 2, 0), (1, 2, 2),
+    (2, 0, 1), (2, 1, 0), (2, 1, 2), (2, 2, 1)
+]
+PRIORITIZED_MOVES.extend(edge_centers)
+
+# Remove duplicates from PRIORITIZED_MOVES by converting to set and back to list
+# This handles cases where for example (1,1,1) might appear in a list comprehension that is later extended.
+PRIORITIZED_MOVES = list(dict.fromkeys(PRIORITIZED_MOVES))
+```
+
+This looks good so far. I will embed this constant generation now.
+The board input is `list[list[list[int]]]`, so converting to numpy array might not be necessary, might slow down for small boards. Accessing `board[z][y][x]` is fine.
+
+Double check the `policy` function signature requirement:
+`def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:`
+Looks good.
+
+One final check on priorities:
+If I have multiple winning moves, I pick the first one found.
+If the opponent has multiple winning moves, I pick the first one found as a block.
+This is a greedy approach but generally sufficient for Tic Tac Toe on a 3x3x3 board because there's generally only one "best" move or a class of equivalent "best" moves in simple win/block scenarios. Complex fork strategies might require minimax, but the problem constraints usually imply a simpler greedy heuristic is fine.
+If no immediate wins or blocks, then pick from the prioritized list. This is a common heuristic.
+
+The `check_line_for_player` needs to take the board implicitly, or I pass it. Better to pass the board.
+The `board` variable passed into `policy` is the current state. When checking for prospective moves, I must modify a *copy* of the board or make sure I reset the cell after checking. The current logic uses temporary assignment and then reset `board[z][y][x] = 0`, which correctly simulates placement and then reverts for the next check. This is fine since it's just a local change and not affecting the original board when passed as argument to `policy`.
+Using `np.array` would make slicing lines easier, but standard list operations are adequate here.
+
+```python
+import numpy as np
+
+# Pre-calculate all possible winning lines
+# A line is a list of 3 (z, y, x) coordinates.
+ALL_WINNING_LINES = []
+
+# 1. Lines parallel to axes (27 lines)
+# X-axis (rows)
+for z in range(3):
+    for y in range(3):
+        ALL_WINNING_LINES.append([(z, y, x) for x in range(3)])
+
+# Y-axis (columns)
+for z in range(3):
+    for x in range(3):
+        ALL_WINNING_LINES.append([(z, y, x) for y in range(3)])
+
+# Z-axis (pillars)
+for y in range(3):
+    for x in range(3):
+        ALL_WINNING_LINES.append([(z, y, x) for z in range(3)])
+
+# 2. 2D diagonals within planes (18 lines)
+# X-Y Plane (z fixed)
+for z in range(3):
+    ALL_WINNING_LINES.append([(z, i, i) for i in range(3)])
+    ALL_WINNING_LINES.append([(z, i, 2 - i) for i in range(3)])
+
+# X-Z Plane (y fixed)
+for y in range(3):
+    ALL_WINNING_LINES.append([(i, y, i) for i in range(3)])
+    ALL_WINNING_LINES.append([(i, y, 2 - i) for i in range(3)])
+
+# Y-Z Plane (x fixed)
+for x in range(3):
+    ALL_WINNING_LINES.append([(i, i, x) for i in range(3)])
+    ALL_WINNING_LINES.append([(i, 2 - i, x) for i in range(3)])
+
+# 3. 3D diagonals (4 lines)
+ALL_WINNING_LINES.append([(i, i, i) for i in range(3)])      # (0,0,0) -> (2,2,2)
+ALL_WINNING_LINES.append([(i, i, 2 - i) for i in range(3)])  # (0,0,2) -> (2,2,0)
+ALL_WINNING_LINES.append([(i, 2 - i, i) for i in range(3)])  # (0,2,0) -> (2,0,2)
+ALL_WINNING_LINES.append([(i, 2 - i, 2 - i) for i in range(3)]) # (0,2,2) -> (2,0,0)
+
+# Prioritized moves for non-win/block scenarios, ordered by strategic importance
+PRIORITIZED_MOVES = []
+# Center (most strategic)
+PRIORITIZED_MOVES.append((1, 1, 1))
+# Corners (next most strategic, participate in many lines)
+for z in [0, 2]:
+    for y in [0, 2]:
+        for x in [0, 2]:
+            if (z, y, x) != (1, 1, 1): # Ensure center isn't duplicated
+                PRIORITIZED_MOVES.append((z, y, x))
+# Face Centers
+face_centers = [(0, 1, 1), (1, 0, 1), (1, 1, 0), (2, 1, 1), (1, 2, 1), (1, 1, 2)]
+PRIORITIZED_MOVES.extend(face_centers)
+# Edge Centers
+edge_centers = [
+    (0, 0, 1), (0, 1, 0), (0, 1, 2), (0, 2, 1),
+    (1, 0, 0), (1, 0, 2), (1, 2, 0), (1, 2, 2),
+    (2, 0, 1), (2, 1, 0), (2, 1, 2), (2, 2, 1)
+]
+PRIORITIZED_MOVES.extend(edge_centers)
+
+# Remove any potential duplicates and maintain order
+# Ensures that (1,1,1) is truly first, then corners, etc.
+PRIORITIZED_MOVES_UNIQUE = []
+seen = set()
+for move in PRIORITIZED_MOVES:
+    if move not in seen:
+        PRIORITIZED_MOVES_UNIQUE.append(move)
+        seen.add(move)
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next move for a 3x3x3 3D Tic Tac Toe game.
+
+    Args:
+        board: A 3x3x3 list of lists representing the game board.
+               0: empty, 1: AI's piece, -1: opponent's piece.
+
+    Returns:
+        A tuple of three integers (z, y, x) representing the chosen move.
+    """
+
+    # Helper function to check if a specific line is won by a player
+    def check_line_for_player(current_board, player, line):
+        return all(current_board[z][y][x] == player for z, y, x in line)
+
+    my_winning_moves = []
+    blocking_moves = []
+    empty_cells = []
+
+    # Iterate through all empty cells to find immediate wins or blocks
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                if board[z][y][x] == 0:
+                    empty_cells.append((z, y, x))
+
+                    # 1. Check for immediate win
+                    board[z][y][x] = 1  # Simulate placing my piece
+                    if any(check_line_for_player(board, 1, line) for line in ALL_WINNING_LINES):
+                        my_winning_moves.append((z, y, x))
+                    board[z][y][x] = 0  # Backtrack
+
+                    # 2. Check for opponent's immediate win (blocking move)
+                    board[z][y][x] = -1 # Simulate placing opponent's piece
+                    if any(check_line_for_player(board, -1, line) for line in ALL_WINNING_LINES):
+                        blocking_moves.append((z, y, x))
+                    board[z][y][x] = 0  # Backtrack
+
+    # Prioritize moves:
+    # 1. Take an immediate winning move
+    if my_winning_moves:
+        return my_winning_moves[0]
+
+    # 2. Block an opponent's immediate winning move
+    if blocking_moves:
+        return blocking_moves[0]
+
+    # 3. Choose from prioritized strategic moves
+    for move in PRIORITIZED_MOVES_UNIQUE:
+        if board[move[0]][move[1]][move[2]] == 0:
+            return move
+
+    # 4. Fallback: return the first available empty cell (should not happen if empty_cells is not empty)
+    if empty_cells:
+        return empty_cells[0]
+
+    # If the board is full and no moves are left (should not happen in a typical turn-based game)
+    return (0, 0, 0) # This indicates an error or a full board, but spec guarantees empty cell.
+```
+One final thought: the problem statement gives `board: list[list[list[int]]]`. My code uses a list of lists too. No need for `numpy` for efficiency here. I can remove the import `import numpy as np`. It's not used anyway.
+
+For my `PRIORITIZED_MOVES_UNIQUE` list: instead of dynamically generating and then removing duplicates, I can just hardcode the list if it's small and fixed.
+The distinction between `z in [0,2]` and `(z,y,x)` in the list comprehension for corners is subtle. `(z, y, x)` could be `(1,1,1)` if `z,y,x` are all `1`. My explicit check `if (z, y, x) != (1, 1, 1)` handles this, but it's cleaner to list them out explicitly or define center before corners.
+Let's make `PRIORITIZED_MOVES` explicitly ordered and unique to prevent any confusion.
+
+```python
+# No numpy needed.
+# import numpy as np
+
+# Pre-calculate all possible winning lines
+# A line is a list of 3 (z, y, x) coordinates.
+ALL_WINNING_LINES = []
+
+# 1. Lines parallel to axes (27 lines)
+# X-axis (rows)
+for z in range(3):
+    for y in range(3):
+        ALL_WINNING_LINES.append([(z, y, x) for x in range(3)])
+
+# Y-axis (columns)
+for z in range(3):
+    for x in range(3):
+        ALL_WINNING_LINES.append([(z, y, x) for y in range(3)])
+
+# Z-axis (pillars)
+for y in range(3):
+    for x in range(3):
+        ALL_WINNING_LINES.append([(z, y, x) for z in range(3)])
+
+# 2. 2D diagonals within planes (18 lines)
+# X-Y Plane (z fixed)
+for z in range(3):
+    ALL_WINNING_LINES.append([(z, i, i) for i in range(3)])
+    ALL_WINNING_LINES.append([(z, i, 2 - i) for i in range(3)])
+
+# X-Z Plane (y fixed)
+for y in range(3):
+    ALL_WINNING_LINES.append([(i, y, i) for i in range(3)])
+    ALL_WINNING_LINES.append([(i, y, 2 - i) for i in range(3)])
+
+# Y-Z Plane (x fixed)
+for x in range(3):
+    ALL_WINNING_LINES.append([(i, i, x) for i in range(3)])
+    ALL_WINNING_LINES.append([(i, 2 - i, x) for i in range(3)])
+
+# 3. 3D diagonals (4 lines)
+ALL_WINNING_LINES.append([(i, i, i) for i in range(3)])      # (0,0,0) -> (2,2,2)
+ALL_WINNING_LINES.append([(i, i, 2 - i) for i in range(3)])  # (0,0,2) -> (2,2,0)
+ALL_WINNING_LINES.append([(i, 2 - i, i) for i in range(3)])  # (0,2,0) -> (2,0,2)
+ALL_WINNING_LINES.append([(i, 2 - i, 2 - i) for i in range(3)]) # (0,2,2) -> (2,0,0)
+
+# Prioritized moves for non-win/block scenarios, ordered by strategic importance
+# Explicitly listing for clarity and guaranteed order.
+PRIORITIZED_MOVES = [
+    (1, 1, 1), # Center
+    # Corners
+    (0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+    (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2),
+    # Face Centers
+    (0, 1, 1), (1, 0, 1), (1, 1, 0), (1, 1, 2), (1, 2, 1), (2, 1, 1),
+    # Edge Centers
+    (0, 0, 1), (0, 1, 0), (0, 1, 2), (0, 2, 1),
+    (1, 0, 0), (1, 0, 2), (1, 2, 0), (1, 2, 2),
+    (2, 0, 1), (2, 1, 0), (2, 1, 2), (2, 2, 1)
+]
+```
+This final version for `PRIORITIZED_MOVES` is much cleaner.
+The logic handles the constraints and expected behavior.
+</thinking>
+<code>
+# No numpy needed for this solution as the board is a list of lists.
+
+# Pre-calculate all possible winning lines on a 3x3x3 board.
+# Each line is a list of 3 (z, y, x) coordinates that constitute a win.
+ALL_WINNING_LINES = []
+
+# 1. Lines parallel to axes (27 lines)
+# Lines along the X-axis (rows: z, y fixed, x varies)
+for z_coord in range(3):
+    for y_coord in range(3):
+        ALL_WINNING_LINES.append([(z_coord, y_coord, x_coord) for x_coord in range(3)])
+
+# Lines along the Y-axis (columns: z, x fixed, y varies)
+for z_coord in range(3):
+    for x_coord in range(3):
+        ALL_WINNING_LINES.append([(z_coord, y_coord, x_coord) for y_coord in range(3)])
+
+# Lines along the Z-axis (pillars: y, x fixed, z varies)
+for y_coord in range(3):
+    for x_coord in range(3):
+        ALL_WINNING_LINES.append([(z_coord, y_coord, x_coord) for z_coord in range(3)])
+
+# 2. 2D diagonals within planes (18 lines)
+# Diagonals on X-Y planes (z fixed, y and x vary)
+for z_coord in range(3):
+    ALL_WINNING_LINES.append([(z_coord, i, i) for i in range(3)])          # Diagonal: (z,0,0) -> (z,1,1) -> (z,2,2)
+    ALL_WINNING_LINES.append([(z_coord, i, 2 - i) for i in range(3)])      # Anti-diagonal: (z,0,2) -> (z,1,1) -> (z,2,0)
+
+# Diagonals on X-Z planes (y fixed, x and z vary)
+for y_coord in range(3):
+    ALL_WINNING_LINES.append([(i, y_coord, i) for i in range(3)])          # Diagonal: (0,y,0) -> (1,y,1) -> (2,y,2)
+    ALL_WINNING_LINES.append([(i, y_coord, 2 - i) for i in range(3)])      # Anti-diagonal: (0,y,2) -> (1,y,1) -> (2,y,0)
+
+# Diagonals on Y-Z planes (x fixed, y and z vary)
+for x_coord in range(3):
+    ALL_WINNING_LINES.append([(i, i, x_coord) for i in range(3)])          # Diagonal: (0,0,x) -> (1,1,x) -> (2,2,x)
+    ALL_WINNING_LINES.append([(i, 2 - i, x_coord) for i in range(3)])      # Anti-diagonal: (0,2,x) -> (1,1,x) -> (2,0,x)
+
+# 3. 3D diagonals (4 lines)
+ALL_WINNING_LINES.append([(i, i, i) for i in range(3)])          # Main 3D diagonal: (0,0,0) -> (1,1,1) -> (2,2,2)
+ALL_WINNING_LINES.append([(i, i, 2 - i) for i in range(3)])      # 3D diagonal: (0,0,2) -> (1,1,1) -> (2,2,0)
+ALL_WINNING_LINES.append([(i, 2 - i, i) for i in range(3)])      # 3D diagonal: (0,2,0) -> (1,1,1) -> (2,0,2)
+ALL_WINNING_LINES.append([(i, 2 - i, 2 - i) for i in range(3)])  # 3D diagonal: (0,2,2) -> (1,1,1) -> (2,0,0)
+
+# Prioritized moves for non-win/block scenarios, ordered by strategic importance.
+# This list is hand-ranked from most to least strategic.
+PRIORITIZED_MOVES = [
+    (1, 1, 1), # The absolute center, participates in the most winning lines.
+    # Corners (8 positions), next most strategic, participate in many lines.
+    (0, 0, 0), (0, 0, 2), (0, 2, 0), (0, 2, 2),
+    (2, 0, 0), (2, 0, 2), (2, 2, 0), (2, 2, 2),
+    # Face Centers (6 positions).
+    (0, 1, 1), (1, 0, 1), (1, 1, 0), (1, 1, 2), (1, 2, 1), (2, 1, 1),
+    # Edge Centers (12 positions).
+    (0, 0, 1), (0, 1, 0), (0, 1, 2), (0, 2, 1),
+    (1, 0, 0), (1, 0, 2), (1, 2, 0), (1, 2, 2),
+    (2, 0, 1), (2, 1, 0), (2, 1, 2), (2, 2, 1)
+]
+
+def policy(board: list[list[list[int]]]) -> tuple[int, int, int]:
+    """
+    Determines the next move for a 3x3x3 3D Tic Tac Toe game.
+
+    The AI's strategy is as follows:
+    1. Check for any immediate winning moves (place own piece to win).
+    2. Check for any immediate blocking moves (prevent opponent from winning).
+    3. If no immediate win/block, choose a move from a prioritized list of strategic positions
+       (center, then corners, then face centers, then edge centers).
+    4. As a last resort, pick the first available empty cell.
+
+    Args:
+        board: A 3x3x3 list of lists representing the game board.
+               - `0`: empty cell
+               - `1`: AI's piece
+               - `-1`: opponent's piece
+
+    Returns:
+        A tuple of three integers (z, y, x) indicating the chosen empty cell to play.
+    """
+
+    # Helper function to check if a specific line on the board is fully occupied by 'player'
+    # This means all three cells in the line belong to 'player' and are not empty or the opponent's.
+    def check_line_for_player(current_board: list[list[list[int]]], player: int, line: list[tuple[int, int, int]]) -> bool:
+        return all(current_board[z][y][x] == player for z, y, x in line)
+
+    my_winning_moves = []
+    blocking_moves = []
+    available_empty_cells = []
+
+    # Iterate through all cells on the board
+    for z in range(3):
+        for y in range(3):
+            for x in range(3):
+                if board[z][y][x] == 0:  # If the cell is empty
+                    current_move = (z, y, x)
+                    available_empty_cells.append(current_move)
+
+                    # --- Strategy Step 1: Check for immediate win for AI (player 1) ---
+                    # Temporarily place AI's piece on the board
+                    board[z][y][x] = 1
+                    # Check if this move results in a win for AI
+                    if any(check_line_for_player(board, 1, line) for line in ALL_WINNING_LINES):
+                        my_winning_moves.append(current_move)
+                    board[z][y][x] = 0  # Revert the board for the next check
+
+                    # --- Strategy Step 2: Check for immediate win for opponent (player -1) ---
+                    # Temporarily place opponent's piece on the board
+                    board[z][y][x] = -1
+                    # Check if this move would result in a win for the opponent
+                    if any(check_line_for_player(board, -1, line) for line in ALL_WINNING_LINES):
+                        blocking_moves.append(current_move)
+                    board[z][y][x] = 0  # Revert the board for the next check
+
+    # --- Execute prioritized moves ---
+    # 1. If AI can win, take the first winning move found.
+    if my_winning_moves:
+        return my_winning_moves[0]
+
+    # 2. If opponent can win, block their first winning move found.
+    if blocking_moves:
+        return blocking_moves[0]
+
+    # 3. If no immediate wins or blocks, try strategic moves.
+    #    Iterate through the pre-defined prioritized list of moves.
+    for move in PRIORITIZED_MOVES:
+        move_z, move_y, move_x = move
+        if board[move_z][move_y][move_x] == 0:  # If the strategic position is empty
+            return move
+
+    # 4. Fallback: If no strategic moves are available (e.g., all prioritized spots are taken),
+    #    choose the first available empty cell. This should only happen if the board is almost full
+    #    or specific board states.
+    if available_empty_cells:
+        return available_empty_cells[0]
+
+    # This case should ideally not be reached in a competitive game where a player is always
+    # expected to make a valid move on a non-full board. Returning an arbitrary move as a safeguard.
+    return (0, 0, 0)
+</code>

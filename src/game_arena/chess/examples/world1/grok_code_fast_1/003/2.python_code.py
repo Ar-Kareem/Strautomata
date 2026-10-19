@@ -1,0 +1,84 @@
+
+import random
+
+# Piece values for material evaluation (K not needed for captures)
+PIECE_VALUES = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+
+def get_target_square(move: str, to_play: str) -> str:
+    """
+    Extracts the target square from a chess move string.
+    Handles standard moves, captures, promotions, and castling.
+    """
+    if 'O-O-O' in move:
+        return 'c1' if to_play == 'white' else 'c8'
+    elif 'O-O' in move:
+        return 'g1' if to_play == 'white' else 'g8'
+    else:
+        # Search backwards for a-h followed by 1-8
+        for i in range(len(move) - 1, 0, -1):
+            if move[i].isdigit() and move[i-1].isalpha() and move[i-1].lower() in 'abcdefgh':
+                return move[i-1:i+1]
+        # If no match, assume malformed and default (though legal moves should be valid)
+        return ""
+
+def evaluate_move(move: str, pieces: dict[str, str], to_play: str) -> float:
+    """
+    Evaluates a move based on heuristics: mate, promotion, castling, check, capture value.
+    Returns a score for selection.
+    """
+    score = 0.0
+    target = get_target_square(move, to_play)
+    
+    # Checkmate: highest priority
+    if move.endswith('#'):
+        return 1000.0
+    
+    # Promotion: high priority, weighted by piece value
+    if '=' in move:
+        promo_piece = None
+        parts = move.split('=')
+        if len(parts) > 1:
+            promo_piece = parts[1].strip('+')
+            if promo_piece in PIECE_VALUES:
+                score += 90.0 + PIECE_VALUES[promo_piece]
+    
+    # Castling: medium priority for safety
+    if 'O-O' in move:
+        score += 30.0
+    
+    # Check: low-medium priority
+    if move.endswith('+'):
+        score += 20.0
+    
+    # Capture: priority based on captured piece value (only if 'x' present)
+    if 'x' in move and target in pieces:
+        captured_piece_type = pieces[target][1]  # Second char is piece type
+        if captured_piece_type in PIECE_VALUES:
+            score += PIECE_VALUES[captured_piece_type]
+    
+    return score
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """
+    Selects the best move based on heuristic evaluation.
+    Always returns a legal move.
+    """
+    if not legal_moves:
+        raise ValueError("No legal moves provided.")
+    
+    # Evaluate each move and keep track of the best
+    best_score = -1.0
+    best_move = legal_moves[0]  # Default to first
+    first_in_tie = best_move
+    
+    for move in legal_moves:
+        score = evaluate_move(move, pieces, to_play)
+        if score > best_score:
+            best_score = score
+            best_move = move
+            first_in_tie = move
+        elif score == best_score:
+            # Tie-breaker: keep the first one encountered
+            pass
+    
+    return best_move

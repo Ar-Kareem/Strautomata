@@ -1,0 +1,396 @@
+The strategy for this policy is a fast tactical checkers player with safe fallbacks:
+
+- It always generates legal moves and respects mandatory captures.
+- It searches a few plies ahead with alpha-beta pruning.
+- It supports multi-jump captures internally and returns the first step of the chosen legal move, which matches the required API.
+- It uses a board evaluation that values material, kings, promotion chances, center control, mobility, and basic safety.
+- If search is limited, it still strongly prefers captures, promotions, and safe moves.
+- It includes robust fallback logic so it always returns a legal move string even in unusual positions.
+
+<code>
+from typing import List, Tuple, Dict
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+BOARD_N = 8
+INF = 10**9
+
+def in_bounds(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+def playable(r: int, c: int) -> bool:
+    return in_bounds(r, c) and ((r + c) % 2 == 1)
+
+def clone_state(state):
+    return {
+        'my_men': set(state['my_men']),
+        'my_kings': set(state['my_kings']),
+        'opp_men': set(state['opp_men']),
+        'opp_kings': set(state['opp_kings']),
+        'color': state['color'],
+    }
+
+def piece_dirs(is_my_piece: bool, is_king: bool, color: str):
+    if is_king:
+        return [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+    if is_my_piece:
+        return [(-1, -1), (-1, 1)] if color == 'b' else [(1, -1), (1, 1)]
+    else:
+        return [(1, -1), (1, 1)] if color == 'b' else [(-1, -1), (-1, 1)]
+
+def occupied_map(state):
+    occ = {}
+    for p in state['my_men']:
+        occ[p] = ('my', 'man')
+    for p in state['my_kings']:
+        occ[p] = ('my', 'king')
+    for p in state['opp_men']:
+        occ[p] = ('opp', 'man')
+    for p in state['opp_kings']:
+        occ[p] = ('opp', 'king')
+    return occ
+
+def promote_if_needed(side: str, kind: str, pos: Tuple[int, int], color: str):
+    if kind == 'king':
+        return 'king'
+    r, _ = pos
+    if side == 'my':
+        if color == 'b' and r == 0:
+            return 'king'
+        if color == 'w' and r == 7:
+            return 'king'
+    else:
+        if color == 'b' and r == 7:
+            return 'king'
+        if color == 'w' and r == 0:
+            return 'king'
+    return kind
+
+def remove_piece(state, side: str, kind: str, pos: Tuple[int, int]):
+    if side == 'my':
+        if kind == 'man':
+            state['my_men'].discard(pos)
+        else:
+            state['my_kings'].discard(pos)
+    else:
+        if kind == 'man':
+            state['opp_men'].discard(pos)
+        else:
+            state['opp_kings'].discard(pos)
+
+def add_piece(state, side: str, kind: str, pos: Tuple[int, int]):
+    if side == 'my':
+        if kind == 'man':
+            state['my_men'].add(pos)
+        else:
+            state['my_kings'].add(pos)
+    else:
+        if kind == 'man':
+            state['opp_men'].add(pos)
+        else:
+            state['opp_kings'].add(pos)
+
+def enemy_of(side: str) -> str:
+    return 'opp' if side == 'my' else 'my'
+
+def get_positions(state, side: str):
+    if side == 'my':
+        return [(p, 'man') for p in state['my_men']] + [(p, 'king') for p in state['my_kings']]
+    else:
+        return [(p, 'man') for p in state['opp_men']] + [(p, 'king') for p in state['opp_kings']]
+
+def gen_simple_moves_for_piece(state, side: str, pos: Tuple[int, int], kind: str):
+    occ = occupied_map(state)
+    moves = []
+    dirs = piece_dirs(side == 'my', kind == 'king', state['color'])
+    r, c = pos
+    for dr, dc in dirs:
+        nr, nc = r + dr, c + dc
+        if playable(nr, nc) and (nr, nc) not in occ:
+            moves.append((pos, (nr, nc)))
+    return moves
+
+def gen_captures_from_piece(state, side: str, pos: Tuple[int, int], kind: str):
+    results = []
+    occ = occupied_map(state)
+    dirs = piece_dirs(side == 'my', kind == 'king', state['color'])
+    r, c = pos
+    found = False
+    for dr, dc in dirs:
+        mr, mc = r + dr, c + dc
+        lr, lc = r + 2 * dr, c + 2 * dc
+        if not playable(lr, lc):
+            continue
+        if (lr, lc) in occ:
+            continue
+        if (mr, mc) in occ and occ[(mr, mc)][0] == enemy_of(side):
+            found = True
+            enemy_side, enemy_kind = occ[(mr, mc)]
+            ns = clone_state(state)
+            remove_piece(ns, side, kind, pos)
+            remove_piece(ns, enemy_side, enemy_kind, (mr, mc))
+            new_kind = promote_if_needed(side, kind, (lr, lc), ns['color'])
+            add_piece(ns, side, new_kind, (lr, lc))
+            cont = gen_captures_from_piece(ns, side, (lr, lc), new_kind)
+            if cont:
+                for seq in cont:
+                    results.append([pos] + seq)
+            else:
+                results.append([pos, (lr, lc)])
+    return results if found else []
+
+def gen_all_moves(state, side: str):
+    capture_seqs = []
+    for pos, kind in get_positions(state, side):
+        seqs = gen_captures_from_piece(state, side, pos, kind)
+        for s in seqs:
+            capture_seqs.append(s)
+    if capture_seqs:
+        return {'captures': True, 'moves': capture_seqs}
+    simple = []
+    for pos, kind in get_positions(state, side):
+        simple.extend(gen_simple_moves_for_piece(state, side, pos, kind))
+    return {'captures': False, 'moves': simple}
+
+def apply_move(state, side: str, move):
+    ns = clone_state(state)
+    if isinstance(move[0], tuple) and len(move) == 2 and isinstance(move[1], tuple) and isinstance(move[0][0], int):
+        frm, to = move
+        occ = occupied_map(ns)
+        side0, kind = occ[frm]
+        remove_piece(ns, side0, kind, frm)
+        new_kind = promote_if_needed(side0, kind, to, ns['color'])
+        add_piece(ns, side0, new_kind, to)
+        return ns
+    seq = move
+    start = seq[0]
+    occ = occupied_map(ns)
+    side0, kind = occ[start]
+    remove_piece(ns, side0, kind, start)
+    cur = start
+    for nxt in seq[1:]:
+        if abs(nxt[0] - cur[0]) == 2:
+            mr = (cur[0] + nxt[0]) // 2
+            mc = (cur[1] + nxt[1]) // 2
+            occ2 = occupied_map(ns)
+            eside, ekind = occ2[(mr, mc)]
+            remove_piece(ns, eside, ekind, (mr, mc))
+        cur = nxt
+        kind = promote_if_needed(side0, kind, cur, ns['color'])
+    add_piece(ns, side0, kind, cur)
+    return ns
+
+def flip_perspective(state):
+    return {
+        'my_men': set(state['opp_men']),
+        'my_kings': set(state['opp_kings']),
+        'opp_men': set(state['my_men']),
+        'opp_kings': set(state['my_kings']),
+        'color': 'w' if state['color'] == 'b' else 'b',
+    }
+
+def advancement_score(pos, side, color):
+    r, _ = pos
+    if side == 'my':
+        return (7 - r) if color == 'b' else r
+    else:
+        return r if color == 'b' else (7 - r)
+
+def is_edge(pos):
+    r, c = pos
+    return r in (0, 7) or c in (0, 7)
+
+def evaluate(state):
+    my_men = len(state['my_men'])
+    my_kings = len(state['my_kings'])
+    opp_men = len(state['opp_men'])
+    opp_kings = len(state['opp_kings'])
+
+    score = 0
+    score += 100 * (my_men - opp_men)
+    score += 175 * (my_kings - opp_kings)
+
+    for p in state['my_men']:
+        score += 8 * advancement_score(p, 'my', state['color'])
+        if 2 <= p[0] <= 5 and 2 <= p[1] <= 5:
+            score += 4
+        if is_edge(p):
+            score += 2
+    for p in state['opp_men']:
+        score -= 8 * advancement_score(p, 'opp', state['color'])
+        if 2 <= p[0] <= 5 and 2 <= p[1] <= 5:
+            score -= 4
+        if is_edge(p):
+            score -= 2
+
+    for p in state['my_kings']:
+        if 2 <= p[0] <= 5 and 2 <= p[1] <= 5:
+            score += 6
+    for p in state['opp_kings']:
+        if 2 <= p[0] <= 5 and 2 <= p[1] <= 5:
+            score -= 6
+
+    my_moves = gen_all_moves(state, 'my')
+    opp_moves = gen_all_moves(state, 'opp')
+    score += 3 * (len(my_moves['moves']) - len(opp_moves['moves']))
+
+    if not my_moves['moves']:
+        return -INF // 2
+    if not opp_moves['moves']:
+        return INF // 2
+
+    if my_moves['captures']:
+        score += 20
+    if opp_moves['captures']:
+        score -= 20
+
+    return score
+
+def terminal_value(state):
+    my_moves = gen_all_moves(state, 'my')
+    opp_moves = gen_all_moves(state, 'opp')
+    if not my_moves['moves']:
+        return -INF // 2
+    if not opp_moves['moves']:
+        return INF // 2
+    return None
+
+def move_order_key(state, side, move):
+    if isinstance(move[0], tuple) and len(move) == 2 and isinstance(move[0][0], int):
+        frm, to = move
+        promo = 0
+        occ = occupied_map(state)
+        _, kind = occ[frm]
+        if kind == 'man':
+            nk = promote_if_needed(side, kind, to, state['color'])
+            if nk == 'king':
+                promo = 1
+        center = 1 if 2 <= to[0] <= 5 and 2 <= to[1] <= 5 else 0
+        return (0, promo, center)
+    else:
+        seq = move
+        captures = len(seq) - 1
+        end = seq[-1]
+        occ = occupied_map(state)
+        _, kind = occ[seq[0]]
+        nk = kind
+        cur = seq[0]
+        for nxt in seq[1:]:
+            nk = promote_if_needed(side, nk, nxt, state['color'])
+            cur = nxt
+        promo = 1 if kind == 'man' and nk == 'king' else 0
+        center = 1 if 2 <= end[0] <= 5 and 2 <= end[1] <= 5 else 0
+        return (captures, promo, center)
+
+def alphabeta(state, depth, alpha, beta):
+    tv = terminal_value(state)
+    if tv is not None:
+        return tv, None
+    if depth == 0:
+        return evaluate(state), None
+
+    legal = gen_all_moves(state, 'my')
+    moves = legal['moves']
+    moves = sorted(moves, key=lambda m: move_order_key(state, 'my', m), reverse=True)
+
+    best_move = moves[0]
+    best_val = -INF
+
+    for mv in moves:
+        child = apply_move(state, 'my', mv)
+        opp_state = flip_perspective(child)
+        val, _ = alphabeta_min(opp_state, depth - 1, alpha, beta)
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if best_val > alpha:
+            alpha = best_val
+        if alpha >= beta:
+            break
+    return best_val, best_move
+
+def alphabeta_min(state, depth, alpha, beta):
+    tv = terminal_value(state)
+    if tv is not None:
+        return tv, None
+    if depth == 0:
+        return evaluate(state), None
+
+    legal = gen_all_moves(state, 'my')
+    moves = legal['moves']
+    moves = sorted(moves, key=lambda m: move_order_key(state, 'my', m), reverse=True)
+
+    best_move = moves[0]
+    best_val = -INF
+
+    for mv in moves:
+        child = apply_move(state, 'my', mv)
+        opp_state = flip_perspective(child)
+        val, _ = alphabeta(state=opp_state, depth=depth - 1, alpha=alpha, beta=beta)
+        val = -val
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if best_val > alpha:
+            alpha = best_val
+        if alpha >= beta:
+            break
+    return best_val, best_move
+
+def choose_depth(state):
+    pieces = len(state['my_men']) + len(state['my_kings']) + len(state['opp_men']) + len(state['opp_kings'])
+    if pieces <= 6:
+        return 8
+    if pieces <= 10:
+        return 7
+    if pieces <= 16:
+        return 6
+    return 5
+
+def seq_to_api_move(seq):
+    return (seq[0], seq[1])
+
+def legal_fallback(state):
+    legal = gen_all_moves(state, 'my')
+    moves = legal['moves']
+    if legal['captures']:
+        moves = sorted(moves, key=lambda m: move_order_key(state, 'my', m), reverse=True)
+        return seq_to_api_move(moves[0])
+    else:
+        best = None
+        best_key = None
+        for mv in moves:
+            k = move_order_key(state, 'my', mv)
+            if best is None or k > best_key:
+                best = mv
+                best_key = k
+        return best
+
+def policy(my_men, my_kings, opp_men, opp_kings, color) -> tuple[tuple[int, int], tuple[int, int]]:
+    state = {
+        'my_men': set(tuple(x) for x in my_men),
+        'my_kings': set(tuple(x) for x in my_kings),
+        'opp_men': set(tuple(x) for x in opp_men),
+        'opp_kings': set(tuple(x) for x in opp_kings),
+        'color': color,
+    }
+
+    legal = gen_all_moves(state, 'my')
+    if not legal['moves']:
+        all_my = list(state['my_men']) + list(state['my_kings'])
+        if all_my:
+            p = all_my[0]
+            return (p, p)
+        return ((0, 1), (0, 1))
+
+    depth = choose_depth(state)
+    try:
+        _, best = alphabeta(state, depth, -INF, INF)
+        if best is None:
+            return legal_fallback(state)
+        if legal['captures']:
+            return seq_to_api_move(best)
+        return best
+    except Exception:
+        return legal_fallback(state)
+</code>

@@ -1,0 +1,649 @@
+<thinking>
+We need to implement a policy for Kalah. This is a turn-based game with potential extra moves and captures. The goal is to maximize our store count.
+
+I should design a strategy that considers:
+1. Immediate extra moves (landing in our store)
+2. Captures (landing in an empty house with opposite having seeds)
+3. Setting up future moves
+4. Preventing opponent's captures
+5. Endgame considerations
+
+Since we have only 1 second, we can implement a minimax with alpha-beta pruning or a heuristic evaluation. However, given the small state space (6 moves max per turn), we could look ahead several moves.
+
+We need a function that given a state (you, opponent) returns the best move index (0-5). The game state can be represented as two lists of 7 ints.
+
+Let me think about the algorithm:
+
+1. First, check for immediate wins: if a move leads to capturing many seeds or gives an extra move, that might be good.
+2. We can implement a simple heuristic evaluation: 
+   - Score = you[6] - opponent[6] + sum(you[0:5]) * 0.1 - sum(opponent[0:5]) * 0.1 (giving some weight to seeds in houses because they're potential future points)
+   - But we need to be careful: seeds in houses can be captured.
+
+Alternatively, we can use a minimax search with depth limited by time. Since we have 1 second, we can probably search 5-6 plies deep with alpha-beta pruning.
+
+We need to implement:
+- A function to apply a move and return the new state and whether we get an extra move.
+- A function to check if the game ended.
+- An evaluation function for leaf nodes.
+
+Let me design:
+
+State representation: I'll keep as tuple of two tuples for immutability in search.
+
+Move application: 
+  Input: state (you_list, opponent_list), move_index (0-5)
+  Output: new_state, extra_move (boolean)
+
+Procedure:
+  1. Make copies of you and opponent lists.
+  2. Take seeds = you[move_index]; set you[move_index] = 0.
+  3. Start distributing:
+     current_player = 'you', index = move_index + 1
+     While seeds > 0:
+        if current_player == 'you':
+           if index == 6: (store) -> add seed, index += 1
+           else if index < 6: (house) -> add seed, index += 1
+           else: (reached end of your side) switch to opponent, index = 0
+        else: # opponent
+           if index == 6: (opponent store) -> skip, switch to you, index = 0
+           else: (opponent house) -> add seed, index += 1
+        seeds -= 1
+        if seeds == 0:
+           last_position = (current_player, index-1) or careful...
+  4. Check last seed:
+     If last in your store: extra_move = True
+     Else if last in your house (0-5) and that house was empty before (i.e., now has 1) and opponent's opposite house has >0:
+        capture: add you[house] + opponent[opposite] to your store, set both to 0.
+  5. Check if game ended: if all you[0:5] == 0 or all opponent[0:5] == 0:
+        move all remaining seeds to respective stores.
+  6. Return new_state, extra_move.
+
+For evaluation function: 
+  I'll use: 
+    score = you[6] - opponent[6] + (sum(you[0:5]) - sum(opponent[0:5])) * 0.01
+  This values seeds in houses slightly because they're potential points, but store is much more important.
+
+For minimax:
+  We need to handle extra moves: if extra_move, the same player moves again.
+  So at a node, if it's our turn, we consider all legal moves. For each move, we get new_state and extra_move flag. If extra_move, then the next turn is still ours (so we continue with same player). Else, switch player.
+
+We can implement a recursive function:
+  minimax(state, depth, alpha, beta, maximizingPlayer, player_to_move)
+  where player_to_move is either 'you' or 'opponent'.
+
+But careful: the perspective is always from "you" as the original player. So when evaluating, we always compute score from "you"'s perspective.
+
+Alternatively, we can always have state represented as (current_player_state, other_player_state) where current_player is the one to move. That might simplify.
+
+Let me design the search with alpha-beta:
+
+We'll have a function evaluate(state) that returns a score from the perspective of the original player (you). But we need to know which side is which. We can always store state as (you_state, opponent_state) and pass a flag indicating whose turn it is.
+
+I'll implement:
+
+def minimax(you_state, opponent_state, depth, alpha, beta, is_max_turn, player_to_move):
+    # player_to_move: 'you' or 'opponent'
+    # is_max_turn: True if the current player is the maximizing player (original player)
+
+    if depth == 0 or game_over(you_state, opponent_state):
+        return evaluate(you_state, opponent_state)
+
+    if (player_to_move == 'you') == is_max_turn:
+        # maximizing player's turn (either original player when it's 'you' turn, or opponent when it's 'opponent' turn but we're minimizing? Wait.
+        # Actually, we want to always maximize from original player's perspective. So:
+        # If player_to_move is 'you', then it's maximizing (because original player is 'you').
+        # If player_to_move is 'opponent', then it's minimizing.
+        # So we don't need is_max_turn; we can derive from player_to_move.
+        # Let's simplify: we always call with maximizing=True when player_to_move == 'you', and maximizing=False when player_to_move == 'opponent'.
+        # So we can have a parameter maximizing.
+
+But we need to handle extra moves: if a move results in extra move, the player_to_move doesn't change.
+
+Alright, let me implement step by step.
+
+We'll write helper functions:
+
+def apply_move(you, opponent, move_index):
+    # returns new_you, new_opponent, extra_move (bool), game_ended (bool)
+
+def get_legal_moves(player_state):
+    return [i for i in range(6) if player_state[i] > 0]
+
+def game_over(you, opponent):
+    return all(s == 0 for s in you[:6]) or all(s == 0 for s in opponent[:6])
+
+def evaluate(you, opponent):
+    # Heuristic score from your perspective
+    store_diff = you[6] - opponent[6]
+    # Potential seeds: seeds in your houses minus seeds in opponent houses (weighted less)
+    potential = (sum(you[:6]) - sum(opponent[:6])) * 0.01
+    return store_diff + potential
+
+Now for minimax: we'll do depth-limited search with iterative deepening to use time effectively, but given 1 second we can set a fixed depth.
+
+We need to choose depth: with branching factor up to 6, depth 8 gives 6^8 = 1.6 million nodes, which might be okay with alpha-beta pruning and efficient move generation.
+
+But we also need to consider that extra moves reduce effective branching (since you get to move again). This could increase depth.
+
+Alternatively, we can use a simpler heuristic for now and implement a basic strategy with lookahead.
+
+Given the time, I'll implement a minimax with depth 8 and iterative deepening with time limit.
+
+But note: the policy function must return quickly. We can't use too much time.
+
+Maybe we can implement a simpler but effective strategy:
+
+1. Always take an extra move if available (land in store).
+2. Always make a capture if possible (land in empty house with opposite non-empty).
+3. Otherwise, choose the move that maximizes the number of seeds sown into our store or that sets up future captures.
+
+But we need to be careful not to give opponent captures.
+
+Let me think: we can implement a one-ply lookahead with evaluation function.
+
+Actually, I'll implement a minimax with depth 5 (which should be fast enough) and alpha-beta.
+
+We'll need to handle the turn switching correctly.
+
+Let me write the algorithm:
+
+def minimax(you, opponent, depth, alpha, beta, maximizing):
+    # maximizing is True if it's the original player's turn (you), False if opponent's turn
+    if depth == 0 or game_over(you, opponent):
+        return evaluate(you, opponent)
+
+    if maximizing:
+        # it's your turn
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        if not legal_moves:
+            # should not happen because policy is never called without legal move
+            return evaluate(you, opponent)
+        best_value = -float('inf')
+        for move in legal_moves:
+            new_you, new_opp, extra, ended = apply_move(you, opponent, move)
+            if ended:
+                # game ended, evaluate terminal state
+                val = evaluate(new_you, new_opp)
+            else:
+                if extra:
+                    # same player moves again
+                    val = minimax(new_you, new_opp, depth-1, alpha, beta, True)
+                else:
+                    val = minimax(new_opp, new_you, depth-1, alpha, beta, False)  # switch perspective: now opponent's turn, so minimizing
+            if val > best_value:
+                best_value = val
+            alpha = max(alpha, val)
+            if beta <= alpha:
+                break
+        return best_value
+    else:
+        # opponent's turn (minimizing)
+        legal_moves = [i for i in range(6) if opponent[i] > 0]  # opponent's houses
+        if not legal_moves:
+            return evaluate(you, opponent)
+        best_value = float('inf')
+        for move in legal_moves:
+            # Note: apply_move from opponent's perspective. We have to swap arguments.
+            new_opp, new_you, extra, ended = apply_move(opponent, you, move)  # careful: we pass opponent as first, you as second because apply_move expects (player_to_move_state, other_state)
+            if ended:
+                val = evaluate(new_you, new_opp)  # we need to pass in correct order: you, opponent
+            else:
+                if extra:
+                    # opponent gets another move, so still minimizing
+                    val = minimax(new_you, new_opp, depth-1, alpha, beta, False)
+                else:
+                    val = minimax(new_you, new_opp, depth-1, alpha, beta, True)  # switch to your turn
+            if val < best_value:
+                best_value = val
+            beta = min(beta, val)
+            if beta <= alpha:
+                break
+        return best_value
+
+But this is a bit messy because we swap perspectives. Alternatively, we can always keep state as (current_player, other_player) and have a function that makes a move for the current player.
+
+Let me implement apply_move in a way that it takes (current_player_state, other_player_state, move_index) and returns (new_current_state, new_other_state, extra_move, ended). This way, we don't need to swap.
+
+Then in minimax, we always call with (current_state, other_state) where current_state is the player to move.
+
+So:
+
+def minimax(current_state, other_state, depth, alpha, beta, maximizing):
+    # current_state is the state of the player to move
+    # maximizing is True if the player to move is the original player (you), False if opponent
+    if depth == 0 or game_over(current_state, other_state):
+        # if game over, we need to evaluate from original player's perspective.
+        # But we don't know which is you and which is opponent.
+        # We need to pass that information: maybe we can pass you_state and opponent_state separately.
+        # So maybe we should not use this representation.
+
+Let's go back: we'll keep the state as (you_state, opponent_state) and a flag whose turn it is.
+
+We can do:
+
+def minimax(you, opponent, depth, alpha, beta, player_to_move):
+    # player_to_move: 'you' or 'opponent'
+    if depth == 0 or game_over(you, opponent):
+        return evaluate(you, opponent)
+
+    if player_to_move == 'you':
+        legal_moves = [i for i in range(6) if you[i] > 0]
+        best_value = -float('inf')
+        for move in legal_moves:
+            new_you, new_opp, extra, ended = apply_move_you(you, opponent, move)
+            if ended:
+                val = evaluate(new_you, new_opp)
+            else:
+                if extra:
+                    next_player = 'you'
+                else:
+                    next_player = 'opponent'
+                val = minimax(new_you, new_opp, depth-1, alpha, beta, next_player)
+            if val > best_value:
+                best_value = val
+            alpha = max(alpha, val)
+            if beta <= alpha:
+                break
+        return best_value
+    else:  # opponent's turn
+        legal_moves = [i for i in range(6) if opponent[i] > 0]
+        best_value = float('inf')
+        for move in legal_moves:
+            new_opp, new_you, extra, ended = apply_move_opponent(opponent, you, move)
+            if ended:
+                val = evaluate(new_you, new_opp)
+            else:
+                if extra:
+                    next_player = 'opponent'
+                else:
+                    next_player = 'you'
+                val = minimax(new_you, new_opp, depth-1, alpha, beta, next_player)
+            if val < best_value:
+                best_value = val
+            beta = min(beta, val)
+            if beta <= alpha:
+                break
+        return best_value
+
+We need two apply_move functions, one for each perspective. But we can write one generic function that takes the state of the player making the move and the opponent state, and returns new states.
+
+Let me implement apply_move(player, opponent, move_index) that assumes player is the one making the move. Then we can use it for both.
+
+Now, for the policy function, we need to choose the move that leads to the highest minimax value.
+
+We'll do iterative deepening with time limit. But to keep it simple, we can set a fixed depth of 8.
+
+Let me implement:
+
+- apply_move(player, opponent, move_index)
+- evaluate(you, opponent)
+- minimax as above with depth 8
+- policy: for each legal move, compute minimax value (with depth-1 because we already made the move) and pick the max.
+
+But we need to be efficient: we can call minimax for each move with depth 7.
+
+Given time constraints, I'll implement depth 6.
+
+Let me write the code.
+
+Edge cases: 
+- When a move captures, we need to check if the house was empty before the last seed. We can track the state before distribution.
+
+Implementation details for apply_move:
+
+We'll copy the lists, then simulate sowing.
+
+Pseudo:
+
+def apply_move(player, opponent, move):
+    player = list(player)
+    opponent = list(opponent)
+    seeds = player[move]
+    player[move] = 0
+    index = move + 1
+    current = 'player'
+    last_house = None
+    last_was_empty = None  # we need to remember if the house that received the last seed was empty before
+    # We need to track for each house its state before the last seed is placed.
+    # But we only care about the house where the last seed lands if it's a player's house (0-5).
+    # We can record the count of that house before the last seed is placed.
+    # However, we don't know which house will be last until we finish.
+    # We can simulate step by step and at the end check.
+    # Alternatively, we can keep a variable that stores the state of the board before each seed placement? Too heavy.
+    # Since we only need to know if the house was empty before the last seed, we can record the count of the house that will receive the last seed before we place it.
+    # But we don't know which house that is until we place the last seed.
+    # So we need to simulate and when seeds == 1 (last seed), we note the current house and its count before placing.
+    # Let's do that.
+
+    while seeds > 0:
+        if current == 'player':
+            if index == 6:  # store
+                if seeds == 1:
+                    # last seed going into store
+                    last_house = ('player', 6)
+                player[6] += 1
+                seeds -= 1
+                if seeds == 0:
+                    break
+                index += 1
+                if index > 6:  # went past store, switch to opponent
+                    current = 'opponent'
+                    index = 0
+            else:  # house 0-5
+                if seeds == 1:
+                    # last seed going into this house
+                    last_house = ('player', index)
+                    last_was_empty = (player[index] == 0)
+                player[index] += 1
+                seeds -= 1
+                if seeds == 0:
+                    break
+                index += 1
+                if index == 6:  # reached store, continue
+                    continue
+                if index > 5:  # went past house 5, go to store next iteration
+                    index = 6
+        else:  # current == 'opponent'
+            if index == 6:  # opponent's store, skip
+                current = 'player'
+                index = 0
+                continue
+            else:  # opponent house 0-5
+                if seeds == 1:
+                    last_house = ('opponent', index)
+                    last_was_empty = (opponent[index] == 0)
+                opponent[index] += 1
+                seeds -= 1
+                if seeds == 0:
+                    break
+                index += 1
+                if index == 6:  # reached opponent store, skip and switch
+                    current = 'player'
+                    index = 0
+                    continue
+
+    # Now check last seed
+    extra_move = False
+    if last_house[0] == 'player' and last_house[1] == 6:
+        extra_move = True
+    elif last_house[0] == 'player' and 0 <= last_house[1] <= 5:
+        if last_was_empty and player[last_house[1]] == 1:  # now has 1 (the last seed)
+            opposite = 5 - last_house[1]
+            if opponent[opposite] > 0:
+                # capture
+                player[6] += player[last_house[1]] + opponent[opposite]
+                player[last_house[1]] = 0
+                opponent[opposite] = 0
+
+    # Check game ended
+    ended = False
+    if all(s == 0 for s in player[:6]) or all(s == 0 for s in opponent[:6]):
+        # move remaining seeds to respective stores
+        player[6] += sum(player[:6])
+        opponent[6] += sum(opponent[:6])
+        for i in range(6):
+            player[i] = 0
+            opponent[i] = 0
+        ended = True
+
+    return tuple(player), tuple(opponent), extra_move, ended
+
+Now, we need to implement minimax with this.
+
+But note: when we call apply_move for opponent, we pass (opponent, you) as (player, opponent). So the returned tuple is (new_opponent, new_you). So we need to swap back.
+
+Let me write the code accordingly.
+
+Now for policy: we'll do a depth of 6 (lookahead 6 plies). We'll evaluate each legal move with minimax depth 5 (since we already made the move).
+
+We'll pick the move with highest score. If multiple, pick the first.
+
+We'll also add a simple heuristic for tie-breaking: prefer moves that sow more seeds, or that are closer to store? But minimax should handle.
+
+Given time, I'll implement.
+
+Potential performance issues: copying lists and tuples many times. But depth 6 with branching factor ~6 gives ~ 6^6 = 46656 nodes, each node doing a move simulation (which is O(seeds) but seeds at most 48? Actually each house max seeds unknown but limited by total seeds). Should be okay within 1 second.
+
+We can optimize by using a global transposition table, but not necessary.
+
+Let me write the code.
+
+One more thing: we need to handle the case where a move leads to extra move, so the depth is effectively deeper. But our depth limit counts each move as one ply, so extra move uses another ply.
+
+Now, let's implement.
+
+We'll need to import time for iterative deepening with time limit? But we can just set fixed depth.
+
+I'll set depth = 8.
+
+But to be safe, we can do iterative deepening with a time limit of 0.9 seconds.
+
+We'll implement:
+
+start_time = time.time()
+best_move = None
+for depth in range(1, 20):
+    move_scores = {}
+    for move in legal_moves:
+        new_you, new_opp, extra, ended = apply_move(you, opponent, move)
+        if ended:
+            score = evaluate(new_you, new_opp)
+        else:
+            if extra:
+                score = minimax(new_you, new_opp, depth-1, -inf, inf, 'you')
+            else:
+                score = minimax(new_you, new_opp, depth-1, -inf, inf, 'opponent')
+        move_scores[move] = score
+    # find best move
+    best_move = max(move_scores, key=move_scores.get)
+    if time.time() - start_time > 0.9:
+        break
+
+But we need to modify minimax to use the same apply_move function and handle player_to_move.
+
+Let me write the complete code.
+
+We'll define helper functions inside policy to avoid global namespace.
+
+Okay, let's code.
+</thinking>
+
+<code>
+import time
+import sys
+
+def policy(you: list[int], opponent: list[int]) -> int:
+    """
+    Returns the index (0-5) of a non-empty house to play.
+    Uses a minimax search with alpha-beta pruning and iterative deepening.
+    """
+    # Helper functions
+    def apply_move(player_state, opponent_state, move_idx):
+        """
+        Apply a move for the player whose state is given first.
+        Returns (new_player_state, new_opponent_state, extra_move, game_ended)
+        All states are tuples of 7 ints.
+        """
+        player = list(player_state)
+        opponent = list(opponent_state)
+        
+        seeds = player[move_idx]
+        if seeds == 0:
+            raise ValueError("Cannot move from empty house")
+        
+        player[move_idx] = 0
+        idx = move_idx + 1
+        current = 'player'
+        
+        # Variables to remember where the last seed lands and if that house was empty before
+        last_house = None
+        last_was_empty = False
+        
+        while seeds > 0:
+            if current == 'player':
+                if idx == 6:  # player's store
+                    if seeds == 1:
+                        last_house = ('player', 6)
+                    player[6] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        break
+                    idx += 1
+                    if idx > 6:  # wrap to opponent
+                        current = 'opponent'
+                        idx = 0
+                else:  # player's house 0-5
+                    if seeds == 1:
+                        last_house = ('player', idx)
+                        last_was_empty = (player[idx] == 0)
+                    player[idx] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        break
+                    idx += 1
+                    if idx == 6:  # next is store
+                        continue
+                    if idx > 5:  # wrap to store
+                        idx = 6
+            else:  # current == 'opponent'
+                if idx == 6:  # opponent's store -> skip
+                    current = 'player'
+                    idx = 0
+                    continue
+                else:  # opponent's house 0-5
+                    if seeds == 1:
+                        last_house = ('opponent', idx)
+                        last_was_empty = (opponent[idx] == 0)
+                    opponent[idx] += 1
+                    seeds -= 1
+                    if seeds == 0:
+                        break
+                    idx += 1
+                    if idx == 6:  # reached opponent store -> wrap to player
+                        current = 'player'
+                        idx = 0
+                        continue
+        
+        extra_move = False
+        # Check for extra move
+        if last_house and last_house[0] == 'player' and last_house[1] == 6:
+            extra_move = True
+        # Check for capture
+        elif last_house and last_house[0] == 'player' and 0 <= last_house[1] <= 5:
+            if last_was_empty and player[last_house[1]] == 1:
+                opposite = 5 - last_house[1]
+                if opponent[opposite] > 0:
+                    player[6] += player[last_house[1]] + opponent[opposite]
+                    player[last_house[1]] = 0
+                    opponent[opposite] = 0
+        
+        # Check game over
+        ended = False
+        if all(s == 0 for s in player[:6]) or all(s == 0 for s in opponent[:6]):
+            player[6] += sum(player[:6])
+            opponent[6] += sum(opponent[:6])
+            for i in range(6):
+                player[i] = 0
+                opponent[i] = 0
+            ended = True
+        
+        return tuple(player), tuple(opponent), extra_move, ended
+    
+    def evaluate(you_state, opp_state):
+        """Heuristic score from your perspective."""
+        store_diff = you_state[6] - opp_state[6]
+        # Potential seeds (weighted lightly)
+        potential = (sum(you_state[:6]) - sum(opp_state[:6])) * 0.01
+        return store_diff + potential
+    
+    def game_over(you_state, opp_state):
+        return all(s == 0 for s in you_state[:6]) or all(s == 0 for s in opp_state[:6])
+    
+    # Minimax with alpha‑beta pruning
+    def minimax(you_state, opp_state, depth, alpha, beta, player_to_move):
+        """Returns the evaluation score from your perspective."""
+        if depth == 0 or game_over(you_state, opp_state):
+            return evaluate(you_state, opp_state)
+        
+        if player_to_move == 'you':
+            legal_moves = [i for i in range(6) if you_state[i] > 0]
+            if not legal_moves:
+                return evaluate(you_state, opp_state)
+            best = -float('inf')
+            for move in legal_moves:
+                new_you, new_opp, extra, ended = apply_move(you_state, opp_state, move)
+                if ended:
+                    val = evaluate(new_you, new_opp)
+                else:
+                    if extra:
+                        next_player = 'you'
+                    else:
+                        next_player = 'opponent'
+                    val = minimax(new_you, new_opp, depth-1, alpha, beta, next_player)
+                if val > best:
+                    best = val
+                alpha = max(alpha, val)
+                if beta <= alpha:
+                    break
+            return best
+        else:  # opponent's turn
+            legal_moves = [i for i in range(6) if opp_state[i] > 0]
+            if not legal_moves:
+                return evaluate(you_state, opp_state)
+            best = float('inf')
+            for move in legal_moves:
+                # Apply move from opponent's perspective
+                new_opp, new_you, extra, ended = apply_move(opp_state, you_state, move)
+                if ended:
+                    val = evaluate(new_you, new_opp)
+                else:
+                    if extra:
+                        next_player = 'opponent'
+                    else:
+                        next_player = 'you'
+                    val = minimax(new_you, new_opp, depth-1, alpha, beta, next_player)
+                if val < best:
+                    best = val
+                beta = min(beta, val)
+                if beta <= alpha:
+                    break
+            return best
+    
+    # Convert to tuples for immutability in search
+    you_state = tuple(you)
+    opp_state = tuple(opponent)
+    
+    legal_moves = [i for i in range(6) if you[i] > 0]
+    
+    # If only one move, return it immediately
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Iterative deepening with time limit
+    start_time = time.time()
+    time_limit = 0.95  # seconds
+    best_move = legal_moves[0]  # default
+    max_depth = 1
+    
+    while time.time() - start_time < time_limit and max_depth <= 20:
+        depth = max_depth
+        max_depth += 1
+        move_scores = {}
+        for move in legal_moves:
+            new_you, new_opp, extra, ended = apply_move(you_state, opp_state, move)
+            if ended:
+                score = evaluate(new_you, new_opp)
+            else:
+                if extra:
+                    score = minimax(new_you, new_opp, depth-1, -float('inf'), float('inf'), 'you')
+                else:
+                    score = minimax(new_you, new_opp, depth-1, -float('inf'), float('inf'), 'opponent')
+            move_scores[move] = score
+        
+        # Find best move for this depth
+        current_best = max(move_scores, key=move_scores.get)
+        # Only update if we have a valid score (should always)
+        best_move = current_best
+    
+    return best_move
+</code>

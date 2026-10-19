@@ -1,0 +1,198 @@
+
+from typing import List, Tuple
+
+# Precompute all 49 winning lines in 3x3x3 tic tac toe.
+def _generate_lines():
+    lines = []
+    seen = set()
+
+    dirs = []
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if dx == dy == dz == 0:
+                    continue
+                # Canonical direction: first nonzero positive
+                if dx != 0:
+                    if dx < 0:
+                        continue
+                elif dy != 0:
+                    if dy < 0:
+                        continue
+                else:
+                    if dz < 0:
+                        continue
+                dirs.append((dx, dy, dz))
+
+    for x in range(3):
+        for y in range(3):
+            for z in range(3):
+                for dx, dy, dz in dirs:
+                    x2, y2, z2 = x + 2 * dx, y + 2 * dy, z + 2 * dz
+                    if 0 <= x2 < 3 and 0 <= y2 < 3 and 0 <= z2 < 3:
+                        line = tuple((x + t * dx, y + t * dy, z + t * dz) for t in range(3))
+                        key = tuple(sorted(line))
+                        if key not in seen:
+                            seen.add(key)
+                            lines.append(line)
+    return lines
+
+LINES = _generate_lines()
+
+# Map each cell to the lines containing it
+CELL_TO_LINES = {(x, y, z): [] for x in range(3) for y in range(3) for z in range(3)}
+for idx, line in enumerate(LINES):
+    for cell in line:
+        CELL_TO_LINES[cell].append(idx)
+
+def _legal_moves(board):
+    moves = []
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                if board[i][j][k] == 0:
+                    moves.append((i, j, k))
+    return moves
+
+def _line_values(board, line):
+    vals = [board[x][y][z] for x, y, z in line]
+    return vals
+
+def _find_immediate_win(board, player):
+    for line in LINES:
+        vals = _line_values(board, line)
+        if vals.count(player) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            return line[idx]
+    return None
+
+def _count_immediate_wins(board, player):
+    count = 0
+    seen = set()
+    for line in LINES:
+        vals = _line_values(board, line)
+        if vals.count(player) == 2 and vals.count(0) == 1:
+            idx = vals.index(0)
+            move = line[idx]
+            if move not in seen:
+                seen.add(move)
+                count += 1
+    return count
+
+def _play(board, move, player):
+    i, j, k = move
+    board[i][j][k] = player
+
+def _unplay(board, move):
+    i, j, k = move
+    board[i][j][k] = 0
+
+def _find_fork(board, player):
+    for move in _legal_moves(board):
+        _play(board, move, player)
+        wins = _count_immediate_wins(board, player)
+        _unplay(board, move)
+        if wins >= 2:
+            return move
+    return None
+
+def _heuristic(board, move):
+    i, j, k = move
+    score = 0.0
+
+    # Positional preference
+    if move == (1, 1, 1):
+        score += 10.0
+    score += (CELL_TO_LINES[move].__len__()) * 0.8
+
+    # Tentatively play move
+    _play(board, move, 1)
+
+    # Strong tactical features
+    my_wins = _count_immediate_wins(board, 1)
+    opp_wins = _count_immediate_wins(board, -1)
+    score += my_wins * 20.0
+    score -= opp_wins * 25.0
+
+    # Evaluate lines through this cell
+    for line_idx in CELL_TO_LINES[move]:
+        line = LINES[line_idx]
+        vals = _line_values(board, line)
+        my_count = vals.count(1)
+        opp_count = vals.count(-1)
+        empty_count = vals.count(0)
+
+        if opp_count == 0:
+            if my_count == 3:
+                score += 1000
+            elif my_count == 2 and empty_count == 1:
+                score += 40
+            elif my_count == 1 and empty_count == 2:
+                score += 6
+        if my_count == 0:
+            if opp_count == 2 and empty_count == 1:
+                score += 30  # occupying a critical defensive lane
+            elif opp_count == 1 and empty_count == 2:
+                score += 2
+
+    # Global line evaluation
+    for line in LINES:
+        vals = _line_values(board, line)
+        my_count = vals.count(1)
+        opp_count = vals.count(-1)
+        empty_count = vals.count(0)
+
+        if opp_count == 0:
+            if my_count == 2 and empty_count == 1:
+                score += 8
+            elif my_count == 1 and empty_count == 2:
+                score += 1.5
+        elif my_count == 0:
+            if opp_count == 2 and empty_count == 1:
+                score -= 10
+            elif opp_count == 1 and empty_count == 2:
+                score -= 1.2
+
+    _unplay(board, move)
+
+    return score
+
+def policy(board: List[List[List[int]]]) -> Tuple[int, int, int]:
+    moves = _legal_moves(board)
+    if not moves:
+        return (0, 0, 0)  # should not happen in valid play
+
+    # 1. Immediate win
+    win_move = _find_immediate_win(board, 1)
+    if win_move is not None and board[win_move[0]][win_move[1]][win_move[2]] == 0:
+        return win_move
+
+    # 2. Immediate block
+    block_move = _find_immediate_win(board, -1)
+    if block_move is not None and board[block_move[0]][block_move[1]][block_move[2]] == 0:
+        return block_move
+
+    # 3. Create fork
+    fork_move = _find_fork(board, 1)
+    if fork_move is not None and board[fork_move[0]][fork_move[1]][fork_move[2]] == 0:
+        return fork_move
+
+    # 4. Block opponent fork
+    opp_fork_move = _find_fork(board, -1)
+    if opp_fork_move is not None and board[opp_fork_move[0]][opp_fork_move[1]][opp_fork_move[2]] == 0:
+        return opp_fork_move
+
+    # 5. Heuristic best move
+    best_move = None
+    best_score = None
+    for move in moves:
+        s = _heuristic(board, move)
+        if best_score is None or s > best_score:
+            best_score = s
+            best_move = move
+
+    if best_move is not None and board[best_move[0]][best_move[1]][best_move[2]] == 0:
+        return best_move
+
+    # 6. Safe fallback: first legal move
+    return moves[0]

@@ -1,0 +1,355 @@
+
+import time
+import random
+import math
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    start_time = time.time()
+    BOARD_SIZE = 11
+    
+    # --- Helper Functions ---
+    
+    def rc_to_idx(r, c):
+        return r * BOARD_SIZE + c
+    
+    def idx_to_rc(idx):
+        return (idx // BOARD_SIZE, idx % BOARD_SIZE)
+    
+    def get_neighbors(r, c):
+        # Hexagonal neighbors for (r, c) on a grid
+        # Even rows (0, 2...) shift differently than odd rows (1, 3...) typically in hex grids,
+        # but the problem description suggests a specific offset logic:
+        # (4,1) touches (4,0), (4,2), (5,1), (5,0), (3,1), (3,2).
+        # This corresponds to "flat-topped" hexagons with odd-r offset (since row 4 neighbors row 5 and 3).
+        # However, looking at the example: (4,1) -> (5,0) and (5,1).
+        # This is a standard axial coordinate neighbor mapping flattened.
+        # Let's use the standard axial coordinate conversion for robustness.
+        # Or simply list the 6 potential neighbors and filter bounds.
+        # Based on the description: "touching b6 (4,0) and (4,2)" -> horizontal
+        # "bottom is touching (5,1) and (5,0)" -> bottom-left, bottom-right
+        # "top is touching (3,1) and (3,2)" -> top-left, top-right
+        # Wait, (3,1) and (3,2) are both above (4,1)? 
+        # Usually (4,1) touches (3,1) and (3,0) or (3,2).
+        # Let's stick to the description: 
+        # (4,1) neighbors: (4,0), (4,2), (5,1), (5,0), (3,1), (3,2).
+        # This implies the row above (3) connects to col j and j+1? 
+        # And row below (5) connects to col j and j-1? 
+        # Let's verify: (5,0) is bottom-left? (5,1) is bottom-right?
+        # If (5,0) is touching (4,1), then (5,1) is touching (4,1).
+        # For row 3: (3,1) and (3,2) touch (4,1).
+        # This corresponds to: 
+        # Even row 4: neighbors are (4, c-1), (4, c+1), (3, c), (3, c+1), (5, c), (5, c-1).
+        # Let's test this pattern.
+        res = []
+        # Horizontal
+        if c > 0: res.append((r, c-1))
+        if c < BOARD_SIZE - 1: res.append((r, c+1))
+        
+        if r % 2 == 0: # Even row
+            # Top neighbors (row-1)
+            if r > 0:
+                res.append((r-1, c))
+                if c < BOARD_SIZE - 1: res.append((r-1, c+1))
+            # Bottom neighbors (row+1)
+            if r < BOARD_SIZE - 1:
+                res.append((r+1, c))
+                if c > 0: res.append((r+1, c-1))
+        else: # Odd row
+            # Top neighbors (row-1)
+            if r > 0:
+                if c > 0: res.append((r-1, c-1))
+                res.append((r-1, c))
+            # Bottom neighbors (row+1)
+            if r < BOARD_SIZE - 1:
+                if c > 0: res.append((r+1, c-1))
+                res.append((r+1, c))
+        return res
+
+    def get_all_neighbors(idx):
+        r, c = idx_to_rc(idx)
+        return [rc_to_idx(nr, nc) for nr, nc in get_neighbors(r, c)]
+
+    # --- State Management ---
+    
+    me_idxs = [rc_to_idx(r, c) for r, c in me]
+    opp_idxs = [rc_to_idx(r, c) for r, c in opp]
+    all_stones = set(me_idxs + opp_idxs)
+    
+    # Check for opening book (first few moves)
+    # If empty board, take center. If 1 stone, take center or neighbor.
+    if len(me) == 0:
+        return (5, 5) # Center
+    
+    # --- Win Check (BFS) ---
+    
+    def check_win(idxs, color_str):
+        if not idxs: return False
+        visited = set()
+        queue = []
+        
+        # Define start and end based on color
+        if color_str == 'b': # Connect Top (0) to Bottom (10)
+            # Find all stones on top row (row 0)
+            for idx in idxs:
+                r, c = idx_to_rc(idx)
+                if r == 0:
+                    queue.append(idx)
+                    visited.add(idx)
+            # Check if any stone in queue is on bottom row (row 10)
+            # We can do this during BFS expansion
+            while queue:
+                curr = queue.pop(0)
+                r, c = idx_to_rc(curr)
+                if r == 10:
+                    return True
+                
+                for n_idx in get_all_neighbors(curr):
+                    if n_idx in idxs and n_idx not in visited:
+                        visited.add(n_idx)
+                        queue.append(n_idx)
+                        
+        else: # 'w' - Connect Left (0) to Right (10)
+            # Find all stones on left col (col 0)
+            for idx in idxs:
+                r, c = idx_to_rc(idx)
+                if c == 0:
+                    queue.append(idx)
+                    visited.add(idx)
+            
+            while queue:
+                curr = queue.pop(0)
+                r, c = idx_to_rc(curr)
+                if c == 10:
+                    return True
+                
+                for n_idx in get_all_neighbors(curr):
+                    if n_idx in idxs and n_idx not in visited:
+                        visited.add(n_idx)
+                        queue.append(n_idx)
+        return False
+
+    if check_win(me_idxs, color):
+        return me[0] # Should not happen as game ends, but safe fallback
+    
+    if check_win(opp_idxs, 'b' if color == 'w' else 'w'):
+        # Opponent won? Should not be our turn ideally, but if so, play anywhere legal
+        pass 
+
+    # --- Heuristic Move Ordering ---
+    
+    def get_valid_moves():
+        valid = []
+        # Prioritize moves near existing stones to save search time
+        # 1. Adjacent to self
+        # 2. Adjacent to opponent (block)
+        # 3. Empty spots far away
+        
+        # Set of potential moves
+        potential = set()
+        occupied = set(me_idxs + opp_idxs)
+        
+        # Calculate heuristic score for empty spots
+        # Simple proximity heuristic
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                idx = rc_to_idx(r, c)
+                if idx not in occupied:
+                    # Calculate distance/score
+                    # Center preference
+                    center_dist = abs(r - 5) + abs(c - 5)
+                    # Adjacency score
+                    adj_score = 0
+                    neighbors = get_neighbors(r, c)
+                    for nr, nc in neighbors:
+                        n_idx = rc_to_idx(nr, nc)
+                        if n_idx in me_idxs:
+                            adj_score += 2
+                        elif n_idx in opp_idxs:
+                            adj_score += 1
+                    
+                    # Combine: Higher score is better
+                    score = adj_score * 10 - center_dist
+                    potential.add((score, idx))
+        
+        # Sort by score descending
+        sorted_moves = sorted(potential, key=lambda x: x[0], reverse=True)
+        
+        # Return just indices, but we need to ensure we don't return too many for MCTS overhead
+        # Return top 40 moves for the tree search to consider (pruning)
+        return [idx for _, idx in sorted_moves[:40]]
+
+    # --- MCTS ---
+    
+    class Node:
+        __slots__ = ('state', 'parent', 'children', 'visits', 'wins', 'untried_moves')
+        
+        def __init__(self, state, parent=None):
+            self.state = state # Tuple (frozenset(me), frozenset(opp), turn)
+            self.parent = parent
+            self.children = []
+            self.visits = 0
+            self.wins = 0
+            self.untried_moves = None # Will be initialized lazily or passed in
+            
+    # Since copying sets for every node is expensive, we rely on the global state context
+    # for the root, and manage state via path tracing or pass-by-value for small simulations.
+    # For 1 second on Python, we must be very light.
+    # We will perform MCTS only on the current state.
+    
+    # Optimization: Use a simple MCTS that only expands the root if necessary
+    # but mostly runs random playouts from the current state to evaluate moves.
+    
+    # Pre-calculate valid moves
+    candidates = get_valid_moves()
+    
+    if not candidates:
+        # No moves left (draw)
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if (r, c) not in me and (r, c) not in opp:
+                    return (r, c)
+                    
+    # If only one move, take it
+    if len(candidates) == 1:
+        return idx_to_rc(candidates[0])
+
+    # MCTS Parameters
+    SIM_DEPTH = 25 # Limit playout depth
+    C = 1.414 # UCT constant
+    
+    # Statistics for root moves
+    move_stats = {idx: {'visits': 0, 'wins': 0} for idx in candidates}
+    
+    iter_count = 0
+    # Time limit buffer
+    while time.time() - start_time < 0.9:
+        iter_count += 1
+        
+        # 1. Selection (from root)
+        # We pick a move from candidates based on UCT, or expand if unvisited
+        # To simulate "Expansion" at root level without building a heavy tree:
+        # We select the move with highest UCB score among candidates.
+        # For unvisited moves, we select them for playout.
+        
+        selected_idx = None
+        
+        # Find best UCB move
+        total_visits = sum(m['visits'] for m in move_stats.values())
+        
+        best_score = -1
+        best_candidate = None
+        
+        for idx in candidates:
+            stats = move_stats[idx]
+            if stats['visits'] == 0:
+                selected_idx = idx
+                break # Select unvisited
+            
+            # UCT formula
+            uct = (stats['wins'] / stats['visits']) + C * math.sqrt(math.log(total_visits) / stats['visits'])
+            if uct > best_score:
+                best_score = uct
+                best_candidate = idx
+        
+        if selected_idx is None:
+            selected_idx = best_candidate
+            
+        # 2. Simulation (Playout)
+        # Simulate game from current state with selected move
+        # Deep copy sets for simulation (expensive but necessary)
+        sim_me = set(me_idxs)
+        sim_opp = set(opp_idxs)
+        
+        r, c = idx_to_rc(selected_idx)
+        current_turn = 'me' # We just played 'selected_idx'
+        sim_me.add(selected_idx)
+        
+        # Check if this move wins immediately
+        if check_win(list(sim_me), color):
+            result = 1.0 # Win
+        else:
+            # Run playout
+            won = False
+            # Heuristic: If we blocked opponent effectively?
+            # Just random playout for now
+            for _ in range(SIM_DEPTH):
+                # Determine opponent move
+                # Simple heuristic for opponent: Block us or expand
+                # To keep it fast, use random valid move
+                # But we need valid moves. Generating full list is slow.
+                # Generate random moves until empty.
+                
+                occupied = sim_me.union(sim_opp)
+                
+                # Try to find a move for opponent
+                opp_move = None
+                attempts = 0
+                while attempts < 50: # Try 50 random spots
+                    rr = random.randint(0, 10)
+                    cc = random.randint(0, 10)
+                    midx = rc_to_idx(rr, cc)
+                    if midx not in occupied:
+                        opp_move = midx
+                        break
+                    attempts += 1
+                
+                if opp_move is None:
+                    # Scan for any move (slow fallback, usually won't happen early)
+                    for i in range(121):
+                        if i not in occupied:
+                            opp_move = i
+                            break
+                
+                if opp_move is None:
+                    break # Draw
+                    
+                sim_opp.add(opp_move)
+                
+                # Check opponent win
+                opp_color = 'b' if color == 'w' else 'w'
+                if check_win(list(sim_opp), opp_color):
+                    won = False # Lost
+                    break
+                
+                # My move
+                occupied = sim_me.union(sim_opp)
+                my_move = None
+                attempts = 0
+                while attempts < 50:
+                    rr = random.randint(0, 10)
+                    cc = random.randint(0, 10)
+                    midx = rc_to_idx(rr, cc)
+                    if midx not in occupied:
+                        my_move = midx
+                        break
+                    attempts += 1
+                    
+                if my_move is None: break
+                
+                sim_me.add(my_move)
+                if check_win(list(sim_me), color):
+                    won = True
+                    break
+            
+            result = 1.0 if won else 0.0
+        
+        # 3. Backpropagation
+        move_stats[selected_idx]['visits'] += 1
+        move_stats[selected_idx]['wins'] += result
+
+    # 4. Selection
+    # Pick move with highest visits (robust) or highest win rate (aggressive)
+    best_move = None
+    max_visits = -1
+    
+    for idx, stats in move_stats.items():
+        if stats['visits'] > max_visits:
+            max_visits = stats['visits']
+            best_move = idx
+            
+    # Fallback if something went wrong (e.g. time limit extremely tight)
+    if best_move is None:
+        best_move = candidates[0]
+        
+    return idx_to_rc(best_move)
+

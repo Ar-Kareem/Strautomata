@@ -1,0 +1,370 @@
+
+import numpy as np
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], valid_mask: np.ndarray) -> Tuple[int, int]:
+    """
+    Havannah policy that implements a fast heuristic strategy.
+    
+    Args:
+        me: List of (row, col) tuples for player-0 stones
+        opp: List of (row, col) tuples for player-1 stones
+        valid_mask: 2D boolean array where True indicates playable cells
+    
+    Returns:
+        A tuple (row, col) representing the next move
+    """
+    N = len(valid_mask)
+    
+    # Convert lists to sets for faster lookups
+    me_set = set(me)
+    opp_set = set(opp)
+    all_stones = me_set | opp_set
+    
+    # Get all valid moves
+    valid_moves = [(r, c) for r in range(N) for c in range(N) if valid_mask[r][c]]
+    
+    # 1. Check for immediate win
+    for move in valid_moves:
+        if would_win(me_set, move, all_stones):
+            return move
+    
+    # 2. Check for immediate block
+    for move in valid_moves:
+        if would_win(opp_set, move, all_stones | {move}):
+            return move
+    
+    # 3. Evaluate moves using heuristics
+    best_score = float('-inf')
+    best_moves = []
+    
+    for move in valid_moves:
+        score = evaluate_move(move, me_set, opp_set, all_stones, valid_mask)
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [move]
+        elif score == best_score:
+            best_moves.append(move)
+    
+    # If multiple moves have the same score, pick one deterministically
+    if best_moves:
+        return min(best_moves)  # Deterministic tie-breaking
+    
+    # Fallback: return first valid move
+    return valid_moves[0]
+
+def would_win(stones: Set[Tuple[int, int]], new_move: Tuple[int, int], all_stones: Set[Tuple[int, int]]) -> bool:
+    """Check if placing a stone at new_move would create a winning structure."""
+    test_stones = stones | {new_move}
+    
+    # Check for ring
+    if has_ring(test_stones):
+        return True
+    
+    # Check for bridge
+    if has_bridge(test_stones):
+        return True
+    
+    # Check for fork
+    if has_fork(test_stones):
+        return True
+    
+    return False
+
+def has_ring(stones: Set[Tuple[int, int]]) -> bool:
+    """Check if stones form a ring (enclosing at least one cell)."""
+    # A ring encloses at least one cell, so we need at least 6 stones
+    if len(stones) < 6:
+        return False
+    
+    # For efficiency, we'll use a simplified ring detection
+    # A ring requires that there exists at least one empty cell completely surrounded
+    # by the player's stones
+    
+    # Get all cells that could potentially be enclosed
+    for r, c in stones:
+        # Check neighboring empty cells that could be enclosed
+        neighbors = get_neighbors(r, c)
+        for nr, nc in neighbors:
+            if (nr, nc) not in stones and is_valid_pos(nr, nc):
+                # Check if this empty cell is surrounded
+                if is_surrounded((nr, nc), stones):
+                    return True
+    
+    return False
+
+def has_bridge(stones: Set[Tuple[int, int]]) -> bool:
+    """Check if stones form a bridge (connecting two corners)."""
+    corners = [(0, 0), (0, 14), (7, 0), (7, 14), (14, 0), (14, 14)]
+    
+    # Check if we have stones in at least 2 corners
+    corner_stones = [corner for corner in corners if corner in stones]
+    if len(corner_stones) < 2:
+        return False
+    
+    # Check connectivity between corner pairs
+    for i in range(len(corner_stones)):
+        for j in range(i + 1, len(corner_stones)):
+            if are_connected(corner_stones[i], corner_stones[j], stones):
+                return True
+    
+    return False
+
+def has_fork(stones: Set[Tuple[int, int]]) -> bool:
+    """Check if stones form a fork (connecting three edges)."""
+    # Define edges (excluding corners)
+    left_edge = [(r, 0) for r in range(1, 14)]
+    right_edge = [(r, 14) for r in range(1, 14)]
+    top_left_edge = [(0, c) for c in range(1, 7)]
+    top_right_edge = [(0, c) for c in range(8, 14)]
+    bottom_left_edge = [(14, c) for c in range(1, 7)]
+    bottom_right_edge = [(14, c) for c in range(8, 14)]
+    
+    edges = [left_edge, right_edge, top_left_edge, top_right_edge, bottom_left_edge, bottom_right_edge]
+    
+    # Check which edges we touch
+    touched_edges = []
+    for i, edge in enumerate(edges):
+        if any(pos in stones for pos in edge):
+            touched_edges.append(i)
+    
+    if len(touched_edges) < 3:
+        return False
+    
+    # Check if we can connect any 3 edges
+    for i in range(len(touched_edges)):
+        for j in range(i + 1, len(touched_edges)):
+            for k in range(j + 1, len(touched_edges)):
+                # Check if we can connect these three edges
+                if can_connect_edges(edges[touched_edges[i]], edges[touched_edges[j]], edges[touched_edges[k]], stones):
+                    return True
+    
+    return False
+
+def are_connected(pos1: Tuple[int, int], pos2: Tuple[int, int], stones: Set[Tuple[int, int]]) -> bool:
+    """Check if two positions are connected by a path of stones."""
+    if pos1 not in stones or pos2 not in stones:
+        return False
+    
+    visited = set()
+    stack = [pos1]
+    
+    while stack:
+        current = stack.pop()
+        if current == pos2:
+            return True
+        
+        if current in visited:
+            continue
+        
+        visited.add(current)
+        
+        for neighbor in get_neighbors(*current):
+            if neighbor in stones and neighbor not in visited:
+                stack.append(neighbor)
+    
+    return False
+
+def is_surrounded(pos: Tuple[int, int], stones: Set[Tuple[int, int]]) -> bool:
+    """Check if a position is surrounded by stones."""
+    queue = [pos]
+    visited = set()
+    boundary_stones = set()
+    
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        
+        visited.add(current)
+        
+        for neighbor in get_neighbors(*current):
+            if neighbor not in stones:
+                if is_valid_pos(*neighbor):
+                    queue.append(neighbor)
+            else:
+                boundary_stones.add(neighbor)
+    
+    # Check if all boundary cells are our stones
+    return boundary_stones.issubset(stones)
+
+def can_connect_edges(edge1: List[Tuple[int, int]], edge2: List[Tuple[int, int]], edge3: List[Tuple[int, int]], stones: Set[Tuple[int, int]]) -> bool:
+    """Check if we can connect three edges with our stones."""
+    # Find stones on each edge
+    stones1 = [s for s in stones if s in edge1]
+    stones2 = [s for s in stones if s in edge2]
+    stones3 = [s for s in stones if s in edge3]
+    
+    if not stones1 or not stones2 or not stones3:
+        return False
+    
+    # Check if any stone from edge1 connects to any stone from edge2
+    for s1 in stones1:
+        for s2 in stones2:
+            if are_connected(s1, s2, stones):
+                # Check if s1 or s2 connects to any stone in edge3
+                for s3 in stones3:
+                    if are_connected(s1, s3, stones) or are_connected(s2, s3, stones):
+                        return True
+    
+    return False
+
+def evaluate_move(move: Tuple[int, int], me: Set[Tuple[int, int]], opp: Set[Tuple[int, int]], all_stones: Set[Tuple[int, int]], valid_mask: np.ndarray) -> float:
+    """Evaluate a move using various heuristics."""
+    score = 0.0
+    
+    # Basic connectivity - prefer moves near our stones
+    neighbors = get_neighbors(*move)
+    friendly_neighbors = sum(1 for n in neighbors if n in me)
+    enemy_neighbors = sum(1 for n in neighbors if n in opp)
+    
+    # Prefer moves with friendly neighbors, avoid enemy neighbors
+    score += friendly_neighbors * 10
+    score -= enemy_neighbors * 15
+    
+    # Corner and edge control
+    if is_corner(*move):
+        score += 50
+    elif is_edge(*move):
+        score += 20
+    
+    # Connectivity to multiple potential structures
+    connectivity_score = evaluate_connectivity(move, me, all_stones)
+    score += connectivity_score
+    
+    # Safety - avoid moves that help opponent
+    if helps_opponent(move, opp, all_stones):
+        score -= 100
+    
+    return score
+
+def evaluate_connectivity(move: Tuple[int, int], me: Set[Tuple[int, int]], all_stones: Set[Tuple[int, int]]) -> float:
+    """Evaluate how well a move connects to potential winning structures."""
+    score = 0.0
+    
+    # Check potential for ring formation
+    ring_potential = evaluate_ring_potential(move, me, all_stones)
+    score += ring_potential
+    
+    # Check potential for bridge formation
+    bridge_potential = evaluate_bridge_potential(move, me)
+    score += bridge_potential
+    
+    # Check potential for fork formation
+    fork_potential = evaluate_fork_potential(move, me)
+    score += fork_potential
+    
+    return score
+
+def evaluate_ring_potential(move: Tuple[int, int], me: Set[Tuple[int, int]], all_stones: Set[Tuple[int, int]]) -> float:
+    """Evaluate potential for ring formation."""
+    # Look for partial rings that this move could complete
+    score = 0.0
+    
+    # Check if move is near potential enclosed areas
+    for dr, dc in [(-1, -1), (-1, 0), (0, -1), (0, 1), (1, 0), (1, 1)]:
+        nr, nc = move[0] + dr, move[1] + dc
+        if is_valid_pos(nr, nc) and (nr, nc) not in all_stones:
+            # This could be an enclosed cell
+            neighbors = get_neighbors(nr, nc)
+            surrounded_count = sum(1 for n in neighbors if n in me or n == move)
+            if surrounded_count >= 4:  # Almost surrounded
+                score += 30
+    
+    return score
+
+def evaluate_bridge_potential(move: Tuple[int, int], me: Set[Tuple[int, int]]) -> float:
+    """Evaluate potential for bridge formation."""
+    score = 0.0
+    corners = [(0, 0), (0, 14), (7, 0), (7, 14), (14, 0), (14, 14)]
+    
+    # Distance to nearest corner
+    min_dist = min(manhattan_distance(move, corner) for corner in corners)
+    score -= min_dist * 2  # Prefer moves closer to corners
+    
+    # Check if move helps connect to multiple corners
+    connected_corners = 0
+    for corner in corners:
+        if corner in me:
+            if are_connected(move, corner, me | {move}):
+                connected_corners += 1
+    
+    if connected_corners >= 1:
+        score += 50
+    
+    return score
+
+def evaluate_fork_potential(move: Tuple[int, int], me: Set[Tuple[int, int]]) -> float:
+    """Evaluate potential for fork formation."""
+    score = 0.0
+    
+    # Check distance to edges
+    distances = []
+    distances.append(move[1])  # Distance to left edge
+    distances.append(14 - move[1])  # Distance to right edge
+    distances.append(move[0])  # Distance to top
+    distances.append(14 - move[0])  # Distance to bottom
+    
+    # Prefer moves that are not too far from edges
+    min_dist = min(distances)
+    if min_dist <= 4:
+        score += 20
+    
+    # Check if move is near multiple edges (fork potential)
+    near_edges = sum(1 for d in distances if d <= 3)
+    if near_edges >= 2:
+        score += 30
+    
+    return score
+
+def helps_opponent(move: Tuple[int, int], opp: Set[Tuple[int, int]], all_stones: Set[Tuple[int, int]]) -> bool:
+    """Check if this move helps the opponent form a winning structure."""
+    # This is a simplified check - in a full implementation, we'd need to
+    # check if the move creates opportunities for the opponent
+    return False
+
+def get_neighbors(r: int, c: int) -> List[Tuple[int, int]]:
+    """Get all valid neighboring positions on the hexagonal grid."""
+    neighbors = []
+    
+    # Same column
+    if r > 0:
+        neighbors.append((r-1, c))
+    if r < 14:
+        neighbors.append((r+1, c))
+    
+    # Left column
+    if c > 0:
+        if r > 0:
+            neighbors.append((r-1, c-1))
+        neighbors.append((r, c-1))
+    
+    # Right column
+    if c < 14:
+        neighbors.append((r, c+1))
+        if r < 14:
+            neighbors.append((r+1, c+1))
+    
+    return neighbors
+
+def is_valid_pos(r: int, c: int) -> bool:
+    """Check if position is within board bounds."""
+    return 0 <= r < 15 and 0 <= c < 15
+
+def is_corner(r: int, c: int) -> bool:
+    """Check if position is a corner."""
+    return (r, c) in [(0, 0), (0, 14), (7, 0), (7, 14), (14, 0), (14, 14)]
+
+def is_edge(r: int, c: int) -> bool:
+    """Check if position is on an edge (but not a corner)."""
+    return (r == 0 and 1 <= c <= 13) or \
+           (r == 14 and 1 <= c <= 13) or \
+           (c == 0 and 1 <= r <= 13) or \
+           (c == 14 and 1 <= r <= 13) or \
+           (r == c and 1 <= r <= 6) or \
+           (r == c + 7 and 1 <= c <= 6)
+
+def manhattan_distance(pos1: Tuple[int, int], pos2: Tuple[int, int]) -> int:
+    """Calculate Manhattan distance between two positions."""
+    return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])

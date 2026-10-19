@@ -1,0 +1,145 @@
+### Strategy for This Policy
+
+The strategy for this policy is a **minimax algorithm with alpha-beta pruning** that evaluates the game state using a **heuristic evaluation function**. The key components of the strategy are:
+
+1. **Winning Move First**: If there's an immediate winning move, take it.
+2. **Blocking Opponent's Win**: If the opponent has a winning move, block it.
+3. **Center Control**: Prefer the center (1,1) as it provides the most opportunities for forks.
+4. **Corner Preference**: Corners (0,0), (0,2), (2,0), (2,2) are preferred over edges because they create more forks.
+5. **Edge Fallback**: If no better move is available, choose an edge.
+6. **Minimax with Alpha-Beta Pruning**: The algorithm recursively evaluates all possible moves to a depth of 9 (full game length) to determine the best move, pruning branches that cannot affect the outcome.
+
+The heuristic evaluation function assigns:
+- **+10** for a win,
+- **-10** for a loss,
+- **+1** for each corner occupied,
+- **+0.1** for each edge occupied,
+- **+0.01** for each center occupied (to encourage center control).
+
+This ensures the AI prioritizes winning, blocking, and strategic positioning.
+
+---
+
+### Python Source Code for the Policy
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    def evaluate(board):
+        # Check for win/loss
+        if check_win(board, 1):
+            return 10
+        elif check_win(board, -1):
+            return -10
+
+        # Heuristic evaluation
+        score = 0
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 1:
+                    if i == 1 and j == 1:  # Center
+                        score += 0.01
+                    elif (i in [0, 2] and j in [0, 2]):  # Corners
+                        score += 1
+                    else:  # Edges
+                        score += 0.1
+                elif board[i][j] == -1:
+                    if i == 1 and j == 1:  # Center
+                        score -= 0.01
+                    elif (i in [0, 2] and j in [0, 2]):  # Corners
+                        score -= 1
+                    else:  # Edges
+                        score -= 0.1
+        return score
+
+    def check_win(board, player):
+        # Check rows, columns, diagonals
+        for i in range(3):
+            if all(board[i][j] == player for j in range(3)):
+                return True
+            if all(board[j][i] == player for j in range(3)):
+                return True
+        if all(board[i][i] == player for i in range(3)) or all(board[i][2 - i] == player for i in range(3)):
+            return True
+        return False
+
+    def is_terminal(board):
+        return check_win(board, 1) or check_win(board, -1) or all(cell != 0 for row in board for cell in row)
+
+    def minimax(board, depth, is_maximizing, alpha, beta):
+        if is_terminal(board):
+            return evaluate(board)
+
+        if is_maximizing:
+            best_score = -float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if board[i][j] == 0:
+                        board[i][j] = 1
+                        score = minimax(board, depth + 1, False, alpha, beta)
+                        board[i][j] = 0
+                        best_score = max(score, best_score)
+                        alpha = max(alpha, score)
+                        if beta <= alpha:
+                            break
+            return best_score
+        else:
+            best_score = float('inf')
+            for i in range(3):
+                for j in range(3):
+                    if board[i][j] == 0:
+                        board[i][j] = -1
+                        score = minimax(board, depth + 1, True, alpha, beta)
+                        board[i][j] = 0
+                        best_score = min(score, best_score)
+                        beta = min(beta, score)
+                        if beta <= alpha:
+                            break
+            return best_score
+
+    # Check for immediate win or block
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                board[i][j] = 1
+                if check_win(board, 1):
+                    board[i][j] = 0
+                    return (i, j)
+                board[i][j] = -1
+                if check_win(board, -1):
+                    board[i][j] = 0
+                    return (i, j)
+                board[i][j] = 0
+
+    # Prefer center, then corners, then edges
+    moves = []
+    for i in range(3):
+        for j in range(3):
+            if board[i][j] == 0:
+                moves.append((i, j))
+
+    # Sort moves by priority: center > corners > edges
+    moves.sort(key=lambda x: (x[0] != 1 or x[1] != 1, (x[0] in [0, 2] and x[1] in [0, 2]), (x[0] in [0, 2] or x[1] in [0, 2])))
+
+    # If no forced move, use minimax
+    best_score = -float('inf')
+    best_move = None
+    for move in moves:
+        i, j = move
+        board[i][j] = 1
+        score = minimax(board, 0, False, -float('inf'), float('inf'))
+        board[i][j] = 0
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    return best_move if best_move else moves[0]  # Fallback to first move if no minimax found (shouldn't happen)
+```
+
+### Explanation of Key Components:
+1. **`evaluate(board)`**: Assigns a score based on the current board state, favoring wins, corners, and center control.
+2. **`check_win(board, player)`**: Checks if the given player has won.
+3. **`is_terminal(board)`**: Checks if the game is over (win or draw).
+4. **`minimax(board, depth, is_maximizing, alpha, beta)`**: Recursively evaluates all possible moves using alpha-beta pruning to determine the best move.
+5. **Immediate Win/Block Check**: Before running minimax, the policy checks for immediate winning or blocking moves.
+6. **Move Prioritization**: Moves are sorted by priority (center > corners > edges) before minimax is applied.
+
+This policy is highly competitive and should perform well against other standard Tic-Tac-Toe AI policies.

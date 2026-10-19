@@ -1,0 +1,130 @@
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]]) -> tuple[int, int]:
+    """
+    Go policy that uses capturing, defense, and strategic positioning.
+    """
+    # Convert to sets for O(1) lookup
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones | opp_stones
+    
+    # Helper: get adjacent positions
+    def get_adjacent(pos):
+        r, c = pos
+        adj = []
+        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                adj.append((nr, nc))
+        return adj
+    
+    # Helper: find liberties of a group using BFS
+    def find_group_and_liberties(start, stones_set):
+        if start not in stones_set:
+            return set(), set()
+        group = set()
+        liberties = set()
+        visited = set()
+        stack = [start]
+        
+        while stack:
+            pos = stack.pop()
+            if pos in visited:
+                continue
+            visited.add(pos)
+            group.add(pos)
+            
+            for adj in get_adjacent(pos):
+                if adj in stones_set and adj not in visited:
+                    stack.append(adj)
+                elif adj not in stones_set and adj not in liberties:
+                    liberties.add(adj)
+        
+        return group, liberties
+    
+    # Strategy 1: Capture opponent stones with 1 liberty
+    for opp in opp_stones:
+        _, liberties = find_group_and_liberties(opp, opp_stones)
+        if len(liberties) == 1:
+            move = next(iter(liberties))
+            if move not in all_stones:
+                return move
+    
+    # Strategy 2: Defend my stones with 1 liberty
+    for my in my_stones:
+        _, liberties = find_group_and_liberties(my, my_stones)
+        if len(liberties) == 1:
+            move = next(iter(liberties))
+            if move not in all_stones:
+                return move
+    
+    # Strategy 3: Play near existing stones
+    candidates = set()
+    
+    # Generate candidates around my stones
+    for my in my_stones:
+        for adj in get_adjacent(my):
+            if adj not in all_stones:
+                candidates.add(adj)
+    
+    # Generate candidates around opponent stones (more aggressive)
+    for opp in opp_stones:
+        for adj in get_adjacent(opp):
+            if adj not in all_stones:
+                candidates.add(adj)
+    
+    # Also add some strategic positions
+    strategic = [(10, 10), (4, 4), (4, 16), (16, 4), (16, 16)]
+    for s in strategic:
+        if s not in all_stones:
+            candidates.add(s)
+    
+    if candidates:
+        # Evaluate each candidate
+        best_move = None
+        best_score = -float('inf')
+        
+        for move in candidates:
+            # Score based on:
+            # 1. Number of liberties created
+            # 2. Connection to my groups
+            # 3. Proximity to opponent stones (aggressive)
+            
+            temp_my = my_stones | {move}
+            temp_opp = opp_stones
+            
+            # Calculate liberties this move would have
+            _, liberties = find_group_and_liberties(move, temp_my)
+            liberty_score = len(liberties)
+            
+            # Check if connects to my groups
+            connect_score = 0
+            for adj in get_adjacent(move):
+                if adj in my_stones:
+                    connect_score += 1
+            
+            # Proximity to opponent (closer is better for aggressive play)
+            opp_proximity = 0
+            for opp in opp_stones:
+                dist = abs(move[0] - opp[0]) + abs(move[1] - opp[1])
+                if dist <= 3:
+                    opp_proximity += (4 - dist) * 2
+            
+            # Combine scores
+            score = liberty_score * 3 + connect_score * 2 + opp_proximity
+            
+            if score > best_score:
+                best_score = score
+                best_move = move
+        
+        if best_move:
+            return best_move
+    
+    # Strategy 4: Fallback - play at center or corner
+    fallback = [(10, 10), (4, 4), (4, 16), (16, 4), (16, 16), (1, 1), (1, 19), (19, 1), (19, 19)]
+    for pos in fallback:
+        if pos not in all_stones:
+            return pos
+    
+    # Final fallback: pass
+    return (0, 0)

@@ -1,0 +1,231 @@
+
+import random
+from typing import List, Tuple, Set
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Move:
+    """
+    Return a legal move for Breakthrough on 8x8 board.
+    me: list of (row, col) for our pieces
+    opp: list of (row, col) for opponent pieces
+    color: 'b' (black, moves downward to lower row indices) or 'w' (white, moves upward)
+    """
+    # Convert to sets for fast membership
+    me_set = set(me)
+    opp_set = set(opp)
+
+    # Directions
+    delta = -1 if color == 'b' else 1
+    goal_row = 0 if color == 'b' else 7
+
+    # Generate all legal moves for current player
+    def generate_moves(side_set: Set[Tuple[int, int]], other_set: Set[Tuple[int, int]], side_color: str):
+        moves = []
+        d = -1 if side_color == 'b' else 1
+        for (r, c) in side_set:
+            # forward
+            nr = r + d
+            if 0 <= nr <= 7:
+                # forward straight (must be empty)
+                if (nr, c) not in side_set and (nr, c) not in other_set:
+                    moves.append(((r, c), (nr, c)))
+                # diagonal left
+                nc = c - 1
+                if 0 <= nc <= 7:
+                    if (nr, nc) not in side_set:
+                        # capture if opponent present, else simple diagonal move if empty
+                        if (nr, nc) in other_set:
+                            moves.append(((r, c), (nr, nc)))
+                        else:
+                            moves.append(((r, c), (nr, nc)))
+                # diagonal right
+                nc = c + 1
+                if 0 <= nc <= 7:
+                    if (nr, nc) not in side_set:
+                        if (nr, nc) in other_set:
+                            moves.append(((r, c), (nr, nc)))
+                        else:
+                            moves.append(((r, c), (nr, nc)))
+        # deterministic ordering for reproducibility; prefer captures and forward advancement
+        def move_key(m):
+            (fr, fc), (tr, tc) = m
+            is_capture = (tr, tc) in other_set
+            advance = (fr - tr) if side_color == 'b' else (tr - fr)
+            # prefer captures (True > False), then larger advance, then lower col, then from position
+            return (-int(is_capture), -advance, fr, fc, tr, tc)
+        moves.sort(key=move_key)
+        return moves
+
+    # Apply move to produce new sets
+    def apply_move(side_set: Set[Tuple[int, int]], other_set: Set[Tuple[int, int]], move: Move):
+        new_side = set(side_set)
+        new_other = set(other_set)
+        (fr, fc), (tr, tc) = move
+        if (tr, tc) in new_other:
+            new_other.remove((tr, tc))
+        new_side.remove((fr, fc))
+        new_side.add((tr, tc))
+        return new_side, new_other
+
+    # Evaluate board from perspective of 'color' (our original color)
+    def evaluate(my_set: Set[Tuple[int, int]], their_set: Set[Tuple[int, int]], my_color: str):
+        # Immediate win/loss checks handled elsewhere, but keep strong incentives
+        # Material
+        material = len(my_set) - len(their_set)
+
+        # Advancement: sum of distances toward opponent home row
+        if my_color == 'b':
+            my_adv = sum((7 - r) for (r, c) in my_set)
+            opp_adv = sum((7 - r) for (r, c) in their_set)  # for opponent as if they were black; we compare consistently
+        else:
+            my_adv = sum(r for (r, c) in my_set)
+            opp_adv = sum(r for (r, c) in their_set)
+
+        adv = my_adv - opp_adv
+
+        # Mobility: number of legal moves
+        my_moves = len(generate_moves(my_set, their_set, my_color))
+        opp_moves = len(generate_moves(their_set, my_set, 'b' if my_color == 'w' else 'w'))
+        mobility = my_moves - opp_moves
+
+        # Threats: count of opponent pieces that can be captured immediately by my next move
+        threats = 0
+        for move in generate_moves(my_set, their_set, my_color):
+            (_, _), (tr, tc) = move
+            if (tr, tc) in their_set:
+                threats += 1
+
+        # Compose score with weights
+        score = 1000 * material + 8 * adv + 3 * mobility + 50 * threats
+        return score
+
+    # Check immediate winning moves and return if any
+    moves0 = generate_moves(me_set, opp_set, color)
+    if not moves0:
+        # No moves; this situation should be rare. Return a fallback (though there are none).
+        # To comply with requirement to always return legal move, try scanning for any pseudo-move (shouldn't happen).
+        # As a last resort, return a "pass-like" illegal move within bounds (but spec disqualifies illegal moves).
+        # We will attempt reuse: find any piece and a valid adjacent inside board move, even if it's illegal by occupancy checks.
+        # But better to raise - however we must return; attempt to find any forward move ignoring occupancy.
+        for (r, c) in me:
+            nr = r + delta
+            if 0 <= nr <= 7:
+                nc = c
+                if True:
+                    return ((r, c), (nr, nc))
+        # If still none, return first piece no-op
+        (r, c) = me[0]
+        return ((r, c), (r, c))
+
+    # Immediate win: move that reaches goal or captures last opponent
+    for m in moves0:
+        (_, _), (tr, tc) = m
+        # reach opponent home row?
+        if tr == goal_row:
+            return m
+        # capture last opponent
+        if (tr, tc) in opp_set and len(opp_set) == 1:
+            return m
+
+    # Minimax with alpha-beta
+    MAX_DEPTH = 3  # plies (single-move depth)
+    node_count = 0
+    NODE_LIMIT = 80000  # safety cap
+
+    def is_win(side_set: Set[Tuple[int, int]], their_set: Set[Tuple[int, int]], side_color: str, last_move: Move = None):
+        # win if any piece reached opponent home row or opponent has no pieces
+        if not their_set:
+            return True
+        goal = 0 if side_color == 'b' else 7
+        # If last_move provided we can detect quickly; else scan
+        if last_move:
+            (_, _), (tr, tc) = last_move
+            if tr == goal:
+                return True
+        else:
+            for (r, c) in side_set:
+                if r == goal:
+                    return True
+        return False
+
+    # negamax style with side parameter: current player is cur_color
+    def negamax(cur_my: Set[Tuple[int, int]], cur_opp: Set[Tuple[int, int]], cur_color: str, depth: int, alpha: float, beta: float):
+        nonlocal node_count
+        node_count += 1
+        if node_count > NODE_LIMIT:
+            # abort deep search by returning heuristic
+            return evaluate(cur_my, cur_opp, color)
+
+        # Terminal checks
+        if is_win(cur_my, cur_opp, cur_color):
+            # current player (cur_color) already wins -> from original player's perspective:
+            return 100000 if cur_color == color else -100000
+        if is_win(cur_opp, cur_my, 'b' if cur_color == 'w' else 'w'):
+            return -100000 if cur_color == color else 100000
+
+        if depth == 0:
+            # evaluate from original player's perspective
+            if cur_color == color:
+                return evaluate(cur_my, cur_opp, color)
+            else:
+                # flip perspective: evaluate other side as "my" for consistent sign
+                return -evaluate(cur_opp, cur_my, color)
+
+        moves = generate_moves(cur_my, cur_opp, cur_color)
+        if not moves:
+            # No legal moves for current player -> treat as very bad
+            return -100000 if cur_color == color else 100000
+
+        best = -float('inf')
+        for m in moves:
+            new_my, new_opp = apply_move(cur_my, cur_opp, m)
+            # Check immediate win for mover
+            if is_win(new_my, new_opp, cur_color, m):
+                val = 100000 if cur_color == color else -100000
+            else:
+                # recurse for opponent: swap roles
+                val = -negamax(new_opp, new_my, 'b' if cur_color == 'w' else 'w', depth - 1, -beta, -alpha)
+            if val > best:
+                best = val
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+            # safety node cap
+            if node_count > NODE_LIMIT:
+                break
+        return best
+
+    # Search best move
+    best_move = moves0[0]
+    best_score = -float('inf')
+    for m in moves0:
+        # quick check for immediate win:
+        (fr, fc), (tr, tc) = m
+        if tr == goal_row:
+            return m
+        new_me, new_opp = apply_move(me_set, opp_set, m)
+        if not new_opp:
+            return m
+        # If this move immediately allows opponent to win by reaching our home in their turn, penalize via search
+        node_count = 0  # reset per root child to keep node limit per evaluation reasonable
+        score = 0
+        # compute score via negamax evaluating opponent response
+        # after our move, it's opponent's turn: so we want -negamax(opp, me, opp_color)
+        opp_color = 'b' if color == 'w' else 'w'
+        # If our move produced an immediate win for us, pick it
+        if is_win(new_me, new_opp, color, m):
+            score = 100000
+        else:
+            # call negamax from opponent perspective
+            val = negamax(new_opp, new_me, opp_color, MAX_DEPTH - 1, -float('inf'), float('inf'))
+            score = -val  # because negamax returned from opponent perspective
+        # choose best
+        if score > best_score or (score == best_score and m < best_move):
+            best_score = score
+            best_move = m
+        # small optimization: if a clearly winning move found, pick it
+        if best_score >= 90000:
+            break
+
+    return best_move

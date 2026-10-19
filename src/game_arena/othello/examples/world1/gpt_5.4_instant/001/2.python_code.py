@@ -1,0 +1,366 @@
+
+import numpy as np
+
+DIRS = [(-1, -1), (-1, 0), (-1, 1),
+        (0, -1),           (0, 1),
+        (1, -1),  (1, 0),  (1, 1)]
+
+COLS = "abcdefgh"
+
+# Strong positional table: corners very good, X/C squares penalized unless justified.
+PST = np.array([
+    [120, -20,  20,   5,   5,  20, -20, 120],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [  5,  -5,   3,   3,   3,   3,  -5,   5],
+    [ 20,  -5,  15,   3,   3,  15,  -5,  20],
+    [-20, -40,  -5,  -5,  -5,  -5, -40, -20],
+    [120, -20,  20,   5,   5,  20, -20, 120],
+], dtype=np.int32)
+
+CORNERS = [(0, 0), (0, 7), (7, 0), (7, 7)]
+X_SQUARES = {
+    (1, 1): (0, 0),
+    (1, 6): (0, 7),
+    (6, 1): (7, 0),
+    (6, 6): (7, 7),
+}
+C_SQUARES = {
+    (0, 1): (0, 0), (1, 0): (0, 0),
+    (0, 6): (0, 7), (1, 7): (0, 7),
+    (6, 0): (7, 0), (7, 1): (7, 0),
+    (6, 7): (7, 7), (7, 6): (7, 7),
+}
+
+
+def on_board(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def move_to_str(move):
+    r, c = move
+    return COLS[c] + str(r + 1)
+
+
+def legal_moves(you, opp):
+    empty = (you | opp) == 0
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if not empty[r, c]:
+                continue
+            if is_legal_move(you, opp, r, c):
+                moves.append((r, c))
+    return moves
+
+
+def is_legal_move(you, opp, r, c):
+    if you[r, c] or opp[r, c]:
+        return False
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        seen_opp = False
+        while on_board(rr, cc) and opp[rr, cc]:
+            seen_opp = True
+            rr += dr
+            cc += dc
+        if seen_opp and on_board(rr, cc) and you[rr, cc]:
+            return True
+    return False
+
+
+def apply_move(you, opp, move):
+    r, c = move
+    ny = you.copy()
+    no = opp.copy()
+    ny[r, c] = 1
+
+    for dr, dc in DIRS:
+        rr, cc = r + dr, c + dc
+        flips = []
+        while on_board(rr, cc) and no[rr, cc]:
+            flips.append((rr, cc))
+            rr += dr
+            cc += dc
+        if flips and on_board(rr, cc) and ny[rr, cc]:
+            for fr, fc in flips:
+                ny[fr, fc] = 1
+                no[fr, fc] = 0
+    return ny, no
+
+
+def count_frontier(you, opp):
+    occupied = you | opp
+    cnt = 0
+    for r in range(8):
+        for c in range(8):
+            if not you[r, c]:
+                continue
+            for dr, dc in DIRS:
+                rr, cc = r + dr, c + dc
+                if on_board(rr, cc) and not occupied[rr, cc]:
+                    cnt += 1
+                    break
+    return cnt
+
+
+def corner_score(you, opp):
+    y = sum(int(you[r, c]) for r, c in CORNERS)
+    o = sum(int(opp[r, c]) for r, c in CORNERS)
+    return 25 * (y - o)
+
+
+def corner_closeness_score(you, opp):
+    score = 0
+    for sq, corner in X_SQUARES.items():
+        cr, cc = corner
+        if not you[cr, cc] and not opp[cr, cc]:
+            if you[sq]:
+                score -= 18
+            elif opp[sq]:
+                score += 18
+    for sq, corner in C_SQUARES.items():
+        cr, cc = corner
+        if not you[cr, cc] and not opp[cr, cc]:
+            if you[sq]:
+                score -= 10
+            elif opp[sq]:
+                score += 10
+    return score
+
+
+def edge_stability_like(you, opp):
+    # Simple corner-outward edge ownership approximation.
+    score = 0
+    edge_lines = [
+        [(0, i) for i in range(8)],
+        [(7, i) for i in range(8)],
+        [(i, 0) for i in range(8)],
+        [(i, 7) for i in range(8)],
+    ]
+    for line in edge_lines:
+        # From left/start
+        owner = None
+        for r, c in line:
+            if you[r, c]:
+                if owner in (None, 1):
+                    owner = 1
+                    score += 2
+                else:
+                    break
+            elif opp[r, c]:
+                if owner in (None, -1):
+                    owner = -1
+                    score -= 2
+                else:
+                    break
+            else:
+                break
+        # From right/end
+        owner = None
+        for r, c in reversed(line):
+            if you[r, c]:
+                if owner in (None, 1):
+                    owner = 1
+                    score += 2
+                else:
+                    break
+            elif opp[r, c]:
+                if owner in (None, -1):
+                    owner = -1
+                    score -= 2
+                else:
+                    break
+            else:
+                break
+    return score
+
+
+def evaluate(you, opp):
+    empties = 64 - int(np.count_nonzero(you | opp))
+    my_moves = legal_moves(you, opp)
+    opp_moves = legal_moves(opp, you)
+
+    my_count = int(np.count_nonzero(you))
+    opp_count = int(np.count_nonzero(opp))
+
+    if empties == 0 or (not my_moves and not opp_moves):
+        diff = my_count - opp_count
+        if diff > 0:
+            return 100000 + diff
+        elif diff < 0:
+            return -100000 + diff
+        return 0
+
+    pst_score = int(np.sum(PST * you) - np.sum(PST * opp))
+    mobility = 0
+    if my_moves or opp_moves:
+        mobility = 100 * (len(my_moves) - len(opp_moves)) / (len(my_moves) + len(opp_moves) + 1)
+
+    corners = corner_score(you, opp)
+    close_corners = corner_closeness_score(you, opp)
+
+    my_front = count_frontier(you, opp)
+    opp_front = count_frontier(opp, you)
+    frontier = 0
+    if my_front or opp_front:
+        frontier = -60 * (my_front - opp_front) / (my_front + opp_front + 1)
+
+    edge_score = edge_stability_like(you, opp)
+
+    disc_diff = 0
+    if empties <= 12:
+        disc_diff = 200 * (my_count - opp_count) / (my_count + opp_count + 1)
+    elif empties <= 20:
+        disc_diff = 40 * (my_count - opp_count) / (my_count + opp_count + 1)
+    else:
+        disc_diff = -10 * (my_count - opp_count) / (my_count + opp_count + 1)
+
+    # Dynamic weighting by phase
+    if empties > 40:
+        score = (
+            1.2 * pst_score +
+            2.2 * mobility +
+            2.8 * corners +
+            1.5 * close_corners +
+            1.8 * frontier +
+            1.0 * edge_score +
+            0.3 * disc_diff
+        )
+    elif empties > 16:
+        score = (
+            1.0 * pst_score +
+            2.0 * mobility +
+            3.0 * corners +
+            1.5 * close_corners +
+            1.5 * frontier +
+            1.2 * edge_score +
+            0.8 * disc_diff
+        )
+    else:
+        score = (
+            0.8 * pst_score +
+            1.2 * mobility +
+            3.5 * corners +
+            1.0 * close_corners +
+            1.0 * frontier +
+            1.5 * edge_score +
+            2.5 * disc_diff
+        )
+    return int(score)
+
+
+def move_order_key(you, opp, move):
+    r, c = move
+    score = 0
+
+    if (r, c) in CORNERS:
+        score += 10000
+
+    if (r, c) in X_SQUARES:
+        cr, cc = X_SQUARES[(r, c)]
+        if not you[cr, cc] and not opp[cr, cc]:
+            score -= 1500
+
+    if (r, c) in C_SQUARES:
+        cr, cc = C_SQUARES[(r, c)]
+        if not you[cr, cc] and not opp[cr, cc]:
+            score -= 800
+
+    score += int(PST[r, c]) * 10
+
+    ny, no = apply_move(you, opp, move)
+    oppm = legal_moves(no, ny)
+    score -= 30 * len(oppm)
+
+    # Prefer moves that take corners away from opponent immediately.
+    for cr, cc in CORNERS:
+        if not (ny[cr, cc] or no[cr, cc]):
+            continue
+        if ny[cr, cc]:
+            score += 500
+
+    return score
+
+
+def alphabeta(you, opp, depth, alpha, beta, passed):
+    my_moves = legal_moves(you, opp)
+
+    if depth == 0:
+        return evaluate(you, opp)
+
+    if not my_moves:
+        opp_moves = legal_moves(opp, you)
+        if not opp_moves:
+            return evaluate(you, opp)
+        if passed:
+            return evaluate(you, opp)
+        return -alphabeta(opp, you, depth, -beta, -alpha, True)
+
+    ordered = sorted(my_moves, key=lambda m: move_order_key(you, opp, m), reverse=True)
+
+    best = -10**18
+    for mv in ordered:
+        ny, no = apply_move(you, opp, mv)
+        val = -alphabeta(no, ny, depth - 1, -beta, -alpha, False)
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    return best
+
+
+def choose_depth(you, opp, moves):
+    empties = 64 - int(np.count_nonzero(you | opp))
+    branching = max(1, len(moves))
+
+    if empties <= 10:
+        return 8
+    if empties <= 14:
+        return 7
+    if empties <= 20:
+        return 6
+    if empties <= 30:
+        return 5 if branching <= 8 else 4
+    if empties <= 44:
+        return 4
+    return 3
+
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    you = np.asarray(you, dtype=np.uint8)
+    opponent = np.asarray(opponent, dtype=np.uint8)
+
+    moves = legal_moves(you, opponent)
+    if not moves:
+        return "pass"
+
+    # Immediate corner if available.
+    for mv in moves:
+        if mv in CORNERS:
+            return move_to_str(mv)
+
+    depth = choose_depth(you, opponent, moves)
+    ordered = sorted(moves, key=lambda m: move_order_key(you, opponent, m), reverse=True)
+
+    best_move = ordered[0]
+    best_val = -10**18
+    alpha = -10**18
+    beta = 10**18
+
+    for mv in ordered:
+        ny, no = apply_move(you, opponent, mv)
+        val = -alphabeta(no, ny, depth - 1, -beta, -alpha, False)
+
+        # Mild tie-breaking using move ordering score.
+        if val > best_val or (val == best_val and move_order_key(you, opponent, mv) > move_order_key(you, opponent, best_move)):
+            best_val = val
+            best_move = mv
+        if best_val > alpha:
+            alpha = best_val
+
+    # Guaranteed legal.
+    return move_to_str(best_move)

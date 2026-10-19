@@ -1,0 +1,159 @@
+
+import time
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game.
+    board: 4x4 list of lists. 0 (empty), 1 (you), -1 (opponent).
+    Returns (row, col).
+    """
+    PLAYER = 1
+    OPPONENT = -1
+    EMPTY = 0
+    TIME_LIMIT = 0.95  # Seconds buffers for execution overhead
+    WIN_SCORE = 10_000
+    
+    start_time = time.time()
+    
+    # Precompute line indices for efficiency
+    lines = []
+    # Rows
+    for r in range(4):
+        lines.append([(r, c) for c in range(4)])
+    # Cols
+    for c in range(4):
+        lines.append([(r, c) for r in range(4)])
+    # Diagonals
+    lines.append([(i, i) for i in range(4)])
+    lines.append([(i, 3 - i) for i in range(4)])
+
+    def get_valid_moves(b):
+        moves = []
+        for r in range(4):
+            for c in range(4):
+                if b[r][c] == EMPTY:
+                    moves.append((r, c))
+        return moves
+
+    def evaluate(b):
+        score = 0
+        for line_indices in lines:
+            line_vals = [b[r][c] for r, c in line_indices]
+            s_count = line_vals.count(PLAYER)
+            o_count = line_vals.count(OPPONENT)
+            
+            # If line is mixed, it's useless for winning directly
+            if s_count > 0 and o_count > 0:
+                continue
+            
+            if s_count == 4:
+                return WIN_SCORE
+            if o_count == 4:
+                return -WIN_SCORE
+            
+            # Heuristic scoring
+            if s_count > 0:
+                if s_count == 3: score += 100
+                elif s_count == 2: score += 10
+                elif s_count == 1: score += 1
+            elif o_count > 0:
+                # Prioritize blocking slightly more than building
+                if o_count == 3: score -= 150
+                elif o_count == 2: score -= 15
+                elif o_count == 1: score -= 1
+        return score
+
+    def minimax(b, depth, alpha, beta, is_maximizing):
+        # We don't check time here to avoid overhead; strictly depth-limited
+        curr_score = evaluate(b)
+        
+        # Terminal state checking
+        if abs(curr_score) == WIN_SCORE:
+            return curr_score
+        
+        moves = get_valid_moves(b)
+        if depth == 0 or not moves:
+            return curr_score
+
+        if is_maximizing:
+            max_eval = -float('inf')
+            for (r, c) in moves:
+                b[r][c] = PLAYER
+                eval_val = minimax(b, depth - 1, alpha, beta, False)
+                b[r][c] = EMPTY
+                max_eval = max(max_eval, eval_val)
+                alpha = max(alpha, eval_val)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for (r, c) in moves:
+                b[r][c] = OPPONENT
+                eval_val = minimax(b, depth - 1, alpha, beta, True)
+                b[r][c] = EMPTY
+                min_eval = min(min_eval, eval_val)
+                beta = min(beta, eval_val)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    # Initial valid moves
+    valid_moves = get_valid_moves(board)
+    if not valid_moves:
+        return (0, 0)
+    
+    # If starting, pick a center square
+    if len(valid_moves) >= 15:
+        centers = [(1,1), (1,2), (2,1), (2,2)]
+        for c in centers:
+            if board[c[0]][c[1]] == EMPTY:
+                return c
+
+    best_move = valid_moves[0]
+    
+    # Iterative Deepening
+    # We search depth 1, then 2, etc. until out of time
+    for depth in range(1, 10):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+            
+        current_iteration_best_move = None
+        current_iteration_best_val = -float('inf')
+        
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        # Optimization: Try the previous best move first
+        if best_move in valid_moves:
+            valid_moves.remove(best_move)
+            valid_moves.insert(0, best_move)
+            
+        completed_iteration = True
+        
+        for idx, (r, c) in enumerate(valid_moves):
+            # Check time periodically inside the root loop
+            if (idx % 2 == 0) and (time.time() - start_time > TIME_LIMIT):
+                completed_iteration = False
+                break
+            
+            board[r][c] = PLAYER
+            val = minimax(board, depth - 1, alpha, beta, False)
+            board[r][c] = EMPTY
+            
+            if val > current_iteration_best_val:
+                current_iteration_best_val = val
+                current_iteration_best_move = (r, c)
+            
+            alpha = max(alpha, val)
+        
+        # Only update the global best move if we finished the iteration
+        if completed_iteration and current_iteration_best_move is not None:
+            best_move = current_iteration_best_move
+            # If we found a guaranteed win, stop searching
+            if current_iteration_best_val >= WIN_SCORE:
+                break
+        else:
+            break
+
+    return best_move

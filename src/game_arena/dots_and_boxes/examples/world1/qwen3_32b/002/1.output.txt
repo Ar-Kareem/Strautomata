@@ -1,0 +1,140 @@
+The strategy for this policy is to prioritize winning moves while avoiding strategic disadvantages. It follows these main principles:
+
+1. **Completing Boxes First**: Always prioritize moves that complete one or more boxes for the AI. This provides additional turns and points.
+
+2. **Blocking Opponent's Winning Moves**: If the opponent has a move that could allow them to complete a box, block it immediately to prevent losing points.
+
+3. **Avoiding Dangerous 3-Sided Boxes**: Avoid creating any opportunities for the opponent to complete 3-sided boxes on their next turn.
+
+4. **Random Legal Move as a Final Fallback**: If no advantageous move exists, make any random legal move.
+
+Here's the implementation of the policy:
+
+```python
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Helper to check if a move is legal
+    def is_legal(r, c, d):
+        if d == 'H':
+            return 0 <= r < 4 and 0 <= c < 5 and horizontal[r, c] == 0
+        else:  # 'V'
+            return 0 <= r < 5 and 0 <= c < 4 and vertical[r, c] == 0
+    
+    # Helper to check if a move would complete a box
+    def completes_box(r, c, d):
+        if d == 'H':
+            # Horizontal edge affects boxes above and below
+            for br, bc in [(r-1, c) if r > 0 else None, (r, c) if r < 4 else None]:
+                if br is not None:
+                    if (horizontal[br, bc] != 0 and horizontal[br+1, bc] != 0 and
+                        vertical[br, bc] != 0 and vertical[br, bc+1] != 0 and
+                        capture[br, bc] == 0):
+                            return True
+        else:  # 'V'
+            # Vertical edge affects boxes to the left and right
+            for br, bc in [(r, c-1) if c > 0 else None, (r, c) if c < 4 else None]:
+                if bc is not None:
+                    if (horizontal[br, bc] != 0 and horizontal[br+1, bc] != 0 and
+                        vertical[br, bc] != 0 and vertical[br, bc+1] != 0 and
+                        capture[br, bc] == 0):
+                            return True
+        return False
+    
+    # Helper to check if the opponent can complete a box using this edge
+    def can_block_opponent(r, c, d):
+        if d == 'H':
+            # Check boxes this edge affects
+            for br, bc in [(r-1, c) if r > 0 else None, (r, c) if r < 4 else None]:
+                if br is not None:
+                    lines = [
+                        horizontal[br, bc], horizontal[br+1, bc],
+                        vertical[br, bc], vertical[br, bc+1]
+                    ]
+                    opponent_sides = sum(1 for val in lines if val == -1)
+                    if opponent_sides >= 3 and capture[br, bc] == 0:
+                        return True
+        else:  # 'V'
+            # Check boxes this edge affects
+            for br, bc in [(r, c-1) if c > 0 else None, (r, c) if c < 4 else None]:
+                if bc is not None:
+                    lines = [
+                        horizontal[br, bc], horizontal[br+1, bc],
+                        vertical[br, bc], vertical[br, bc+1]
+                    ]
+                    opponent_sides = sum(1 for val in lines if val == -1)
+                    if opponent_sides >= 3 and capture[br, bc] == 0:
+                        return True
+        return False
+    
+    # Helper to check if a move would be dangerous (create a 3-sided box)
+    def is_dangerous(r, c, d):
+        if d == 'H':
+            for br, bc in [(r-1, c) if r > 0 else None, (r, c) if r < 4 else None]:
+                if br is not None:
+                    sides = [
+                        horizontal[br, bc], horizontal[br+1, bc],
+                        vertical[br, bc], vertical[br, bc+1]
+                    ]
+                    completed_sides = sum(1 for val in sides if val != 0)
+                    if completed_sides == 3:
+                        return True
+        else:  # 'V'
+            for br, bc in [(r, c-1) if c > 0 else None, (r, c) if c < 4 else None]:
+                if bc is not None:
+                    sides = [
+                        horizontal[br, bc], horizontal[br+1, bc],
+                        vertical[br, bc], vertical[br, bc+1]
+                    ]
+                    completed_sides = sum(1 for val in sides if val != 0)
+                    if completed_sides == 3:
+                        return True
+        return False
+    
+    # Priority 1: Complete our own boxes
+    completing_moves = []
+    for r in range(5):
+        for c in range(5):
+            for d in ['H', 'V']:
+                if is_legal(r, c, d) and completes_box(r, c, d):
+                    completing_moves.append((r, c, d))
+    
+    if completing_moves:
+        return f"{completing_moves[0][0]},{completing_moves[0][1]},{completing_moves[0][2]}"
+    
+    # Priority 2: Block the opponent's winning moves
+    blocking_moves = []
+    for r in range(5):
+        for c in range(5):
+            for d in ['H', 'V']:
+                if is_legal(r, c, d) and can_block_opponent(r, c, d):
+                    blocking_moves.append((r, c, d))
+    
+    if blocking_moves:
+        return f"{blocking_moves[0][0]},{blocking_moves[0][1]},{blocking_moves[0][2]}"
+    
+    # Priority 3: Avoid dangerous moves that create 3-sided boxes
+    safe_moves = []
+    for r in range(5):
+        for c in range(5):
+            for d in ['H', 'V']:
+                if is_legal(r, c, d) and not is_dangerous(r, c, d):
+                    safe_moves.append((r, c, d))
+    
+    if safe_moves:
+        return f"{safe_moves[0][0]},{safe_moves[0][1]},{safe_moves[0][2]}"
+    
+    # Final fallback: any legal move
+    all_moves = []
+    for r in range(4):
+        for c in range(5):
+            if horizontal[r, c] == 0:
+                all_moves.append(f"{r},{c},H")
+    
+    for r in range(5):
+        for c in range(4):
+            if vertical[r, c] == 0:
+                all_moves.append(f"{r},{c},V")
+    
+    return all_moves[0]
+```

@@ -1,0 +1,128 @@
+
+import numpy as np
+from collections import deque
+
+DIRECTIONS = ((0, 1), (0, -1), (1, 0), (-1, 0))
+
+def get_group(board, pos, player):
+    """Get group of connected stones via DFS"""
+    if board[pos] != player:
+        return set()
+    
+    group = {pos}
+    stack = [pos]
+    while stack:
+        r, c = stack.pop()
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            if board[nr, nc] == player and (nr, nc) not in group:
+                group.add((nr, nc))
+                stack.append((nr, nc))
+    return group
+
+def get_liberties(board, group):
+    """Get liberties of a group"""
+    libs = set()
+    for r, c in group:
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            if board[nr, nc] == 0:
+                libs.add((nr, nc))
+    return libs
+
+def would_capture(board, move, player):
+    """Check if move captures opponent stones"""
+    r, c = move
+    temp = board.copy()
+    temp[move] = player
+    opp = 2 if player == 1 else 1
+    
+    for dr, dc in DIRECTIONS:
+        nr, nc = r + dr, c + dc
+        if temp[nr, nc] == opp:
+            group = get_group(temp, (nr, nc), opp)
+            if len(get_liberties(temp, group)) == 0:
+                return True
+    return False
+
+def is_suicide(board, move, player):
+    """Check if move is suicide (no capture)"""
+    if would_capture(board, move, player):
+        return False
+    
+    temp = board.copy()
+    temp[move] = player
+    group = get_group(temp, move, player)
+    return len(get_liberties(temp, group)) == 0
+
+def get_priority_moves():
+    """Return prioritized strategic points for 19x19"""
+    return [
+        (4, 4), (4, 16), (16, 16), (16, 4),  # 4-4 corners
+        (3, 3), (3, 17), (17, 17), (17, 3),  # 3-3 corners
+        (10, 10),  # Center
+        (4, 10), (10, 4), (10, 16), (16, 10),  # Side stars
+        (7, 7), (7, 13), (13, 13), (13, 7),  # Small board stars
+    ]
+
+def policy(me, opponent, memory):
+    """
+    Greedy tactical Go policy for 19x19.
+    Returns: ((row, col), memory_dict)
+    """
+    # Create padded board (indices 1-19 are valid)
+    board = np.zeros((21, 21), dtype=np.int8)
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = 2
+    
+    visited = set()
+    
+    # 1. Capture opponent groups in atari
+    for r, c in opponent:
+        if (r, c) in visited:
+            continue
+        group = get_group(board, (r, c), 2)
+        visited.update(group)
+        libs = get_liberties(board, group)
+        if len(libs) == 1:
+            move = next(iter(libs))
+            if board[move] == 0 and not is_suicide(board, move, 1):
+                return move, memory
+    
+    # 2. Save my groups in atari
+    visited.clear()
+    for r, c in me:
+        if (r, c) in visited:
+            continue
+        group = get_group(board, (r, c), 1)
+        visited.update(group)
+        libs = get_liberties(board, group)
+        if len(libs) == 1:
+            move = next(iter(libs))
+            if board[move] == 0 and not is_suicide(board, move, 1):
+                return move, memory
+    
+    # 3. Strategic priority moves
+    for move in get_priority_moves():
+        if board[move] == 0 and not is_suicide(board, move, 1):
+            return move, memory
+    
+    # 4. Expand near my stones
+    for r, c in me:
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            move = (nr, nc)
+            if 1 <= nr <= 19 and 1 <= nc <= 19:
+                if board[move] == 0 and not is_suicide(board, move, 1):
+                    return move, memory
+    
+    # 5. Any legal move (row-major)
+    for r in range(1, 20):
+        for c in range(1, 20):
+            if board[r, c] == 0 and not is_suicide(board, (r, c), 1):
+                return (r, c), memory
+    
+    # Pass if no legal moves
+    return (0, 0), memory

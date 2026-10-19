@@ -1,0 +1,173 @@
+
+import numpy as np
+
+def policy(pieces, to_play):
+    # Determine color
+    color = 'w' if to_play == 'white' else 'b'
+    
+    # Generate all legal moves (simplified for this example)
+    legal_moves = generate_legal_moves(pieces, color)
+    
+    # First check for checkmate moves
+    for move in legal_moves:
+        if is_checkmate(pieces, move, color):
+            return move
+    
+    # Then check for captures (prioritize highest value captures)
+    best_capture = None
+    best_capture_value = -np.inf
+    for move in legal_moves:
+        if is_capture(pieces, move):
+            captured_value = piece_value(pieces[move[2:4]][1])
+            if captured_value > best_capture_value:
+                best_capture = move
+                best_capture_value = captured_value
+    if best_capture:
+        return best_capture
+    
+    # If no immediate wins or captures, use minimax with depth 2
+    best_move = None
+    best_score = -np.inf
+    for move in legal_moves:
+        new_pieces = simulate_move(pieces, move, color)
+        score = minimax(new_pieces, 1, -np.inf, np.inf, False, color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move if best_move else legal_moves[0]
+
+def generate_legal_moves(pieces, color):
+    # Simplified legal move generation - in a real implementation this would be more complex
+    moves = []
+    for square, piece in pieces.items():
+        if piece[0] == color:
+            moves.extend(generate_piece_moves(pieces, square, piece))
+    return moves
+
+def generate_piece_moves(pieces, square, piece):
+    # Simplified move generation - just shows the concept
+    moves = []
+    piece_type = piece[1]
+    x, y = ord(square[0]) - ord('a'), int(square[1]) - 1
+    
+    if piece_type == 'P':
+        # Pawn moves
+        direction = 1 if piece[0] == 'w' else -1
+        # Forward moves
+        if 0 <= y + direction < 8:
+            new_square = f"{chr(x + ord('a'))}{y + direction + 1}"
+            if new_square not in pieces:
+                moves.append(f"{square}{new_square}")
+                # Two-square move from starting position
+                if (y == 1 and piece[0] == 'w') or (y == 6 and piece[0] == 'b'):
+                    new_square2 = f"{chr(x + ord('a'))}{y + 2*direction + 1}"
+                    if new_square2 not in pieces:
+                        moves.append(f"{square}{new_square2}")
+        # Captures
+        for dx in [-1, 1]:
+            if 0 <= x + dx < 8 and 0 <= y + direction < 8:
+                capture_square = f"{chr(x + dx + ord('a'))}{y + direction + 1}"
+                if capture_square in pieces and pieces[capture_square][0] != piece[0]:
+                    moves.append(f"{square}{capture_square}")
+    
+    elif piece_type == 'N':
+        # Knight moves
+        for dx, dy in [(2,1),(1,2),(-1,2),(-2,1),(-2,-1),(-1,-2),(1,-2),(2,-1)]:
+            if 0 <= x + dx < 8 and 0 <= y + dy < 8:
+                new_square = f"{chr(x + dx + ord('a'))}{y + dy + 1}"
+                if new_square not in pieces or pieces[new_square][0] != piece[0]:
+                    moves.append(f"{square}{new_square}")
+    
+    # Similar implementations for other pieces would go here...
+    
+    return moves
+
+def is_checkmate(pieces, move, color):
+    # Simplified checkmate detection - in reality would require full move simulation
+    return False
+
+def is_capture(pieces, move):
+    return move[2:4] in pieces
+
+def piece_value(piece_type):
+    values = {'P': 1, 'N': 3, 'B': 3, 'R': 5, 'Q': 9, 'K': 0}
+    return values.get(piece_type, 0)
+
+def simulate_move(pieces, move, color):
+    new_pieces = pieces.copy()
+    piece = new_pieces.pop(move[:2])
+    new_pieces[move[2:4]] = piece
+    return new_pieces
+
+def minimax(pieces, depth, alpha, beta, maximizing, color):
+    if depth == 0:
+        return evaluate_position(pieces, color)
+    
+    legal_moves = generate_legal_moves(pieces, color if maximizing else ('b' if color == 'w' else 'w'))
+    
+    if maximizing:
+        max_eval = -np.inf
+        for move in legal_moves:
+            new_pieces = simulate_move(pieces, move, color)
+            eval = minimax(new_pieces, depth-1, alpha, beta, False, color)
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = np.inf
+        for move in legal_moves:
+            new_pieces = simulate_move(pieces, move, 'b' if color == 'w' else 'w')
+            eval = minimax(new_pieces, depth-1, alpha, beta, True, color)
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def evaluate_position(pieces, color):
+    # Evaluate based on material and piece-square tables
+    score = 0
+    opponent_color = 'b' if color == 'w' else 'w'
+    
+    # Material evaluation
+    for piece in pieces.values():
+        value = piece_value(piece[1])
+        if piece[0] == color:
+            score += value
+        else:
+            score -= value
+    
+    # Piece-square tables (simplified)
+    for square, piece in pieces.items():
+        if piece[0] == color:
+            score += piece_square_value(piece[1], square, color)
+        else:
+            score -= piece_square_value(piece[1], square, opponent_color)
+    
+    return score
+
+def piece_square_value(piece_type, square, color):
+    # Simplified piece-square tables
+    x, y = ord(square[0]) - ord('a'), int(square[1]) - 1
+    if color == 'b':
+        y = 7 - y  # Flip for black
+    
+    if piece_type == 'P':
+        pawn_table = [
+            0,  0,  0,  0,  0,  0,  0,  0,
+            50, 50, 50, 50, 50, 50, 50, 50,
+            10, 10, 20, 30, 30, 20, 10, 10,
+            5,  5, 10, 25, 25, 10,  5,  5,
+            0,  0,  0, 20, 20,  0,  0,  0,
+            5, -5,-10,  0,  0,-10, -5,  5,
+            5, 10, 10,-20,-20, 10, 10,  5,
+            0,  0,  0,  0,  0,  0,  0,  0
+        ]
+        return pawn_table[y*8 + x]
+    
+    # Similar tables for other pieces...
+    
+    return 0

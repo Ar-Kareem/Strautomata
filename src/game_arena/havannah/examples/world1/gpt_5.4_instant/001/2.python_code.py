@@ -1,0 +1,376 @@
+
+from collections import deque, defaultdict
+import math
+
+N = 15
+
+# Hex neighbors for the coordinate system described in the prompt:
+# (r-1,c), (r+1,c), (r,c-1), (r,c+1), (r-1,c-1), (r+1,c+1)
+DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1)]
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    valid_cells = []
+    occupied = set(me) | set(opp)
+    for r in range(len(valid_mask)):
+        row = valid_mask[r]
+        for c in range(len(row)):
+            if row[c] and (r, c) not in occupied:
+                valid_cells.append((r, c))
+
+    # Absolute safety: always return some legal move if any exist.
+    if not valid_cells:
+        # Should never happen in a normal game, but keep a valid tuple shape.
+        return (0, 0)
+
+    me_set = set(me)
+    opp_set = set(opp)
+
+    corners, edge_of = compute_board_features(valid_mask)
+
+    # Opening: play center-ish if board is empty or near-empty.
+    if len(me) + len(opp) <= 1:
+        best = None
+        best_d = 10**9
+        center = (len(valid_mask) // 2, len(valid_mask) // 2)
+        for mv in valid_cells:
+            d = hex_distance_approx(mv, center)
+            if d < best_d:
+                best_d = d
+                best = mv
+        if best is not None:
+            return best
+
+    # 1) Immediate winning move for us.
+    for mv in ordered_candidates(valid_cells, valid_mask):
+        if is_winning_move(me_set, mv, valid_mask, corners, edge_of):
+            return mv
+
+    # 2) Immediate block of opponent winning move.
+    opp_wins = []
+    for mv in ordered_candidates(valid_cells, valid_mask):
+        if is_winning_move(opp_set, mv, valid_mask, corners, edge_of):
+            opp_wins.append(mv)
+    if opp_wins:
+        # If multiple blocks exist, choose the one best for our own structure.
+        best = max(opp_wins, key=lambda m: evaluate_move(
+            m, me_set, opp_set, valid_mask, corners, edge_of
+        ))
+        return best
+
+    # 3) Heuristic evaluation.
+    best_move = valid_cells[0]
+    best_score = -10**18
+    for mv in ordered_candidates(valid_cells, valid_mask):
+        sc = evaluate_move(mv, me_set, opp_set, valid_mask, corners, edge_of)
+        if sc > best_score:
+            best_score = sc
+            best_move = mv
+    return best_move
+
+
+def ordered_candidates(valid_cells, valid_mask):
+    center = (len(valid_mask) // 2, len(valid_mask) // 2)
+    return sorted(valid_cells, key=lambda x: hex_distance_approx(x, center))
+
+
+def in_bounds(r, c, valid_mask):
+    return 0 <= r < len(valid_mask) and 0 <= c < len(valid_mask[r]) and valid_mask[r][c]
+
+
+def neighbors(cell, valid_mask):
+    r, c = cell
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if in_bounds(nr, nc, valid_mask):
+            yield (nr, nc)
+
+
+def compute_board_features(valid_mask):
+    valid_set = {(r, c) for r in range(len(valid_mask)) for c in range(len(valid_mask[r])) if valid_mask[r][c]}
+
+    # Corner cells are valid cells with degree 3 on a Havannah board.
+    deg3 = []
+    for cell in valid_set:
+        deg = 0
+        r, c = cell
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in valid_set:
+                deg += 1
+        if deg == 3:
+            deg3.append(cell)
+
+    # There should be 6 corners. Sort them cyclic-ish around center by angle.
+    cr = sum(r for r, c in valid_set) / max(1, len(valid_set))
+    cc = sum(c for r, c in valid_set) / max(1, len(valid_set))
+    deg3.sort(key=lambda x: math.atan2(x[0] - cr, x[1] - cc))
+    corners = deg3[:6]
+
+    corner_set = set(corners)
+
+    # Edge classification: valid boundary cells excluding corners.
+    # Boundary cells have degree < 6.
+    boundary = [cell for cell in valid_set if sum(((cell[0] + dr, cell[1] + dc) in valid_set) for dr, dc in DIRS) < 6]
+    noncorner_boundary = [cell for cell in boundary if cell not in corner_set]
+
+    # Build boundary graph and split into 6 edge paths between corners.
+    bset = set(boundary)
+    adj = {}
+    for cell in boundary:
+        adj[cell] = [nb for nb in neighbors(cell, valid_mask) if nb in bset]
+
+    edge_of = {}
+    if len(corners) == 6:
+        # For each pair of adjacent corners in cyclic order, trace boundary path excluding other corners.
+        for i in range(6):
+            a = corners[i]
+            b = corners[(i + 1) % 6]
+            path_cells = boundary_path_between_corners(a, b, adj, corner_set)
+            for cell in path_cells:
+                if cell not in corner_set:
+                    edge_of[cell] = i
+
+    return corners, edge_of
+
+
+def boundary_path_between_corners(a, b, adj, corner_set):
+    # BFS on boundary avoiding traversal through other corners.
+    q = deque([a])
+    parent = {a: None}
+    while q:
+        cur = q.popleft()
+        if cur == b:
+            break
+        for nb in adj.get(cur, []):
+            if nb in parent:
+                continue
+            if nb in corner_set and nb != b:
+                continue
+            parent[nb] = cur
+            q.append(nb)
+    if b not in parent:
+        return []
+    path = []
+    cur = b
+    while cur is not None:
+        path.append(cur)
+        cur = parent[cur]
+    path.reverse()
+    return path
+
+
+def is_winning_move(stones, mv, valid_mask, corners, edge_of):
+    s = set(stones)
+    s.add(mv)
+    if wins_bridge_or_fork(s, valid_mask, corners, edge_of):
+        return True
+    if wins_ring(s, valid_mask):
+        return True
+    return False
+
+
+def wins_bridge_or_fork(stones, valid_mask, corners, edge_of):
+    corners_set = set(corners)
+    visited = set()
+    for st in stones:
+        if st in visited:
+            continue
+        q = [st]
+        visited.add(st)
+        comp = []
+        while q:
+            cur = q.pop()
+            comp.append(cur)
+            for nb in neighbors(cur, valid_mask):
+                if nb in stones and nb not in visited:
+                    visited.add(nb)
+                    q.append(nb)
+
+        touched_corners = set()
+        touched_edges = set()
+        for cell in comp:
+            if cell in corners_set:
+                touched_corners.add(cell)
+            e = edge_of.get(cell, None)
+            if e is not None:
+                touched_edges.add(e)
+
+        if len(touched_corners) >= 2:
+            return True
+        if len(touched_edges) >= 3:
+            return True
+    return False
+
+
+def wins_ring(stones, valid_mask):
+    # Ring iff there exists at least one valid non-stone cell not connected to the boundary
+    # through non-stone cells.
+    valid_cells = [(r, c) for r in range(len(valid_mask)) for c in range(len(valid_mask[r])) if valid_mask[r][c]]
+    stone_set = set(stones)
+
+    exterior_starts = []
+    for cell in valid_cells:
+        if cell in stone_set:
+            continue
+        deg = 0
+        for nb in neighbors(cell, valid_mask):
+            deg += 1
+        if deg < 6:  # board-boundary cell in the complement graph
+            exterior_starts.append(cell)
+
+    seen = set(exterior_starts)
+    dq = deque(exterior_starts)
+    while dq:
+        cur = dq.popleft()
+        for nb in neighbors(cur, valid_mask):
+            if nb in stone_set or nb in seen:
+                continue
+            seen.add(nb)
+            dq.append(nb)
+
+    for cell in valid_cells:
+        if cell not in stone_set and cell not in seen:
+            return True
+    return False
+
+
+def evaluate_move(mv, me_set, opp_set, valid_mask, corners, edge_of):
+    r, c = mv
+    score = 0.0
+
+    # Center preference.
+    center = (len(valid_mask) // 2, len(valid_mask) // 2)
+    score -= 1.2 * hex_distance_approx(mv, center)
+
+    # Immediate structural result if played.
+    my_after = set(me_set)
+    my_after.add(mv)
+
+    # Connectivity and local shape.
+    my_nbs = 0
+    opp_nbs = 0
+    empty_nbs = 0
+    adjacent_my_components = set()
+    adjacent_opp_components = set()
+
+    my_comp_id = component_ids(me_set, valid_mask)
+    opp_comp_id = component_ids(opp_set, valid_mask)
+
+    for nb in neighbors(mv, valid_mask):
+        if nb in me_set:
+            my_nbs += 1
+            adjacent_my_components.add(my_comp_id[nb])
+        elif nb in opp_set:
+            opp_nbs += 1
+            adjacent_opp_components.add(opp_comp_id[nb])
+        else:
+            empty_nbs += 1
+
+    score += 10.0 * my_nbs
+    score += 14.0 * max(0, len(adjacent_my_components) - 1)  # merge components
+    score += 4.0 * opp_nbs  # contact / block
+
+    # Side and corner potential.
+    corners_set = set(corners)
+    if mv in corners_set:
+        score += 18.0
+    e = edge_of.get(mv, None)
+    if e is not None:
+        score += 8.0
+
+    # Count distinct corners/edges touched by resulting component.
+    touched_corners, touched_edges, comp_size = resulting_component_features(
+        mv, me_set, valid_mask, corners_set, edge_of
+    )
+    score += 9.0 * len(touched_corners)
+    score += 7.0 * len(touched_edges)
+    score += 0.25 * comp_size
+
+    # Tactical pressure: if move creates multiple next-turn wins, reward.
+    threats = count_next_turn_wins(my_after, opp_set, valid_mask, corners, edge_of, limit=6)
+    score += 20.0 * threats
+
+    # Defensive value: occupying strong opponent continuation points.
+    opp_touched_corners, opp_touched_edges, _ = resulting_component_features(
+        mv, opp_set, valid_mask, corners_set, edge_of
+    )
+    score += 6.0 * len(opp_touched_corners)
+    score += 5.0 * len(opp_touched_edges)
+
+    # Avoid moves too isolated in midgame unless central.
+    if my_nbs == 0 and opp_nbs == 0:
+        score -= 6.0
+
+    # Small bonus for preserving liberties around our groups.
+    score += 1.0 * empty_nbs
+
+    return score
+
+
+def component_ids(stones, valid_mask):
+    comp = {}
+    cid = 0
+    stones = set(stones)
+    for st in stones:
+        if st in comp:
+            continue
+        dq = [st]
+        comp[st] = cid
+        while dq:
+            cur = dq.pop()
+            for nb in neighbors(cur, valid_mask):
+                if nb in stones and nb not in comp:
+                    comp[nb] = cid
+                    dq.append(nb)
+        cid += 1
+    return comp
+
+
+def resulting_component_features(mv, stones, valid_mask, corners_set, edge_of):
+    stones2 = set(stones)
+    stones2.add(mv)
+    dq = [mv]
+    seen = {mv}
+    touched_corners = set()
+    touched_edges = set()
+    size = 0
+    while dq:
+        cur = dq.pop()
+        size += 1
+        if cur in corners_set:
+            touched_corners.add(cur)
+        e = edge_of.get(cur, None)
+        if e is not None:
+            touched_edges.add(e)
+        for nb in neighbors(cur, valid_mask):
+            if nb in stones2 and nb not in seen:
+                seen.add(nb)
+                dq.append(nb)
+    return touched_corners, touched_edges, size
+
+
+def count_next_turn_wins(my_after, opp_set, valid_mask, corners, edge_of, limit=6):
+    occupied = set(my_after) | set(opp_set)
+    candidates = []
+    for r in range(len(valid_mask)):
+        for c in range(len(valid_mask[r])):
+            if valid_mask[r][c] and (r, c) not in occupied:
+                candidates.append((r, c))
+    center = (len(valid_mask) // 2, len(valid_mask) // 2)
+    candidates.sort(key=lambda x: hex_distance_approx(x, center))
+
+    wins = 0
+    for mv in candidates[:40]:  # cap for speed
+        if is_winning_move(my_after, mv, valid_mask, corners, edge_of):
+            wins += 1
+            if wins >= limit:
+                break
+    return wins
+
+
+def hex_distance_approx(a, b):
+    # Good monotone centrality measure for this skewed coordinate system.
+    dr = a[0] - b[0]
+    dc = a[1] - b[1]
+    return max(abs(dr), abs(dc), abs(dr - dc))

@@ -1,0 +1,291 @@
+<thinking>
+To perform well in this Battleship-like game, I need a policy that balances exploration (hunting for ships) with exploitation (targeting around hits to sink ships). The strategy involves two main modes:
+
+1. **Hunt Mode**: When there are no unresolved hits (i.e., hits not yet part of a confirmed ship direction), we should fire at cells with high "probability" of containing ships. A common effective method is to use **probability-based targeting** via a *hit map* that scores each cell based on how many ship placements (of all remaining possible ships) could cover that cell, given known misses and hits.
+
+2. **Target (or Destroy) Mode**: When we have a hit (or multiple hits that may belong to the same ship), we should explore adjacent cells (up/down/left/right) to find the full orientation of the ship. This is especially important for efficiency—once you hit a ship, you should sink it quickly to eliminate a threat.
+
+However, computing a full convolution of all possible ship placements every turn (which is the optimal Bayesian approach) may be expensive, but on a 10x10 grid with moderate pruning it's feasible within 1 second.
+
+### Strategy Overview:
+- Maintain no persistent state — use only the current `board` to decide next move.
+- If there are any hits (`1`) that haven't been fully explored, prioritize adjacent cells in the four cardinal directions.
+- When no hits are present, compute a likelihood map for all possible ship positions of lengths [2,3,3,4,5], respecting:
+  - Ships must lie entirely in bounds.
+  - Ships cannot pass through a miss (-1).
+  - Ships must cover any known hits that lie along their path.
+  - We don't double-count known sunk ships, but since we can't know exactly which hits belong to which ship, we simply assume all ships are still active.
+
+But given we don't track opponent ship status, we assume all ships are alive until all their cells are hit.
+
+To approximate the probability map:
+- For each ship length in [2,3,3,4,5], count the number of valid horizontal and vertical placements that do not intersect any `-1` and fully contain any `1`s they cover.
+
+However, this full convolution may be slow in pure Python, so we optimize using loops carefully, or use early termination.
+
+But since 10x10 is small, we can brute-force iterate over ship placements.
+
+### Optimizations:
+- We only score cells that are unknown (0). Skip if already fired at.
+- When we have hits, we first try to extend from them.
+
+### Algorithm:
+1. Find all hit cells that are not yet surrounded in all directions and have adjacent unknowns.
+2. If such hits exist, try adjacent up/down/left/right that are unknown.
+3. Otherwise, compute a "search grid" scoring each cell by number of possible ship placements overlapping it.
+
+We can improve further by avoiding symmetry-breaking bias using even-odd (checkerboard) for first shot, but probability map will naturally favor center.
+
+But note: ships of even length (2,4) can be placed on both colors, but odd-length ships (3,5,3) cover one more of one parity. But overall center remains better.
+
+Let’s implement full placement-based likelihood scoring.
+
+Steps for scoring:
+- For each ship length in [5,4,3,3,2] (duplicates are okay, we’ll count placements independently):
+   - For each starting position and direction (horizontal/vertical):
+      - Check if the ship fits without overlapping any miss (-1).
+      - If it covers any hit (1), verify that the hit aligns with the ship segment.
+      - If valid, increment a counter for every cell in that ship.
+
+But note: we must not count a ship placement that overlaps a -1.
+
+Finally, choose the unknown cell with the highest score.
+
+But when in target mode, we restrict to neighbors of hits — only use probability map as fallback.
+
+Edge case: if all neighbors of a hit are invalid, then mark that hit as isolated and revert to hunt mode.
+
+We must avoid revisiting already fired cells.
+
+Let’s implement accordingly.
+
+We don’t have state between calls, so we can’t remember past decisions — but the board reflects all past actions.
+
+Implementation plan:
+
+1. Scan for any hits (value == 1).
+2. If hits exist:
+   - For each hit, check 4 neighbors.
+   - Return first unknown neighbor.
+3. Else (no hits):
+   - Compute a score grid (same size as board).
+   - For each ship length in [2,3,3,4,5]:
+       For each row, col, for each direction:
+           simulate placing ship, check validity.
+           if valid, increment score for each cell.
+   - Find the unknown cell (0) with highest score.
+   - Return it.
+
+But wait: two ships of length 3 — we are counting them as two separate templates, so we add more weight to frequently occupied cells. This is intended.
+
+We assume all ships are still alive — a simplification.
+
+Even if a ship is sunk, its cells are all hit (1), but we don't know which 3-cell group forms a sunk ship — so we continue to treat all as potentially active. This might overcount, but it's acceptable.
+
+To avoid infinite loops, ensure that we only consider unknown cells as targets.
+
+Let’s code accordingly.
+
+Performance: 10x10x(5+4) directions x average length ~ 100 x 9 x 18 ~ 16200 placements — very manageable.
+
+We’ll do:
+
+for length in [2, 3, 3, 4, 5]:
+    for r in 0..9:
+        for c in 0..9:
+            for dr, dc in [(0,1), (1,0)]:
+                check if ship from (r,c) to (r+dr*(len-1), c+dc*(len-1)) fits
+                if not in bounds: skip
+                for each cell in the ship:
+                    if board cell is -1 → invalid
+                    if board cell is 1 → it's okay (ship covers that hit)
+                But: if the ship is placed, it must cover *all* hits that lie on it?
+                Actually: we can’t have a ship segment that misses covering a hit that lies within its span — so yes, we require that each hit on the span is covered.
+
+                But also: a ship must not go over a hit that's not alignable? No, as long as the hit is on the segment it's okay.
+
+                But we don’t require that the ship *must* cover a hit — it can be placed even if it doesn’t cover any hit.
+
+                So the rule is:
+                  - All cells must be either 0 (unknown) or 1 (hit). None can be -1.
+                  - If a cell is 1, then the ship must cover it (but we’re placing it, so if the hit is within the ship’s cells, it’s okay).
+
+                So algorithm for a candidate segment:
+                  - for i in range(length):
+                      nr, nc = r + dr*i, c + dc*i
+                      if board[nr][nc] == -1: invalid
+                  - Then it’s valid.
+
+                We don’t require it to cover a hit — because we might be placing a ship that hasn't been hit yet.
+
+                But: if we already have hits, we want to bias toward placements that cover them? Actually, the scoring naturally does that: cells with hits will be covered only by ships that include them, so their score increases.
+
+                So no need for special bias.
+
+                However, we must skip placements that have any -1.
+
+4. After computing total score, pick the unknown cell with highest score.
+
+But avoid hits and misses as targets.
+
+We’ll create a score grid of zeros, same shape.
+
+Edge: we might have multiple hits that suggest a direction — our neighbor-first approach will follow it.
+
+One improvement: when in target mode, instead of just first neighbor, we could follow the direction if we already have two hits in a line.
+
+But for simplicity, let's just use neighbor probing.
+
+But if we have two hits in a row, we can infer direction and only check along that line.
+
+But due to no state, we can scan around and infer.
+
+But again, for simplicity, stick with: if any hit has an unknown neighbor, pick one.
+
+But to avoid randomness, we should pick in a fixed order: up, down, left, right.
+
+And if we have multiple hits, we may want to continue from a hit with the most "open" neighbors? But simpler: just scan row by row, column by column, and return first valid neighbor of any hit.
+
+Alternatively, scan for all hits, collect all unknown neighbors, and pick the one with highest likelihood from the score map? But that complicates.
+
+Let’s do:
+
+- Step 1: Collect all hits.
+- Step 2: For each hit in row-major order:
+   - For each direction in [up, down, left, right]:
+       - if neighbor is in bounds and unknown → return it.
+- Step 3: If no such neighbor, go to hunt mode: compute probability map and pick best.
+
+This ensures we keep probing around hits.
+
+But if a hit is completely surrounded by misses or out of bounds, then we skip.
+
+Now, build the score map.
+
+Implementation:
+
+score = [[0]*10 for _ in range(10)]
+
+for length in [2,3,3,4,5]:
+    for r in range(10):
+        for c in range(10):
+            # try horizontal
+            if c + length <= 10:
+                valid = True
+                for i in range(length):
+                    if board[r][c+i] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for i in range(length):
+                        score[r][c+i] += 1
+            # try vertical
+            if r + length <= 10:
+                valid = True
+                for i in range(length):
+                    if board[r+i][c] == -1:
+                        valid = False
+                        break
+                if valid:
+                    for i in range(length):
+                        score[r+i][c] += 1
+
+Then, find the unknown cell (board[r][c] == 0) with maximum score.
+
+If there are ties, pick the first in row-major order.
+
+This is acceptable.
+
+Let’s code accordingly.
+
+Note: this counts every possible ship placement, and each ship length is considered independently, with two 3s adding extra weight to 3-length ship opportunities.
+
+This is intentional and standard.
+
+Now code.
+
+One more note: at the start, no hits, so we go to hunt mode.
+
+The center cells will naturally have higher counts because more ships can be placed through them.
+
+For example, a ship of length 5 can be placed in more ways through (4,4) than (0,0).
+
+So first shot will likely be near center.
+
+But we don’t use checkerboard explicitly, but it may emerge.
+
+We can also add a small bias to even-sum cells (r+c even) to break ties, because a length-5 ship must cover 3 of one parity and 2 of other, and overall more ship placements fall on certain parities? But not necessary.
+
+Our counting will naturally reflect that.
+
+Let's implement.
+
+We'll do:
+
+- If there is any hit with an unknown neighbor, return that neighbor (in order: up, down, left, right, and hits scanned in row-major).
+- Else, compute the score grid as above.
+- Then find the best unknown cell.
+
+We must never return a cell that is already fired (0 only).
+
+Let’s code accordingly.
+
+Edge: when all cells are fired — shouldn't happen, but if so, return (0,0) as fallback.
+
+But game should end before that.
+
+Now write the code.
+</thinking>
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # First, look for any hit that has an unknown neighbor
+    directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]  # up, down, left, right
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:  # hit found
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10:
+                        if board[nr][nc] == 0:  # unknown
+                            return (nr, nc)
+    
+    # No unresolved hit found — go into hunt mode: compute likelihood map
+    score = [[0] * 10 for _ in range(10)]
+    ship_lengths = [2, 3, 3, 4, 5]  # including two ships of length 3
+    
+    for length in ship_lengths:
+        # Horizontal placements
+        for r in range(10):
+            for c in range(10 - length + 1):
+                # Check if this segment is valid (no misses)
+                valid = True
+                for i in range(length):
+                    if board[r][c+i] == -1:  # miss in the way
+                        valid = False
+                        break
+                if valid:
+                    for i in range(length):
+                        score[r][c+i] += 1
+        # Vertical placements
+        for c in range(10):
+            for r in range(10 - length + 1):
+                valid = True
+                for i in range(length):
+                    if board[r+i][c] == -1:  # miss in the way
+                        valid = False
+                        break
+                if valid:
+                    for i in range(length):
+                        score[r+i][c] += 1
+    
+    # Find the unknown cell with the highest score
+    best_score = -1
+    best_cell = (0, 0)
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:  # only consider unknown cells
+                if score[r][c] > best_score:
+                    best_score = score[r][c]
+                    best_cell = (r, c)
+    return best_cell
+</code>

@@ -1,0 +1,137 @@
+<thinking>
+I need to design a Battleship targeting policy that efficiently finds and sinks ships. Let me think about the key strategies:
+
+1. **Initial Search Phase**: When I have no hits, I should use a search pattern that maximizes the chance of hitting ships. A checkerboard pattern is efficient since ships are at least 2 cells long.
+
+2. **Hunt Mode**: Once I get a hit, I need to find the direction of the ship by checking adjacent cells (up, down, left, right).
+
+3. **Target Mode**: Once I know the direction, I should continue firing along that line until I sink the ship.
+
+4. **Ship Tracking**: I should keep track of which ships I've sunk to know what's still out there.
+
+Key considerations:
+- Ships have lengths [5, 4, 3, 3, 2]
+- Ships don't overlap and are in straight lines
+- I need to avoid firing at cells I've already targeted (0 means unfired, -1 means miss, 1 means hit)
+
+Strategy:
+1. Use a checkerboard pattern for initial search
+2. When I hit a ship (find a 1), look for adjacent hits to determine orientation
+3. If I find the orientation, continue firing in that direction
+4. If I have isolated hits (hits without clear direction yet), explore around them
+5. Use probability density to pick the best unfired cell
+
+Let me implement this step by step:
+
+```python
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find all unfired cells
+    unfired = []
+    hits = []
+    
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                unfired.append((i, j))
+            elif board[i][j] == 1:
+                hits.append((i, j))
+    
+    # If we have hits, try to follow up on them
+    if hits:
+        # Look for hits that have unfired adjacent cells
+        for hit_r, hit_c in hits:
+            # Check all 4 directions
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = hit_r + dr, hit_c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    # Check if this direction makes sense
+                    # Look for other hits in the same line
+                    return (nr, nc)
+    
+    # If no immediate targets from hits, use checkerboard pattern
+    checkerboard_unfired = [(r, c) for r, c in unfired if (r + c) % 2 == 0]
+    if checkerboard_unfired:
+        return checkerboard_unfired[0]
+    
+    # If checkerboard is exhausted, return any unfired cell
+    return unfired[0]
+```
+
+Wait, this is too simple. Let me make it more sophisticated:
+
+1. I should prioritize continuing along known ship directions
+2. I should use better heuristics for target selection
+3. I should consider ship sizes when making decisions
+
+Let me revise:
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Find unfired cells and hits
+    unfired = []
+    hits = []
+    
+    for i in range(10):
+        for j in range(10):
+            if board[i][j] == 0:
+                unfired.append((i, j))
+            elif board[i][j] == 1:
+                hits.append((i, j))
+    
+    # Priority 1: Continue attacking along known ship orientations
+    for hit_r, hit_c in hits:
+        # Check if this hit is part of a line of hits (horizontal or vertical)
+        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+        
+        for dr, dc in directions:
+            # Look for adjacent hits in this direction
+            nr, nc = hit_r + dr, hit_c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                # Found a line! Continue in both directions
+                # First try extending the line
+                r, c = nr, nc
+                while 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 1:
+                    r, c = r + dr, c + dc
+                
+                if 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 0:
+                    return (r, c)
+                
+                # Try the opposite direction from the original hit
+                r, c = hit_r - dr, hit_c - dc
+                if 0 <= r < 10 and 0 <= c < 10 and board[r][c] == 0:
+                    return (r, c)
+    
+    # Priority 2: Attack adjacent to isolated hits
+    for hit_r, hit_c in hits:
+        # Check if this is an isolated hit (no adjacent hits)
+        adjacent_hits = 0
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = hit_r + dr, hit_c + dc
+            if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                adjacent_hits += 1
+        
+        if adjacent_hits == 0:  # Isolated hit
+            # Target adjacent unfired cells
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = hit_r + dr, hit_c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    return (nr, nc)
+    
+    # Priority 3: Use checkerboard pattern for search
+    # This is efficient because ships are at least 2 cells long
+    checkerboard_unfired = [(r, c) for r, c in unfired if (r + c) % 2 == 0]
+    if checkerboard_unfired:
+        # Pick the one closest to center for better distribution
+        center_r, center_c = 4.5, 4.5
+        best_cell = min(checkerboard_unfired, 
+                       key=lambda pos: (pos[0] - center_r)**2 + (pos[1] - center_c)**2)
+        return best_cell
+    
+    # Priority 4: Fill in remaining cells
+    if unfired:
+        return unfired[0]
+    
+    # Should never reach here in a valid game
+    return (0, 0)
+</code>

@@ -1,0 +1,90 @@
+The strategy for this policy is to first check if there is an immediate winning move available and take it if possible, then check if the opponent can win in the next turn and block that if necessary (prioritizing moves that achieve both if possible), and finally fall back to selecting a move based on a heuristic that favors central positions (especially the spatial center at (1,1,1)) and avoids vulnerable edges, while ensuring the policy terminates quickly within time constraints by precomputing a list of all 76 winning lines and evaluating only legal moves.
+
+<code>
+import itertools
+
+# Precompute all winning lines as lists of (i, j, k) tuples
+def generate_winning_lines():
+    lines = []
+    
+    # Axis-aligned lines (x, y, z directions)
+    for axis in [0, 1, 2]:
+        for fixed1 in range(3):
+            for fixed2 in range(3):
+                line = []
+                for var in range(3):
+                    pos = [fixed1, fixed2, var]
+                    pos[axis] = var
+                    line.append(tuple(pos))
+                lines.append(line)
+    
+    # Face diagonals (in xy, xz, yz planes)
+    for face in [(0,1), (0,2), (1,2)]:
+        for fixed in [0, 2]:
+            for varying in [0, 1, 2]:
+                line = []
+                for step in range(3):
+                    pos = [varying if face[0] == 0 else (fixed if face[0] == 0 else step),
+                           varying if face[1] == 1 else (fixed if face[1] == 1 else step),
+                           varying if face[0] == 2 else (fixed if face[0] == 2 else step)]
+                    pos[face[0]] = step if varying == 0 else fixed
+                    pos[face[1]] = step if varying == 1 else fixed
+                    pos[face[2]] = step if varying == 2 else fixed
+                    line.append(tuple(pos))
+                lines.append(line)
+    
+    # Space diagonals (4 main ones)
+    space_diagonals = [
+        [(i,i,i) for i in range(3)],
+        [(i,i,2-i) for i in range(3)],
+        [(i,2-i,i) for i in range(3)],
+        [(2-i,i,i) for i in range(3)]
+    ]
+    lines.extend(space_diagonals)
+    
+    # Remove duplicates if any (though unlikely)
+    return lines
+
+WINNING_LINES = generate_winning_lines()
+
+def check_line(board, line, player):
+    count = 0
+    empty = None
+    for i, j, k in line:
+        if board[i][j][k] == player:
+            count += 1
+        elif board[i][j][k] == 0:
+            empty = (i, j, k)
+    return count == 2 and empty
+
+def policy(board):
+    legal_moves = [(i, j, k) for i in range(3) for j in range(3) for k in range(3) if board[i][j][k] == 0]
+    
+    # 1. Check for immediate win
+    for move in legal_moves:
+        if any(check_line(board, line, 1) and move in [check_line(board, line, 1) for line in WINNING_LINES if check_line(board, line, 1)]):
+            # Wait, that logic is wrong. Fix: if placing at move wins a line for me
+            check_move = lambda l, p: [board[x][y][z] for x,y,z in l] == [0 if (x,y,z)!=move else p for x,y,z in l]
+            if any(check_move(line, 1) for line in WINNING_LINES):
+                return move
+    
+    # 2. Check for block (opponent win)
+    for move in legal_moves:
+        temp_board = [row[:] for row in board]  # shallow copy, but lists are nested
+        # Actually, need deep copy for this check, but to save time, simulate by checking lines
+        check_opp = lambda l, p: sum(1 for x,y,z in l if board[x][y][z] == p) == 2 and any(board[x][y][z] == 0 for x,y,z in l)
+        if any(check_opp(line, -1) and move == next((x,y,z) for x,y,z in line if board[x][y][z] == 0) for line in WINNING_LINES if check_opp(line, -1)):
+            return move
+    
+    # 3. Fallback: heuristic - prefer center (1,1,1), then face centers, edge centers, then random
+    preferred = [(1,1,1), (1,1,0), (1,1,2), (1,0,1), (1,2,1), (0,1,1), (2,1,1),
+                 (1,0,0), (1,0,2), (1,2,0), (1,2,2), (0,1,0), (0,1,2), (2,1,0), (2,1,2),
+                 (0,0,1), (0,2,1), (2,0,1), (2,2,1),
+                 (0,0,0), (0,0,2), (0,2,0), (0,2,2), (2,0,0), (2,0,2), (2,2,0), (2,2,2)]
+    for move in preferred:
+        if move in legal_moves:
+            return move
+    
+    # This shouldn't happen if board not full
+    return legal_moves[0] if legal_moves else (0,0,0)
+</code>

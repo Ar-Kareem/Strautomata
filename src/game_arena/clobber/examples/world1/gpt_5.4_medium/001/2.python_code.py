@@ -1,0 +1,380 @@
+
+import time
+
+ROWS, COLS, N = 5, 6, 30
+BOARD_MASK = (1 << N) - 1
+
+DIR_CHARS = "URDL"
+OFFSETS = (-6, 1, 6, -1)  # U, R, D, L
+
+MATE = 100000
+INF = 10**9
+EXACT_ENDGAME = 12
+
+ROW_MASKS = []
+for r in range(ROWS):
+    m = 0
+    for c in range(COLS):
+        m |= 1 << (r * COLS + c)
+    ROW_MASKS.append(m)
+
+COL_MASKS = []
+for c in range(COLS):
+    m = 0
+    for r in range(ROWS):
+        m |= 1 << (r * COLS + c)
+    COL_MASKS.append(m)
+
+ROW0 = ROW_MASKS[0]
+ROW4 = ROW_MASKS[-1]
+COL0 = COL_MASKS[0]
+COL5 = COL_MASKS[-1]
+
+NOT_ROW0 = BOARD_MASK ^ ROW0
+NOT_ROW4 = BOARD_MASK ^ ROW4
+NOT_COL0 = BOARD_MASK ^ COL0
+NOT_COL5 = BOARD_MASK ^ COL5
+
+ADJ = [0] * N
+DEG = [0] * N
+for i in range(N):
+    r, c = divmod(i, COLS)
+    m = 0
+    if r > 0:
+        m |= 1 << (i - COLS)
+    if c + 1 < COLS:
+        m |= 1 << (i + 1)
+    if r + 1 < ROWS:
+        m |= 1 << (i + COLS)
+    if c > 0:
+        m |= 1 << (i - 1)
+    ADJ[i] = m
+    DEG[i] = m.bit_count()
+
+MOVE_TO = [0] * (N * 4)
+MOVE_FROM_BIT = [0] * (N * 4)
+MOVE_TO_BIT = [0] * (N * 4)
+MOVE_STR = [""] * (N * 4)
+for f in range(N):
+    fb = 1 << f
+    r, c = divmod(f, COLS)
+    for d, off in enumerate(OFFSETS):
+        m = (f << 2) | d
+        MOVE_FROM_BIT[m] = fb
+        t = f + off
+        MOVE_TO[m] = t
+        if 0 <= t < N:
+            MOVE_TO_BIT[m] = 1 << t
+        MOVE_STR[m] = f"{r},{c},{DIR_CHARS[d]}"
+
+
+def _flatten_board(board):
+    flat = []
+    for x in board:
+        if isinstance(x, (list, tuple)):
+            flat.extend(x)
+        else:
+            try:
+                flat.extend(list(x))
+            except TypeError:
+                flat.append(x)
+    return flat
+
+
+def _to_bits(board):
+    flat = _flatten_board(board)
+    if len(flat) != N:
+        flat = list(board)
+        if len(flat) != N:
+            flat = _flatten_board(flat)
+
+    bits = 0
+    for i, v in enumerate(flat[:N]):
+        if int(v):
+            bits |= 1 << i
+    return bits
+
+
+def move_count(me, opp):
+    u = ((me & NOT_ROW0) >> COLS) & opp
+    r = ((me & NOT_COL5) << 1) & opp
+    d = ((me & NOT_ROW4) << COLS) & opp
+    l = ((me & NOT_COL0) >> 1) & opp
+    return u.bit_count() + r.bit_count() + d.bit_count() + l.bit_count()
+
+
+def attack_stats(me, opp):
+    u = ((me & NOT_ROW0) >> COLS) & opp
+    r = ((me & NOT_COL5) << 1) & opp
+    d = ((me & NOT_ROW4) << COLS) & opp
+    l = ((me & NOT_COL0) >> 1) & opp
+
+    moves = u.bit_count() + r.bit_count() + d.bit_count() + l.bit_count()
+    targets = (u | r | d | l).bit_count()
+    active = ((u << COLS) | (r >> 1) | (d >> COLS) | (l << 1)).bit_count()
+    return moves, targets, active
+
+
+def gen_moves(me, opp):
+    moves = []
+
+    dests = ((me & NOT_ROW0) >> COLS) & opp
+    while dests:
+        lb = dests & -dests
+        t = lb.bit_length() - 1
+        moves.append(((t + COLS) << 2) | 0)
+        dests ^= lb
+
+    dests = ((me & NOT_COL5) << 1) & opp
+    while dests:
+        lb = dests & -dests
+        t = lb.bit_length() - 1
+        moves.append(((t - 1) << 2) | 1)
+        dests ^= lb
+
+    dests = ((me & NOT_ROW4) << COLS) & opp
+    while dests:
+        lb = dests & -dests
+        t = lb.bit_length() - 1
+        moves.append(((t - COLS) << 2) | 2)
+        dests ^= lb
+
+    dests = ((me & NOT_COL0) >> 1) & opp
+    while dests:
+        lb = dests & -dests
+        t = lb.bit_length() - 1
+        moves.append(((t + 1) << 2) | 3)
+        dests ^= lb
+
+    return moves
+
+
+def greedy_best_move(me, opp, moves):
+    best = moves[0]
+    best_score = -INF
+
+    for m in moves:
+        fb = MOVE_FROM_BIT[m]
+        tb = MOVE_TO_BIT[m]
+        t = MOVE_TO[m]
+
+        child_me = opp ^ tb
+        child_opp = me ^ fb ^ tb
+
+        opp_next = move_count(child_me, child_opp)
+        my_future = move_count(child_opp, child_me)
+
+        score = -1000 * opp_next + 50 * my_future + (4 - DEG[t])
+        if opp_next == 0:
+            score += 1000000
+
+        if score > best_score:
+            best_score = score
+            best = m
+
+    return best
+
+
+class _Timeout(Exception):
+    pass
+
+
+class Engine:
+    __slots__ = ("deadline", "tt", "history", "nodes")
+
+    def __init__(self, deadline):
+        self.deadline = deadline
+        self.tt = {}
+        self.history = [0] * (N * 4)
+        self.nodes = 0
+
+    def check_time(self):
+        self.nodes += 1
+        if (self.nodes & 1023) == 0 and time.perf_counter() >= self.deadline:
+            raise _Timeout
+
+    def evaluate(self, me, opp):
+        my_moves, my_targets, my_active = attack_stats(me, opp)
+        opp_moves, opp_targets, opp_active = attack_stats(opp, me)
+        rem = (me | opp).bit_count()
+        parity = 4 if (rem & 1) == 0 else -4
+
+        return (
+            90 * (my_moves - opp_moves)
+            + 25 * (my_targets - opp_targets)
+            + 10 * (my_active - opp_active)
+            + 3 * (me.bit_count() - opp.bit_count())
+            + parity
+        )
+
+    def ordered_moves(self, me, opp, moves, tt_move=None, hint_move=None):
+        if len(moves) <= 1:
+            return moves
+
+        scored = []
+        history = self.history
+
+        for m in moves:
+            score = history[m]
+
+            if m == tt_move:
+                score += 1_000_000
+            if hint_move is not None and m == hint_move:
+                score += 800_000
+
+            fb = MOVE_FROM_BIT[m]
+            tb = MOVE_TO_BIT[m]
+            t = MOVE_TO[m]
+
+            child_me = opp ^ tb
+            child_opp = me ^ fb ^ tb
+            opp_next = move_count(child_me, child_opp)
+
+            if opp_next == 0:
+                score += 500_000
+            score += (30 - opp_next) * 100
+            score += (4 - DEG[t]) * 5
+
+            scored.append((score, m))
+
+        scored.sort(reverse=True)
+        return [m for _, m in scored]
+
+    def search(self, me, opp, depth, alpha, beta, ply):
+        self.check_time()
+
+        moves = gen_moves(me, opp)
+        if not moves:
+            return -MATE + ply
+
+        rem = (me | opp).bit_count()
+        if depth == 0 and rem > EXACT_ENDGAME:
+            return self.evaluate(me, opp)
+
+        key = (me, opp)
+        entry = self.tt.get(key)
+        tt_move = None
+
+        if entry is not None:
+            edepth, eflag, evalv, emove = entry
+            tt_move = emove
+            if edepth >= depth:
+                if eflag == 0:
+                    return evalv
+                elif eflag < 0:
+                    beta = min(beta, evalv)
+                else:
+                    alpha = max(alpha, evalv)
+                if alpha >= beta:
+                    return evalv
+
+        orig_alpha = alpha
+        orig_beta = beta
+
+        best = -INF
+        best_move = moves[0]
+        ordered = self.ordered_moves(me, opp, moves, tt_move, None)
+        child_depth = depth - 1 if depth > 0 else 0
+
+        for i, m in enumerate(ordered):
+            fb = MOVE_FROM_BIT[m]
+            tb = MOVE_TO_BIT[m]
+
+            child_me = opp ^ tb
+            child_opp = me ^ fb ^ tb
+
+            if i == 0:
+                score = -self.search(child_me, child_opp, child_depth, -beta, -alpha, ply + 1)
+            else:
+                score = -self.search(child_me, child_opp, child_depth, -alpha - 1, -alpha, ply + 1)
+                if alpha < score < beta:
+                    score = -self.search(child_me, child_opp, child_depth, -beta, -alpha, ply + 1)
+
+            if score > best:
+                best = score
+                best_move = m
+                if score > alpha:
+                    alpha = score
+                    if alpha >= beta:
+                        self.history[m] += (depth + 1) * (depth + 1)
+                        break
+
+        if best <= orig_alpha:
+            flag = -1
+        elif best >= orig_beta:
+            flag = 1
+        else:
+            flag = 0
+
+        self.tt[key] = (depth, flag, best, best_move)
+        return best
+
+    def search_root(self, me, opp, depth, hint_move=None):
+        self.check_time()
+
+        moves = gen_moves(me, opp)
+        if not moves:
+            return -MATE, None
+
+        entry = self.tt.get((me, opp))
+        tt_move = entry[3] if entry is not None else None
+
+        ordered = self.ordered_moves(me, opp, moves, tt_move, hint_move)
+
+        alpha = -INF
+        beta = INF
+        best = -INF
+        best_move = ordered[0]
+        child_depth = depth - 1 if depth > 0 else 0
+
+        for i, m in enumerate(ordered):
+            fb = MOVE_FROM_BIT[m]
+            tb = MOVE_TO_BIT[m]
+
+            child_me = opp ^ tb
+            child_opp = me ^ fb ^ tb
+
+            if i == 0:
+                score = -self.search(child_me, child_opp, child_depth, -beta, -alpha, 1)
+            else:
+                score = -self.search(child_me, child_opp, child_depth, -alpha - 1, -alpha, 1)
+                if alpha < score < beta:
+                    score = -self.search(child_me, child_opp, child_depth, -beta, -alpha, 1)
+
+            if score > best:
+                best = score
+                best_move = m
+                if score > alpha:
+                    alpha = score
+
+        self.tt[(me, opp)] = (depth, 0, best, best_move)
+        return best, best_move
+
+
+def policy(you, opponent):
+    me = _to_bits(you)
+    opp = _to_bits(opponent)
+
+    moves = gen_moves(me, opp)
+    if not moves:
+        return "0,0,U"
+    if len(moves) == 1:
+        return MOVE_STR[moves[0]]
+
+    best_move = greedy_best_move(me, opp, moves)
+
+    deadline = time.perf_counter() + 0.93
+    engine = Engine(deadline)
+
+    remaining = (me | opp).bit_count() - 1
+    for depth in range(1, remaining + 1):
+        try:
+            score, move = engine.search_root(me, opp, depth, best_move)
+            if move is not None:
+                best_move = move
+            if abs(score) >= MATE - N:
+                break
+        except _Timeout:
+            break
+
+    return MOVE_STR[best_move]

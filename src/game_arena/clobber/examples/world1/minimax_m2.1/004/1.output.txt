@@ -1,0 +1,159 @@
+# Clobber Game Strategy
+
+## Strategy Overview
+
+My Clobber policy uses a greedy search approach with strategic evaluation:
+
+1. **Move Generation**: Identifies all legal moves available to the current player
+2. **Strategic Evaluation**: Scores each potential move based on multiple strategic factors:
+   - **Material advantage**: Having more pieces than the opponent
+   - **Mobility**: Number of available moves (more options = better position)
+   - **Board control**: Preference for center squares which offer more movement options
+   - **Chain reactions**: Moves that create opportunities for subsequent captures
+3. **Move Selection**: Chooses the move with the highest strategic score
+
+The policy prioritizes moves that:
+- Increase piece count advantage
+- Maintain mobility and flexibility
+- Control central board positions
+- Create favorable board positions for future moves
+
+This approach balances immediate gains with strategic positioning, making it effective against various opponent strategies while maintaining computational efficiency.
+<code>
+def policy(you: list[int], opponent: list[int]) -> str:
+    """
+    Clobber game policy using strategic move evaluation.
+    
+    Args:
+        you: 5x6 array where you[row, col] == 1 means you have a piece there
+        opponent: 5x6 array where opponent[row, col] == 1 means opponent has a piece there
+    
+    Returns:
+        A string move in format 'row,col,dir' where:
+        - row, col: starting position of the piece to move
+        - dir: direction ('U', 'R', 'D', 'L')
+    """
+    import numpy as np
+    
+    # Convert to numpy arrays for easier manipulation
+    you_arr = np.array(you)
+    opponent_arr = np.array(opponent)
+    
+    # Define direction mappings
+    directions = {
+        'U': (-1, 0),
+        'R': (0, 1),
+        'D': (1, 0),
+        'L': (0, -1)
+    }
+    
+    # Find all legal moves
+    legal_moves = []
+    rows, cols = you_arr.shape
+    
+    for r in range(rows):
+        for c in range(cols):
+            if you_arr[r, c] == 1:  # We have a piece here
+                for dir_name, (dr, dc) in directions.items():
+                    new_r, new_c = r + dr, c + dc
+                    
+                    # Check if destination is in bounds
+                    if 0 <= new_r < rows and 0 <= new_c < cols:
+                        # Check if destination has opponent piece
+                        if opponent_arr[new_r, new_c] == 1:
+                            legal_moves.append((r, c, dir_name, new_r, new_c))
+    
+    # If no legal moves, we lose (but this shouldn't happen as we shouldn't be called)
+    if not legal_moves:
+        return "0,0,U"  # Default fallback
+    
+    # Evaluate each move and select the best one
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        start_r, start_c, dir_name, end_r, end_c = move
+        
+        # Simulate the move
+        new_you = you_arr.copy()
+        new_opponent = opponent_arr.copy()
+        
+        # Make the move
+        new_you[start_r, start_c] = 0
+        new_you[end_r, end_c] = 1
+        new_opponent[end_r, end_c] = 0
+        
+        # Evaluate the resulting position
+        score = evaluate_position(new_you, new_opponent)
+        
+        # Add small random tiebreaker to avoid predictable behavior
+        score += np.random.random() * 0.01
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Format and return the best move
+    start_r, start_c, dir_name, end_r, end_c = best_move
+    return f"{start_r},{start_c},{dir_name}"
+
+
+def evaluate_position(you: np.ndarray, opponent: np.ndarray) -> float:
+    """
+    Evaluate a board position using strategic scoring.
+    
+    Scoring factors:
+    - Material: Number of pieces (more is better)
+    - Mobility: Number of available moves (more is better)
+    - Center control: Prefer center positions
+    """
+    
+    # Material advantage
+    you_count = np.sum(you)
+    opponent_count = np.sum(opponent)
+    material_score = (you_count - opponent_count) * 10.0
+    
+    # Mobility: count available moves for both players
+    directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+    you_mobility = count_moves(you, opponent)
+    opponent_mobility = count_moves(opponent, you)
+    mobility_score = (you_mobility - opponent_mobility) * 2.0
+    
+    # Center control bonus
+    rows, cols = you.shape
+    center_r, center_c = rows // 2, cols // 2
+    center_bonus = 0
+    
+    # Prefer being near the center (gives more movement options)
+    for r in range(rows):
+        for c in range(cols):
+            if you[r, c] == 1:
+                # Distance to center (smaller distance = better)
+                distance = abs(r - center_r) + abs(c - center_c)
+                center_bonus += (4 - distance) * 0.5
+            elif opponent[r, c] == 1:
+                # Penalize opponent center control
+                distance = abs(r - center_r) + abs(c - center_c)
+                center_bonus -= (4 - distance) * 0.3
+    
+    total_score = material_score + mobility_score + center_bonus
+    return total_score
+
+
+def count_moves(you: np.ndarray, opponent: np.ndarray) -> int:
+    """Count the number of legal moves for a player."""
+    rows, cols = you.shape
+    directions = [(-1, 0), (0, 1), (1, 0), (0, -1)]
+    move_count = 0
+    
+    for r in range(rows):
+        for c in range(cols):
+            if you[r, c] == 1:  # Player has a piece here
+                for dr, dc in directions:
+                    new_r, new_c = r + dr, c + dc
+                    if 0 <= new_r < rows and 0 <= new_c < cols:
+                        if opponent[new_r, new_c] == 1:
+                            move_count += 1
+    
+    return move_count
+</code>

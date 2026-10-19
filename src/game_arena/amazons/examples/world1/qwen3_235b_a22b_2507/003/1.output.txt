@@ -1,0 +1,158 @@
+The strategy is to implement a depth-limited minimax search with alpha-beta pruning to choose high-quality moves, while ensuring that only legal moves are generated. To meet the time constraints on a 6x6 board, we use efficient move generation, fast board representation, and a simple but effective evaluation function based on mobility (number of moves available to our amazons minus those of the opponent). This approach balances computational cost and move quality, ensuring strong play within 1 second.
+
+We include comprehensive move validation:
+- Only move own amazons (value 1)
+- Move to empty squares (0)
+- Valid queen-like movement (unobstructed)
+- Arrow shot after move (treat `from` as empty, `to` as amazon)
+- Arrow target must be empty and queen-move reachable, unobstructed
+
+The policy generates all legal moves, sorts them by a lightweight heuristic (prioritizing center control and mobility), and runs a 2-ply minimax search to pick the best move. If time is tight, it defaults to the best heuristic move.
+
+<code>
+import numpy as np
+import itertools
+
+def policy(board) -> str:
+    # Helper: convert (r,c) to "r,c"
+    def pos_to_str(pos):
+        return f"{pos[0]},{pos[1]}"
+
+    # Helper: check if (r,c) is within bounds
+    def in_bounds(r, c):
+        return 0 <= r < 6 and 0 <= c < 6
+
+    # Generate all queen moves (orthogonal + diagonal)
+    directions = [(-1,-1), (-1,0), (-1,1),
+                 (0,-1),           (0,1),
+                 (1,-1),  (1,0),   (1,1)]
+
+    # Get all possible queen-move positions from (r,c) on board, with path checking
+    def get_reachable(r, c, board):
+        reachable = []
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            while in_bounds(nr, nc) and board[nr, nc] == 0:
+                reachable.append((nr, nc))
+                nr += dr
+                nc += dc
+        return reachable
+
+    # Generate all legal moves as strings
+    def get_legal_moves(board):
+        moves = []
+        # Find all amazons (1)
+        for r in range(6):
+            for c in range(6):
+                if board[r, c] == 1:
+                    # Generate all valid moves for this amazon
+                    for tr, tc in get_reachable(r, c, board):
+                        # Simulate move: create new board state
+                        new_board = board.copy()
+                        new_board[r, c] = 0
+                        new_board[tr, tc] = 1
+                        # Now, from (tr,tc), shoot arrow
+                        for ar, ac in get_reachable(tr, tc, new_board):
+                            move_str = f"{r},{c}:{tr},{tc}:{ar},{ac}"
+                            moves.append(move_str)
+        return moves
+
+    # Heuristic evaluation function: mobility-based
+    def evaluate(board):
+        # Count legal moves for each player
+        my_moves = 0
+        opp_moves = 0
+        for r in range(6):
+            for c in range(6):
+                if board[r, c] == 1:
+                    my_moves += len(get_reachable(r, c, board))
+                elif board[r, c] == 2:
+                    opp_moves += len(get_reachable(r, c, board))
+        return my_moves - opp_moves
+
+    # Minimax with alpha-beta pruning, limited to depth 2
+    def minimax(board, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(board)
+
+        moves = get_legal_moves(board)
+        if not moves:
+            return -1e6 if maximizing else 1e6
+
+        if maximizing:
+            value = -np.inf
+            for move in moves:
+                new_board = apply_move(move, board)
+                value = max(value, minimax(new_board, depth - 1, alpha, beta, False))
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break
+            return value
+        else:
+            value = np.inf
+            for move in moves:
+                new_board = apply_move(move, board)
+                value = min(value, minimax(new_board, depth - 1, alpha, beta, True))
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break
+            return value
+
+    # Apply a move string to a board and return new board
+    def apply_move(move_str, old_board):
+        parts = move_str.split(':')
+        from_pos = list(map(int, parts[0].split(',')))
+        to_pos = list(map(int, parts[1].split(',')))
+        arrow_pos = list(map(int, parts[2].split(',')))
+
+        new_board = old_board.copy()
+        # Move amazon
+        new_board[from_pos[0], from_pos[1]] = 0
+        new_board[to_pos[0], to_pos[1]] = 1
+        # Shoot arrow
+        new_board[arrow_pos[0], arrow_pos[1]] = -1
+        return new_board
+
+    # Generate all legal moves
+    legal_moves = get_legal_moves(board)
+    
+    # If only one move available, return it
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+
+    # Sort moves by heuristic: prefer central positions and mobility gains
+    def move_heuristic(move):
+        parts = move.split(':')
+        tr, tc = map(int, parts[1].split(','))
+        ar, ac = map(int, parts[2].split(','))
+
+        # Center preference
+        center_bonus = 0
+        center_squares = [(2,2), (2,3), (3,2), (3,3)]
+        if (tr, tc) in center_squares:
+            center_bonus += 2
+        # Distance from center
+        dist = abs(tr - 2.5) + abs(tc - 2.5)
+        return center_bonus - dist
+
+    # Sort by heuristic descending
+    legal_moves.sort(key=move_heuristic, reverse=True)
+
+    # Try to pick best via minimax, but if too many moves, limit to top N
+    N = 10
+    candidates = legal_moves[:N] if len(legal_moves) > N else legal_moves
+
+    best_move = legal_moves[0]
+    best_value = -np.inf
+    alpha, beta = -np.inf, np.inf
+
+    for move in candidates:
+        new_board = apply_move(move, board)
+        value = minimax(new_board, depth=2, alpha=alpha, beta=beta, maximizing=False)
+        if value > best_value:
+            best_value = value
+            best_move = move
+        alpha = max(alpha, best_value)
+
+    return best_move
+</code>

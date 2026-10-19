@@ -1,0 +1,333 @@
+The strategy for this policy is based on an **Iterative Deepening Minimax search with Alpha-Beta pruning**. The core design decisions are:
+
+1.  **Iterative Deepening**: The AI explores the game tree at increasing depths (1, 2, 3...) within the allocated 1 second. This ensures that we always have a "best guess" ready if the time limit is reached, and allows us to sort moves for deeper searches.
+2.  **Evaluation Function**: The heuristic combines three main components:
+    *   **Concentration (Dispersion)**: The primary goal in LOA is connectivity. The AI calculates the center of mass of its pieces and minimizes the sum of squared distances of pieces from this center. This strongly encourages forming a tight cluster.
+    *   **Centralization**: Pieces near the center of the board are more mobile and block opponent lines more effectively. A bonus is applied for occupying central squares.
+    *   **Win Detection**: The evaluation checks immediately if a player has formed a single connected component, treating it as a terminal win/loss state.
+3.  **Performance Optimizations**:
+    *   **Legal Move Generation**: Line counts (rows, columns, diagonals) are precomputed in one pass ($O(64)$) at the start of move generation. This allows determining the move distance $K$ for any piece in $O(1)$, significantly speeding up node expansion compared to scanning lines repeatedly.
+    *   **Move Ordering**: Capture moves are searched first to maximize the effectiveness of Alpha-Beta pruning, as captures usually cause significant heuristic swings.
+    *   **Connectivity Check**: A fast BFS (Breadth-First Search) is used to verify the win condition at various stages.
+
+The policy assumes the role of Player 1 (`1` in the grid), minimizing the dispersion of its own pieces while maximizing the dispersion of the opponent (`-1`).
+
+```python
+import time
+import sys
+
+# Constants for board representation
+ME = 1
+OPP = -1
+EMPTY = 0
+
+# 8 directions for LOA: (row_change, col_change)
+DIRECTIONS = [
+    (-1, -1), (-1, 0), (-1, 1),
+    (0, -1),           (0, 1),
+    (1, -1),  (1, 0),  (1, 1)
+]
+
+# Centralization weights: encourage pieces to stay near the center
+POS_WEIGHTS = [
+    [1, 1, 1, 1, 1, 1, 1, 1],
+    [1, 2, 2, 2, 2, 2, 2, 1],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [1, 2, 3, 4, 4, 3, 2, 1],
+    [1, 2, 3, 3, 3, 3, 2, 1],
+    [1, 2, 2, 2, 2, 2, 2, 1],
+    [1, 1, 1, 1, 1, 1, 1, 1]
+]
+
+class LOAI:
+    def __init__(self):
+        self.start_time = 0
+        self.time_limit = 0.95  # Strict safety buffer for 1s limit
+        self.nodes = 0
+
+    def get_legal_moves(self, board, player):
+        """
+        Generates all legal moves for 'player'.
+        Optimized by precomputing line counts.
+        """
+        moves = []
+        pieces = []
+        
+        # Precompute counts for all lines to enable O(1) step determination
+        row_cnt = [0] * 8
+        col_cnt = [0] * 8
+        diag_cnt = [0] * 15      # Index: r - c + 7 (0..14)
+        adiag_cnt = [0] * 15     # Index: r + c     (0..14)
+        
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] != EMPTY:
+                    row_cnt[r] += 1
+                    col_cnt[c] += 1
+                    diag_cnt[r - c + 7] += 1
+                    adiag_cnt[r + c] += 1
+                if board[r][c] == player:
+                    pieces.append((r, c))
+                    
+        for r, c in pieces:
+            for dr, dc in DIRECTIONS:
+                # Retrieve precomputed count K based on direction
+                if dr == 0:
+                    k = row_cnt[r]
+                elif dc == 0:
+                    k = col_cnt[c]
+                elif dr == dc:
+                    k = diag_cnt[r - c + 7]
+                else: 
+                    k = adiag_cnt[r + c]
+                
+                # A piece cannot move if it is the only one in the line (k=1 means itself)
+                # But rules say it moves K squares. If K=1, it moves 1 square.
+                # However, usually there's at least one other piece or destination check handles overlap.
+                if k == 0: continue
+                
+                tr, tc = r + k * dr, c + k * dc
+                
+                # check bounds
+                if not (0 <= tr < 8 and 0 <= tc < 8):
+                    continue
+                
+                # check destination (cannot capture own)
+                dest_val = board[tr][tc]
+                if dest_val == player:
+                    continue
+                
+                # check blocking: cannot jump over OPPONENT
+                # can jump over OWN pieces
+                if k > 1:
+                    blocked = False
+                    cur_r, cur_c = r + dr, c + dc
+                    for _ in range(k - 1):
+                        if board[cur_r][cur_c] == -player:
+                            blocked = True
+                            break
+                        cur_r += dr
+                        cur_c += dc
+                    if blocked:
+                        continue
+                
+                moves.append(((r, c), (tr, tc)))
+        return moves
+
+    def is_connected(self, board, player):
+        """ Check if all pieces of 'player' form a single connected component (8-way). """
+        pieces = []
+        for r in range(8):
+            for c in range(8):
+                if board[r][c] == player:
+                    pieces.append((r, c))
+        
+        if not pieces: return False # Zero pieces usually means loss or invalid
+        if len(pieces) == 1: return True
+        
+        start = pieces[0]
+        stack = [start]
+        visited = {start}
+        count = 0
+        piece_set = set(pieces)
+        
+        while stack:
+            curr = stack.pop()
+            count += 1
+            cx, cy = curr
+            # 8 neighbors
+            for dx in [-1, 0, 1]:
+                for dy in [-1, 0, 1]:
+                    if dx == 0 and dy == 0: continue
+                    nx, ny = cx + dx, cy + dy
+                    if (nx, ny) in piece_set and (nx, ny) not in visited:
+                        visited.add((nx, ny))
+                        stack.append((nx, ny))
+                        
+        return count == len(pieces)
+
+    def evaluate(self, board):
+        """ HEURISTIC EVALUATION """
+        # 1. Win Detection
+        conn_me = self.is_connected(board, ME)
+        conn_opp = self.is_connected(board, OPP)
+        
+        if conn_me and not conn_opp:
+            return 100000
+        if conn_opp and not conn_me:
+            return -100000
+        if conn_me and conn_opp:
+            # Simultaneous connection. 
+            # Treat as neutral or slight preference to maintain draw line.
+            return 0 
+
+        # 2. Concentration & Centralization
+        score = 0
+        
+        pieces_me = []
+        pieces_opp = []
+        for r in range(8):
+            for c in range(8):
+                val = board[r][c]
+                if val == ME:
+                    pieces_me.append((r, c))
+                elif val == OPP:
+                    pieces_opp.append((r, c))
+        
+        # Helper to calc dispersion (sum eq dist from COM) and centralization
+        def measure(pieces):
+            if not pieces: return 0, 0
+            # Center of Mass
+            sum_r = sum(p[0] for p in pieces)
+            sum_c = sum(p[1] for p in pieces)
+            com_r = sum_r / len(pieces)
+            com_c = sum_c / len(pieces)
+            
+            dispersion = 0
+            centralization = 0
+            for r, c in pieces:
+                dispersion += (r - com_r)**2 + (c - com_c)**2
+                centralization += POS_WEIGHTS[r][c]
+            return dispersion, centralization
+
+        disp_me, cent_me = measure(pieces_me)
+        disp_opp, cent_opp = measure(pieces_opp)
+        
+        # We want to MINIMIZE our dispersion and MAXIMIZE opponent dispersion
+        # We want to MAXIMIZE our centralization
+        
+        # Weights
+        # Dispersion can be around 10-200.
+        # Centralization around 10-30.
+        score -= (disp_me * 1.0)
+        score += (disp_opp * 1.0)
+        score += (cent_me * 2.5)
+        score -= (cent_opp * 2.5)
+        
+        return score
+
+    def negamax(self, board, depth, alpha, beta, color):
+        # Time check every 1024 nodes to reduce overhead
+        if (self.nodes & 1023) == 0:
+            if time.time() - self.start_time > self.time_limit:
+                raise TimeoutError
+        self.nodes += 1
+
+        # Check for immediate win/loss via evaluate (checks connectivity)
+        current_eval = self.evaluate(board)
+        if abs(current_eval) > 50000:
+            return current_eval * color
+
+        if depth == 0:
+            return current_eval * color
+
+        moves = self.get_legal_moves(board, color)
+        if not moves:
+            # No moves available is typically a loss in LOA or handled as loss
+            return -100000
+        
+        # Move ordering: prioritize captures
+        # Determines if destination has a piece (capture)
+        moves.sort(key=lambda m: 1 if board[m[1][0]][m[1][1]] != 0 else 0, reverse=True)
+        
+        best_val = -float('inf')
+        
+        for (fr, fc), (tr, tc) in moves:
+            # Make move
+            captured = board[tr][tc]
+            board[tr][tc] = color
+            board[fr][fc] = EMPTY
+            
+            try:
+                val = -self.negamax(board, depth - 1, -beta, -alpha, -color)
+            finally:
+                # Undo move
+                board[fr][fc] = color
+                board[tr][tc] = captured
+            
+            if val > best_val:
+                best_val = val
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+                
+        return best_val
+
+    def get_best_move(self, board):
+        self.start_time = time.time()
+        self.nodes = 0
+        
+        # Generate root moves
+        # ME = 1 is always the player calling this policy
+        moves = self.get_legal_moves(board, ME)
+        if not moves:
+            # Should not happen in normal play unless blocked/lost
+            # Return a dummy move that will likely be invalid, but we must return string
+            return "0,0:0,0"
+
+        # Heuristic sort for root
+        moves.sort(key=lambda m: 1 if board[m[1][0]][m[1][1]] != 0 else 0, reverse=True)
+        
+        best_move = moves[0]
+        depth = 1
+        
+        try:
+            # Iterative Deepening
+            while True:
+                best_val_iter = -float('inf')
+                best_move_iter = None
+                alpha = -float('inf')
+                beta = float('inf')
+                
+                for (fr, fc), (tr, tc) in moves:
+                    # Make move
+                    captured = board[tr][tc]
+                    board[tr][tc] = ME
+                    board[fr][fc] = EMPTY
+                    
+                    try:
+                        val = -self.negamax(board, depth - 1, -beta, -alpha, -OPP)
+                    finally:
+                        # Undo move
+                        board[fr][fc] = ME
+                        board[tr][tc] = captured
+                    
+                    if val > best_val_iter:
+                        best_val_iter = val
+                        best_move_iter = ((fr, fc), (tr, tc))
+                    
+                    alpha = max(alpha, val)
+                    
+                    # Check time in loop to abort current depth immediately
+                    if time.time() - self.start_time > self.time_limit:
+                        raise TimeoutError
+
+                if best_move_iter:
+                    best_move = best_move_iter
+                
+                # If we found a forced win, we can stop early
+                if best_val_iter > 50000:
+                    break
+                    
+                depth += 1
+                # Depth cap to prevent infinite loop logic if time measurement fails
+                if depth > 20: break
+                
+        except TimeoutError:
+            # Time is up, use the best move from the last fully completed depth
+            pass
+            
+        (fr, fc), (tr, tc) = best_move
+        return f"{fr},{fc}:{tr},{tc}"
+
+def policy(board):
+    # Ensure independent copy of the board logic
+    if hasattr(board, 'tolist'):
+        board_copy = board.tolist()
+    else:
+        board_copy = [row[:] for row in board]
+        
+    ai = LOAI()
+    return ai.get_best_move(board_copy)
+```

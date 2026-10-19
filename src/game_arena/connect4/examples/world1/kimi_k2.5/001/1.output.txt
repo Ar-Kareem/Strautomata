@@ -1,0 +1,281 @@
+ The strategy employs a minimax algorithm with alpha-beta pruning to search the game tree efficiently. It uses iterative deepening to maximize search depth within the 1-second time limit, ensuring it always returns a move even if interrupted. The evaluation function scores board positions by counting favorable "windows" of four cells, heavily weighting the center column (which maximizes potential connections) and assigning high values to three-in-a-row threats. The solver first checks for immediate winning moves and forced blocks (including multi-threat detection), then performs a depth-limited search ordered by proximity to the center column to optimize alpha-beta pruning.
+
+<code>
+import time
+from typing import List, Tuple
+
+ROWS = 6
+COLS = 7
+EMPTY = 0
+AI = 1
+HUMAN = -1
+
+def policy(board: List[List[int]]) -> int:
+    """Select the best column for the current player (AI)."""
+    valid_moves = [c for c in range(COLS) if board[0][c] == EMPTY]
+    
+    if not valid_moves:
+        return 0  # No valid moves (should not happen in active games)
+    
+    # 1. Immediate win: play if we can win now
+    for col in valid_moves:
+        if is_winning_move(board, col, AI):
+            return col
+    
+    # 2. Immediate block: collect opponent winning threats
+    threats = [col for col in valid_moves if is_winning_move(board, col, HUMAN)]
+    if len(threats) == 1:
+        return threats[0]  # Block single threat
+    elif len(threats) > 1:
+        return threats[0]  # Multiple threats: unavoidable loss, return any
+    
+    # 3. Iterative Deepening Minimax
+    start_time = time.time()
+    # Default to center column (or closest available)
+    best_move = valid_moves[len(valid_moves) // 2]
+    
+    for depth in range(1, 8):  # Search up to depth 7 (adjustable by time)
+        if time.time() - start_time > 0.85:
+            break
+        try:
+            score, move = minimax(board, depth, -float('inf'), float('inf'), True, start_time)
+            if move is not None:
+                best_move = move
+        except TimeoutError:
+            break
+    
+    return best_move
+
+def get_next_open_row(board: List[List[int]], col: int) -> int:
+    """Return the lowest empty row index in the column, or -1 if full."""
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == EMPTY:
+            return r
+    return -1
+
+def is_winning_move(board: List[List[int]], col: int, piece: int) -> bool:
+    """Check if dropping piece in col creates a 4-in-a-row."""
+    row = get_next_open_row(board, col)
+    if row == -1:
+        return False
+    
+    # Check horizontal
+    count = 1
+    c = col - 1
+    while c >= 0 and board[row][c] == piece:
+        count += 1
+        c -= 1
+    c = col + 1
+    while c < COLS and board[row][c] == piece:
+        count += 1
+        c += 1
+    if count >= 4:
+        return True
+    
+    # Check vertical (only down, since piece is placed on top)
+    count = 1
+    r = row + 1
+    while r < ROWS and board[r][col] == piece:
+        count += 1
+        r += 1
+    if count >= 4:
+        return True
+    
+    # Check diagonal /
+    count = 1
+    r, c = row - 1, col - 1
+    while r >= 0 and c >= 0 and board[r][c] == piece:
+        count += 1
+        r -= 1
+        c -= 1
+    r, c = row + 1, col + 1
+    while r < ROWS and c < COLS and board[r][c] == piece:
+        count += 1
+        r += 1
+        c += 1
+    if count >= 4:
+        return True
+    
+    # Check diagonal \
+    count = 1
+    r, c = row - 1, col + 1
+    while r >= 0 and c < COLS and board[r][c] == piece:
+        count += 1
+        r -= 1
+        c += 1
+    r, c = row + 1, col - 1
+    while r < ROWS and c >= 0 and board[r][c] == piece:
+        count += 1
+        r += 1
+        c -= 1
+    if count >= 4:
+        return True
+    
+    return False
+
+def minimax(board: List[List[int]], depth: int, alpha: float, beta: float, 
+            is_maximizing: bool, start_time: float) -> Tuple[float, int]:
+    """Minimax with alpha-beta pruning."""
+    if time.time() - start_time > 0.9:
+        raise TimeoutError
+    
+    valid_moves = [c for c in range(COLS) if board[0][c] == EMPTY]
+    if not valid_moves:
+        return (0, None)
+    if depth == 0:
+        return (evaluate_board(board), None)
+    
+    # Move ordering: prefer center columns
+    valid_moves.sort(key=lambda x: abs(x - 3))
+    
+    if is_maximizing:
+        max_eval = -float('inf')
+        best_move = valid_moves[0]
+        for col in valid_moves:
+            row = get_next_open_row(board, col)
+            if row == -1:
+                continue
+            # Simulate move
+            new_board = [r[:] for r in board]
+            new_board[row][col] = AI
+            if check_win_at(new_board, row, col, AI):
+                return (1000000 + depth, col)  # Prefer earlier wins
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, False, start_time)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = col
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return (max_eval, best_move)
+    else:
+        min_eval = float('inf')
+        best_move = valid_moves[0]
+        for col in valid_moves:
+            row = get_next_open_row(board, col)
+            if row == -1:
+                continue
+            new_board = [r[:] for r in board]
+            new_board[row][col] = HUMAN
+            if check_win_at(new_board, row, col, HUMAN):
+                return (-1000000 - depth, col)  # Prefer later losses
+            eval_score, _ = minimax(new_board, depth - 1, alpha, beta, True, start_time)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = col
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return (min_eval, best_move)
+
+def check_win_at(board: List[List[int]], row: int, col: int, piece: int) -> bool:
+    """Check if the piece at (row, col) created a win."""
+    # Horizontal
+    count = 1
+    c = col - 1
+    while c >= 0 and board[row][c] == piece:
+        count += 1
+        c -= 1
+    c = col + 1
+    while c < COLS and board[row][c] == piece:
+        count += 1
+        c += 1
+    if count >= 4:
+        return True
+    
+    # Vertical (only down needed)
+    count = 1
+    r = row + 1
+    while r < ROWS and board[r][col] == piece:
+        count += 1
+        r += 1
+    if count >= 4:
+        return True
+    
+    # Diagonal /
+    count = 1
+    r, c = row - 1, col - 1
+    while r >= 0 and c >= 0 and board[r][c] == piece:
+        count += 1
+        r -= 1
+        c -= 1
+    r, c = row + 1, col + 1
+    while r < ROWS and c < COLS and board[r][c] == piece:
+        count += 1
+        r += 1
+        c += 1
+    if count >= 4:
+        return True
+    
+    # Diagonal \
+    count = 1
+    r, c = row - 1, col + 1
+    while r >= 0 and c < COLS and board[r][c] == piece:
+        count += 1
+        r -= 1
+        c += 1
+    r, c = row + 1, col - 1
+    while r < ROWS and c >= 0 and board[r][c] == piece:
+        count += 1
+        r += 1
+        c -= 1
+    if count >= 4:
+        return True
+    return False
+
+def evaluate_board(board: List[List[int]]) -> int:
+    """Heuristic evaluation from AI's perspective."""
+    score = 0
+    
+    # Center column preference
+    for r in range(ROWS):
+        if board[r][3] == AI:
+            score += 6
+        elif board[r][3] == HUMAN:
+            score -= 6
+    
+    # Score windows of 4
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = [board[r][c + i] for i in range(4)]
+            score += score_window(window)
+    
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r + i][c] for i in range(4)]
+            score += score_window(window)
+    
+    # Diagonal /
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += score_window(window)
+    
+    # Diagonal \
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            score += score_window(window)
+    
+    return score
+
+def score_window(window: List[int]) -> int:
+    """Score a single window of 4 cells."""
+    count_ai = window.count(AI)
+    count_human = window.count(HUMAN)
+    count_empty = window.count(EMPTY)
+    
+    if count_ai == 4:
+        return 10000
+    elif count_ai == 3 and count_empty == 1:
+        return 100
+    elif count_ai == 2 and count_empty == 2:
+        return 10
+    
+    if count_human == 3 and count_empty == 1:
+        return -80  # Blocking is critical
+    
+    return 0
+</code>

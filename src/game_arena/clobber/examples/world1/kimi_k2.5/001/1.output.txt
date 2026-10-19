@@ -1,0 +1,172 @@
+The strategy for this policy is to use adversarial search (minimax with alpha-beta pruning) combined with iterative deepening to find the best move within the 1-second time limit. The algorithm searches the game tree by simulating moves and counter-moves, evaluating positions based on material advantage (piece count) and mobility (number of legal moves available). Since Clobber is a game where the player who cannot move loses, mobility is a critical factor. The search prioritizes moves that maximize the difference between my mobility and the opponent's mobility while maintaining material superiority. Iterative deepening allows the algorithm to complete shallow searches first and progressively deepen, ensuring a valid move is always available even if time runs out during a deep search.
+
+<code>
+import numpy as np
+import time
+from typing import List, Tuple
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    """
+    Determine the best move using iterative deepening alpha-beta search.
+    
+    Args:
+        you: Flat list of length 30 representing your pieces (1 if present, 0 otherwise)
+        opponent: Flat list of length 30 representing opponent pieces
+    
+    Returns:
+        String in format "row,col,dir" where dir is U, D, L, or R
+    """
+    # Convert to 5x6 numpy arrays for efficient manipulation
+    you_arr = np.array(you, dtype=np.int8).reshape(5, 6)
+    opp_arr = np.array(opponent, dtype=np.int8).reshape(5, 6)
+    
+    start_time = time.time()
+    time_limit = 0.95  # Leave 50ms buffer
+    
+    # Generate all legal moves for current position
+    moves = _get_legal_moves(you_arr, opp_arr)
+    
+    # Should always have at least one move per problem constraints
+    if not moves:
+        return "0,0,U"
+    
+    # If only one move available, return it immediately
+    if len(moves) == 1:
+        r, c, d = moves[0]
+        return f"{r},{c},{d}"
+    
+    best_move = moves[0]
+    
+    # Iterative deepening: start with depth 1 and increase until time runs out
+    depth = 1
+    while True:
+        if time.time() - start_time > time_limit:
+            break
+            
+        try:
+            best_score = -99999
+            current_best = moves[0]
+            
+            # Try each move and evaluate with alpha-beta search
+            for move in moves:
+                if time.time() - start_time > time_limit:
+                    raise TimeoutError()
+                    
+                new_you, new_opp = _apply_move(you_arr, opp_arr, move)
+                # Negate because opponent's perspective flips
+                score = -_alpha_beta_search(new_opp, new_you, depth - 1, 
+                                          -99999, 99999, time_limit, start_time)
+                
+                if score > best_score:
+                    best_score = score
+                    current_best = move
+            
+            # Update best move if we completed this depth fully
+            best_move = current_best
+            depth += 1
+            
+        except TimeoutError:
+            break
+    
+    r, c, d = best_move
+    return f"{r},{c},{d}"
+
+
+def _get_legal_moves(you: np.ndarray, opp: np.ndarray) -> List[Tuple[int, int, str]]:
+    """Generate all legal moves for the player with pieces in 'you'."""
+    moves = []
+    rows, cols = np.where(you)
+    
+    for r, c in zip(rows, cols):
+        # Check all four directions for opponent pieces
+        if r > 0 and opp[r-1, c]:
+            moves.append((r, c, 'U'))
+        if r < 4 and opp[r+1, c]:
+            moves.append((r, c, 'D'))
+        if c > 0 and opp[r, c-1]:
+            moves.append((r, c, 'L'))
+        if c < 5 and opp[r, c+1]:
+            moves.append((r, c, 'R'))
+    
+    return moves
+
+
+def _apply_move(you: np.ndarray, opp: np.ndarray, move: Tuple[int, int, str]):
+    """Apply a move and return new board state (new_you, new_opp)."""
+    r, c, d = move
+    new_you = you.copy()
+    new_opp = opp.copy()
+    
+    # Remove piece from start position
+    new_you[r, c] = 0
+    
+    # Calculate destination
+    if d == 'U':
+        nr, nc = r - 1, c
+    elif d == 'D':
+        nr, nc = r + 1, c
+    elif d == 'L':
+        nr, nc = r, c - 1
+    else:  # 'R'
+        nr, nc = r, c + 1
+    
+    # Capture opponent piece and place our piece
+    new_opp[nr, nc] = 0
+    new_you[nr, nc] = 1
+    
+    return new_you, new_opp
+
+
+def _alpha_beta_search(you: np.ndarray, opp: np.ndarray, depth: int, 
+                      alpha: int, beta: int, time_limit: float, start_time: float) -> int:
+    """
+    Alpha-beta pruning search. Returns evaluation score.
+    Positive is good for current player.
+    """
+    if time.time() - start_time > time_limit:
+        raise TimeoutError()
+    
+    if depth == 0:
+        return _evaluate_position(you, opp)
+    
+    moves = _get_legal_moves(you, opp)
+    
+    # If no moves available, current player loses
+    if not moves:
+        return -1000 - depth  # Prefer losing later
+    
+    for move in moves:
+        new_you, new_opp = _apply_move(you, opp, move)
+        score = -_alpha_beta_search(new_opp, new_you, depth - 1, 
+                                   -beta, -alpha, time_limit, start_time)
+        
+        if score >= beta:
+            return beta
+        if score > alpha:
+            alpha = score
+    
+    return alpha
+
+
+def _evaluate_position(you: np.ndarray, opp: np.ndarray) -> int:
+    """
+    Static evaluation function.
+    Considers: material count and mobility (number of legal moves).
+    """
+    my_moves = len(_get_legal_moves(you, opp))
+    
+    # Immediate win/loss detection
+    if my_moves == 0:
+        return -500  # We lose
+    
+    opp_moves = len(_get_legal_moves(opp, you))
+    if opp_moves == 0:
+        return 500   # Opponent loses (we win)
+    
+    my_count = int(np.sum(you))
+    opp_count = int(np.sum(opp))
+    
+    # Material difference + mobility difference
+    # Mobility is weighted more heavily as it's decisive in endgame
+    return (my_count - opp_count) + 2 * (my_moves - opp_moves)
+</code>

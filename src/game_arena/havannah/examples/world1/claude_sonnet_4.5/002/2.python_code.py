@@ -1,0 +1,171 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    N = 15
+    
+    # Get neighbors on hexagonal grid
+    def get_neighbors(r, c):
+        neighbors = []
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0), (1, -1), (-1, 1)]:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < N and 0 <= nc < N and valid_mask[nr][nc]:
+                neighbors.append((nr, nc))
+        return neighbors
+    
+    # Check if positions form a winning structure
+    def check_win(positions):
+        if len(positions) < 6:
+            return False
+        
+        pos_set = set(positions)
+        
+        # Check bridge (connects 2 corners)
+        corners = [(0, 0), (0, 6), (6, 14), (14, 14), (14, 8), (8, 0)]
+        corners_in = [c for c in corners if c in pos_set]
+        if len(corners_in) >= 2:
+            if is_connected(corners_in[0], corners_in[1], pos_set):
+                return True
+        
+        # Check fork (connects 3 edges)
+        edges = [[] for _ in range(6)]
+        for r, c in positions:
+            if r == 0 and c <= 6:
+                edges[0].append((r, c))
+            if r + c == 6 and r <= 6:
+                edges[1].append((r, c))
+            if c == 0 and r >= 8:
+                edges[2].append((r, c))
+            if r == 14 and c >= 8:
+                edges[3].append((r, c))
+            if r + c == 22 and r >= 8:
+                edges[4].append((r, c))
+            if c == 14 and r <= 6:
+                edges[5].append((r, c))
+        
+        edge_count = sum(1 for e in edges if len(e) > 0)
+        if edge_count >= 3:
+            non_empty = [e for e in edges if len(e) > 0]
+            if is_connected(non_empty[0][0], non_empty[1][0], pos_set) and \
+               is_connected(non_empty[0][0], non_empty[2][0], pos_set):
+                return True
+        
+        # Check ring
+        if has_ring(pos_set):
+            return True
+        
+        return False
+    
+    def is_connected(pos1, pos2, pos_set):
+        if pos1 not in pos_set or pos2 not in pos_set:
+            return False
+        visited = set()
+        queue = deque([pos1])
+        visited.add(pos1)
+        while queue:
+            curr = queue.popleft()
+            if curr == pos2:
+                return True
+            for neighbor in get_neighbors(curr[0], curr[1]):
+                if neighbor in pos_set and neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        return False
+    
+    def has_ring(pos_set):
+        # Simple ring detection using cycle finding
+        if len(pos_set) < 6:
+            return False
+        for start in list(pos_set)[:min(10, len(pos_set))]:
+            if find_ring_from(start, pos_set):
+                return True
+        return False
+    
+    def find_ring_from(start, pos_set):
+        visited = {}
+        queue = deque([(start, None)])
+        visited[start] = None
+        while queue:
+            curr, parent = queue.popleft()
+            for neighbor in get_neighbors(curr[0], curr[1]):
+                if neighbor not in pos_set:
+                    continue
+                if neighbor not in visited:
+                    visited[neighbor] = curr
+                    queue.append((neighbor, curr))
+                elif neighbor != parent and neighbor in visited:
+                    return True
+        return False
+    
+    # Score a move
+    def score_move(move, my_stones, opp_stones):
+        score = 0
+        r, c = move
+        
+        # Check if this wins
+        test_positions = my_stones + [move]
+        if check_win(test_positions):
+            return 100000
+        
+        # Connection value
+        neighbor_count = 0
+        for neighbor in get_neighbors(r, c):
+            if neighbor in my_stones:
+                neighbor_count += 1
+        score += neighbor_count * 100
+        
+        # Corner value
+        corners = [(0, 0), (0, 6), (6, 14), (14, 14), (14, 8), (8, 0)]
+        if move in corners:
+            score += 500
+        
+        # Edge value
+        is_edge = False
+        if r == 0 or c == 0 or r == 14 or c == 14 or r + c == 6 or r + c == 22:
+            is_edge = True
+            score += 200
+        
+        # Center value (early game)
+        if len(my_stones) < 5:
+            dist_to_center = abs(r - 7) + abs(c - 7)
+            score += max(0, 100 - dist_to_center * 10)
+        
+        return score
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Get all valid moves
+    valid_moves = []
+    for r in range(N):
+        for c in range(N):
+            if valid_mask[r][c] and (r, c) not in me_set and (r, c) not in opp_set:
+                valid_moves.append((r, c))
+    
+    if not valid_moves:
+        for r in range(N):
+            for c in range(N):
+                if valid_mask[r][c]:
+                    return (r, c)
+    
+    # Check for immediate win
+    for move in valid_moves:
+        if check_win(me + [move]):
+            return move
+    
+    # Check for blocking opponent win
+    for move in valid_moves:
+        if check_win(opp + [move]):
+            return move
+    
+    # Score all moves
+    best_move = valid_moves[0]
+    best_score = -1
+    for move in valid_moves:
+        score = score_move(move, me, opp)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move

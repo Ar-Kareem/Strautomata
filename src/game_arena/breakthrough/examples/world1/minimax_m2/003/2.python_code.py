@@ -1,0 +1,145 @@
+
+def _opposite(color):
+    return 'w' if color == 'b' else 'b'
+
+def _evaluate(me_set, opp_set, color):
+    # Terminal states: win by capture or promotion
+    if len(opp_set) == 0:
+        return 10000
+    if color == 'w':
+        for (r, c) in me_set:
+            if r == 7:
+                return 10000
+    else:
+        for (r, c) in me_set:
+            if r == 0:
+                return 10000
+    
+    our_value = 0
+    for (r, c) in me_set:
+        if color == 'w':
+            our_value += (r + 1)
+        else:
+            our_value += (8 - r)
+    
+    opp_value = 0
+    for (r, c) in opp_set:
+        if color == 'w':
+            opp_value += (r + 1)
+        else:
+            opp_value += (8 - r)
+    
+    total = our_value - opp_value
+    
+    # Center control bonus
+    center_bonus = 0
+    for (r, c) in me_set:
+        if c in [3, 4]:
+            center_bonus += 0.1
+    total += center_bonus
+    
+    # Piece count difference
+    total += (len(me_set) - len(opp_set)) * 100
+    
+    return total
+
+def _legal_moves(me_set, opp_set, color):
+    moves = []
+    for (r, c) in me_set:
+        if color == 'w':
+            # Forward
+            if r < 7:
+                nr, nc = r + 1, c
+                if (nr, nc) not in me_set and (nr, nc) not in opp_set:
+                    moves.append(((r, c), (nr, nc)))
+            # Forward-left
+            if r < 7 and c > 0:
+                nr, nc = r + 1, c - 1
+                if (nr, nc) in opp_set:
+                    moves.append(((r, c), (nr, nc)))
+                elif (nr, nc) not in me_set:
+                    moves.append(((r, c), (nr, nc)))
+            # Forward-right
+            if r < 7 and c < 7:
+                nr, nc = r + 1, c + 1
+                if (nr, nc) in opp_set:
+                    moves.append(((r, c), (nr, nc)))
+                elif (nr, nc) not in me_set:
+                    moves.append(((r, c), (nr, nc)))
+        else:
+            # Forward
+            if r > 0:
+                nr, nc = r - 1, c
+                if (nr, nc) not in me_set and (nr, nc) not in opp_set:
+                    moves.append(((r, c), (nr, nc)))
+            # Forward-left
+            if r > 0 and c > 0:
+                nr, nc = r - 1, c - 1
+                if (nr, nc) in opp_set:
+                    moves.append(((r, c), (nr, nc)))
+                elif (nr, nc) not in me_set:
+                    moves.append(((r, c), (nr, nc)))
+            # Forward-right
+            if r > 0 and c < 7:
+                nr, nc = r - 1, c + 1
+                if (nr, nc) in opp_set:
+                    moves.append(((r, c), (nr, nc)))
+                elif (nr, nc) not in me_set:
+                    moves.append(((r, c), (nr, nc)))
+    return moves
+
+def _make_move(me_set, opp_set, move, color):
+    (from_pos, to_pos) = move
+    new_me = set(me_set)
+    new_me.remove(from_pos)
+    new_me.add(to_pos)
+    new_opp = set(opp_set)
+    if to_pos in new_opp:
+        new_opp.remove(to_pos)
+    return new_me, new_opp
+
+def _minimax(me_set, opp_set, color, depth, maximizing, alpha, beta):
+    if depth == 0:
+        return _evaluate(me_set, opp_set, color)
+    
+    moves = _legal_moves(me_set, opp_set, color)
+    if len(moves) == 0:
+        return -10000
+    
+    if maximizing:
+        max_eval = -float('inf')
+        for move in moves:
+            new_me, new_opp = _make_move(me_set, opp_set, move, color)
+            eval_score = _minimax(new_opp, new_me, _opposite(color), depth-1, False, alpha, beta)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for move in moves:
+            new_me, new_opp = _make_move(me_set, opp_set, move, color)
+            eval_score = _minimax(new_opp, new_me, _opposite(color), depth-1, True, alpha, beta)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(me, opp, color):
+    me_set = set(me)
+    opp_set = set(opp)
+    best_move = None
+    best_value = -float('inf')
+    moves = _legal_moves(me_set, opp_set, color)
+    
+    for move in moves:
+        new_me, new_opp = _make_move(me_set, opp_set, move, color)
+        value = _minimax(new_opp, new_me, _opposite(color), depth=1, maximizing=False, 
+                         alpha=-float('inf'), beta=float('inf'))
+        if value > best_value:
+            best_value = value
+            best_move = move
+    
+    return best_move

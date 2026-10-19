@@ -1,0 +1,91 @@
+
+import numpy as np
+from typing import List, Tuple
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """
+    Determines the next move for a 4x4 Tic Tac Toe game using a minimax algorithm with alpha-beta pruning.
+    The player is 1, opponent is -1, and 0 is empty.
+    """
+    board_array = np.array(board)
+    
+    def is_winner(b: np.ndarray, player: int) -> bool:
+        # Check rows, columns, and diagonals for 4 in a row
+        for i in range(4):
+            if np.all(b[i, :] == player):  # row
+                return True
+            if np.all(b[:, i] == player):  # column
+                return True
+        
+        # Check main diagonal
+        if np.all(np.diag(b) == player):
+            return True
+        # Check anti-diagonal
+        if np.all(np.diag(np.fliplr(b)) == player):
+            return True
+            
+        return False
+    
+    def is_board_full(b: np.ndarray) -> bool:
+        return not np.any(b == 0)
+    
+    def get_valid_moves(b: np.ndarray) -> List[Tuple[int, int]]:
+        return [(i, j) for i in range(4) for j in range(4) if b[i, j] == 0]
+    
+    def minimax(b: np.ndarray, depth: int, alpha: float, beta: float, is_maximizing: bool) -> float:
+        if is_winner(b, 1):  # AI wins
+            return 100 - depth
+        if is_winner(b, -1):  # Opponent wins
+            return depth - 100
+        if is_board_full(b):  # Draw
+            return 0
+        
+        if depth >= 6:  # Limit search depth to ensure speed
+            return 0
+        
+        valid_moves = get_valid_moves(b)
+        
+        if is_maximizing:
+            max_eval = float('-inf')
+            for move in valid_moves:
+                b[move] = 1
+                eval_score = minimax(b, depth + 1, alpha, beta, False)
+                b[move] = 0
+                max_eval = max(max_eval, eval_score)
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in valid_moves:
+                b[move] = -1
+                eval_score = minimax(b, depth + 1, alpha, beta, True)
+                b[move] = 0
+                min_eval = min(min_eval, eval_score)
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval
+    
+    # Get all valid moves
+    valid_moves = get_valid_moves(board_array)
+    
+    # If it's the first move, take center position
+    if len(valid_moves) == 16:
+        return (1, 1)
+    
+    # Evaluate all moves using minimax
+    best_move = valid_moves[0]
+    best_value = float('-inf')
+    
+    for move in valid_moves:
+        board_array[move] = 1
+        move_value = minimax(board_array, 0, float('-inf'), float('inf'), False)
+        board_array[move] = 0
+        
+        if move_value > best_value:
+            best_value = move_value
+            best_move = move
+    
+    return best_move

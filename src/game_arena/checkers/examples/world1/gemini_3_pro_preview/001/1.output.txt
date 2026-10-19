@@ -1,0 +1,309 @@
+The strategy for this policy is to implement a Minimax algorithm with Alpha-Beta pruning and Iterative Deepening to find the optimal move within the 1-second time limit. The agent utilizes a custom `GameState` class to rigorously enforce Checkers rules, specifically mandatory captures and multi-jump continuations.
+
+Key features of the policy:
+1.  **Mandatory Captures**: The move generator prioritizes jump moves. If a jump is available, only jump moves are considered legal.
+2.  **Turn Logic**: The state simulation handles multi-turn logic where a jumping piece that can jump again retains the turn (standard US/English rules).
+3.  **Heuristic Evaluation**: The board is evaluated based on material difference (Kings are weighted higher than Men) and positional advantages (controlling the center, advancing men, and protecting the back rank).
+4.  **Time Management**: Iterative deepening is used to search as deep as possible (typically depth 4-8) while checking the elapsed time to ensure a response is returned within the limit.
+
+<code>
+import time
+import random
+
+# Global Constants for Directions
+# White moves up (row +1), Black moves down (row -1)
+MOVES_W = [(1, -1), (1, 1)]
+MOVES_B = [(-1, -1), (-1, 1)]
+MOVES_K = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    """
+    Checkers policy: Returns best legal move tuple ((r1,c1), (r2,c2)).
+    """
+    start_time = time.time()
+    TIME_LIMIT = 0.95  # Safe buffer
+    
+    # ---------------- Setup ----------------
+    
+    # Pre-calculate useful variables
+    my_color = color
+    opp_color = 'b' if color == 'w' else 'w'
+    
+    # Convert input lists to sets for O(1) lookups
+    my_men_set = set(my_men)
+    my_kings_set = set(my_kings)
+    opp_men_set = set(opp_men)
+    opp_kings_set = set(opp_kings)
+    
+    # ---------------- Game Logic Class ----------------
+    
+    class GameState:
+        def __init__(self, my_m, my_k, opp_m, opp_k, turn, must_jump_pos=None):
+            self.my_m = my_m
+            self.my_k = my_k
+            self.opp_m = opp_m
+            self.opp_k = opp_k
+            self.turn = turn  # 'my' or 'opp'
+            # If set, the current player MUST efficiently continue jumping with this piec
+            self.must_jump_pos = must_jump_pos 
+
+        def get_legal_moves(self):
+            """
+            Returns (moves, is_jump).
+            moves: list of tuples ((r1,c1), (r2,c2))
+            is_jump: boolean
+            """
+            # Identify sets and directions for the current turn owner
+            if self.turn == 'my':
+                men, kings = self.my_m, self.my_k
+                om, ok = self.opp_m, self.opp_k
+                forward = MOVES_W if my_color == 'w' else MOVES_B
+            else:
+                men, kings = self.opp_m, self.opp_k
+                om, ok = self.my_m, self.my_k
+                forward = MOVES_W if opp_color == 'w' else MOVES_B
+
+            jumps = []
+            
+            # If we are in a multi-jump chain, we can only move that specific piece
+            sources = [self.must_jump_pos] if self.must_jump_pos else (list(men) + list(kings))
+            
+            # 1. Check for Jumps (Mandatory)
+            for r, c in sources:
+                is_king = (r, c) in kings
+                dirs = MOVES_K if is_king else forward
+                
+                for dr, dc in dirs:
+                    jr, jc = r + dr * 2, c + dc * 2  # Jump destination
+                    mr, mc = r + dr, c + dc          # Midpoint (captured enemy)
+                    
+                    if 0 <= jr < 8 and 0 <= jc < 8:
+                        # Destination must be empty
+                        if (jr, jc) not in men and (jr, jc) not in kings and \
+                           (jr, jc) not in om and (jr, jc) not in ok:
+                            # Midpoint must have enemy
+                            if (mr, mc) in om or (mr, mc) in ok:
+                                jumps.append( ((r, c), (jr, jc)) )
+
+            if jumps:
+                return jumps, True
+            
+            # If forced to jump but can't, standard rules usually end turn or loss.
+            # Here we assume turn ends, but strictly if must_jump_pos was set, it implies 
+            # we just jumped. If we can't jump again, that turn phase should have ended.
+            # However, for robustness:
+            if self.must_jump_pos:
+                return [], False
+
+            # 2. Check for Steps (only if no jumps exist globally)
+            steps = []
+            for r, c in men:
+                for dr, dc in forward:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        if (nr, nc) not in men and (nr, nc) not in kings and \
+                           (nr, nc) not in om and (nr, nc) not in ok:
+                            steps.append( ((r, c), (nr, nc)) )
+                            
+            for r, c in kings:
+                for dr, dc in MOVES_K:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        if (nr, nc) not in men and (nr, nc) not in kings and \
+                           (nr, nc) not in om and (nr, nc) not in ok:
+                            steps.append( ((r, c), (nr, nc)) )
+
+            return steps, False
+
+        def apply_move(self, move, is_jump):
+            (r1, c1), (r2, c2) = move
+            
+            # create deep copies of sets
+            n_my_m = self.my_m.copy()
+            n_my_k = self.my_k.copy()
+            n_opp_m = self.opp_m.copy()
+            n_opp_k = self.opp_k.copy()
+            
+            # Determine active sets
+            if self.turn == 'my':
+                p_men, p_kings = n_my_m, n_my_k
+                o_men, o_kings = n_opp_m, n_opp_k
+                cur_color = my_color
+            else:
+                p_men, p_kings = n_opp_m, n_opp_k
+                o_men, o_kings = n_my_m, n_my_k
+                cur_color = opp_color
+            
+            # Move source to dest
+            is_king_piece = (r1, c1) in p_kings
+            if is_king_piece: p_kings.remove((r1, c1))
+            else: p_men.remove((r1, c1))
+            
+            # Handle Capture
+            promoted = False
+            captured = False
+            
+            if is_jump:
+                mr, mc = (r1 + r2)//2, (c1 + c2)//2
+                if (mr, mc) in o_men: o_men.remove((mr, mc))
+                elif (mr, mc) in o_kings: o_kings.remove((mr, mc))
+                captured = True
+            
+            # Handle Promotion
+            prom_row = 7 if cur_color == 'w' else 0
+            if not is_king_piece and r2 == prom_row:
+                p_kings.add((r2, c2))
+                promoted = True
+            else:
+                if is_king_piece: p_kings.add((r2, c2))
+                else: p_men.add((r2, c2))
+            
+            # Determine next turn state
+            next_turn = 'opp' if self.turn == 'my' else 'my'
+            next_must_jump = None
+            
+            # If capture happened and NOT promoted, check for multi-jump
+            if captured and not promoted:
+                # We peek to see if valid jumps exist for this piece
+                dummy_state = GameState(n_my_m, n_my_k, n_opp_m, n_opp_k, self.turn, must_jump_pos=(r2,c2))
+                jumps, _ = dummy_state.get_legal_moves()
+                if jumps:
+                    next_turn = self.turn
+                    next_must_jump = (r2, c2)
+            
+            return GameState(n_my_m, n_my_k, n_opp_m, n_opp_k, next_turn, next_must_jump)
+
+        def evaluate(self):
+            # Material score
+            score = 100 * (len(self.my_m) - len(self.opp_m)) + \
+                    160 * (len(self.my_k) - len(self.opp_k))
+            
+            # Positional score helpers
+            def get_positional(men, kings, is_white):
+                val = 0
+                forward_sign = 1 if is_white else -1
+                back_row = 0 if is_white else 7
+                
+                # Men Evaluation
+                for (r, c) in men:
+                    # Central Board Control
+                    if 2 <= c <= 5 and 3 <= r <= 4: val += 3
+                    # Edge Safety
+                    if c == 0 or c == 7: val += 2
+                    # Advancement
+                    val += (r if is_white else (7-r))
+                    # Back Rank Guard
+                    if r == back_row: val += 5
+                
+                return val
+
+            my_pos = get_positional(self.my_m, self.my_k, my_color == 'w')
+            opp_pos = get_positional(self.opp_m, self.opp_k, opp_color == 'w')
+            
+            return score + (my_pos - opp_pos)
+
+    # ---------------- Search Algorithm ----------------
+
+    def negamax(state, depth, alpha, beta, color_sign):
+        # Check termination
+        if depth <= 0:
+            return color_sign * state.evaluate()
+        
+        # Get moves
+        moves, is_jump = state.get_legal_moves()
+        
+        # Check Game Over
+        if not moves:
+            # If current player has no moves, they lose.
+            # if state.turn == 'my': I lose -> return -infinity
+            # if state.turn == 'opp': Opp loses -> I win -> return +infinity
+            # color_sign maps 'my'->1, 'opp'->-1. 
+            # We want to return a bad score for current player relative to color_sign.
+            # If max player ('my', 1) has no moves, return -INF.
+            # If min player ('opp', -1) has no moves, return +INF (from my perspective), 
+            # which negamax sees as: return -(-INF) ? 
+            # Simple rule: Losing is -100000.
+            return -100000
+
+        best_val = -float('inf')
+        
+        # Move ordering: random shuffle to break ties and prevent loops
+        # In a real engine, we'd sort captures first, but get_legal_moves already isolates jumps.
+        # list(moves) is needed if it's not a list
+        # random.shuffle(moves) # Slight randomness
+        
+        for move in moves:
+            next_state = state.apply_move(move, is_jump)
+            
+            # Reduce depth
+            new_depth = depth - 1
+            
+            if next_state.turn == state.turn:
+                # Continuation: Same player maximizes
+                val = negamax(next_state, new_depth, alpha, beta, color_sign)
+            else:
+                # Swap: Next player minimizes (so we Negamax)
+                val = -negamax(next_state, new_depth, -beta, -alpha, -color_sign)
+                
+            best_val = max(best_val, val)
+            alpha = max(alpha, val)
+            if alpha >= beta:
+                break
+                
+        return best_val
+
+    # ---------------- Execution ----------------
+
+    initial_state = GameState(my_men_set, my_kings_set, opp_men_set, opp_kings_set, 'my')
+    
+    # 1. Generate immediate legal moves
+    legal_moves, is_jump = initial_state.get_legal_moves()
+    
+    if not legal_moves:
+        # Should not happen if game is not over
+        return ((0,0), (0,0))
+    
+    # If forced move, return instantly
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+        
+    best_move = legal_moves[0]
+    
+    # Iterative Deepening
+    # Start depth 1, increase until time runs out
+    for d in range(1, 20):
+        if time.time() - start_time > TIME_LIMIT:
+            break
+            
+        current_depth_best = best_move
+        current_depth_score = -float('inf')
+        alpha = -float('inf')
+        beta = float('inf')
+        
+        # Search at this depth
+        for move in legal_moves:
+            # Check time frequently
+            if time.time() - start_time > TIME_LIMIT:
+                break
+            
+            next_state = initial_state.apply_move(move, is_jump)
+            
+            if next_state.turn == 'my':
+                val = negamax(next_state, d-1, alpha, beta, 1)
+            else:
+                val = -negamax(next_state, d-1, -beta, -alpha, -1)
+                
+            if val > current_depth_score:
+                current_depth_score = val
+                current_depth_best = move
+            
+            alpha = max(alpha, val)
+            
+        # If we finished the full depth search without timeout, update best
+        if time.time() - start_time <= TIME_LIMIT:
+            best_move = current_depth_best
+        else:
+            break
+            
+    return best_move
+</code>

@@ -1,0 +1,123 @@
+**Strategy Overview**
+
+The game *multipletictactoe* consists of nine ordinary Tic‑Tac‑Toe boards.  
+Only the **middle board** (board‑row = 2, board‑col = 2) matters for the win‑condition: the first player to place three of his marks in a row on that board wins.  
+
+Because playing on the middle board hands the turn to the opponent, a player can keep control indefinitely by playing on any of the other eight boards.  
+Consequently the optimal behaviour is:
+
+1. **Win immediately** – if the current player can complete a line on the middle board, do it.
+2. **Block a loss** – if the opponent can win on the next turn, play on that cell to prevent it.
+3. **Stay in control** – otherwise play on any empty cell that is **not** on the middle board.  
+   This consumes a move without giving the opponent a turn.
+4. **Fallback** – if all non‑middle cells are filled, play anywhere (including the middle board).
+
+The policy therefore inspects the state, extracts the current player's mark, checks the middle board for winning / blocking possibilities, and chooses a legal move accordingly.  All other boards are treated as irrelevant for the win‑condition, so any free cell on them can be used to retain control.
+
+This simple heuristic already defeats most random or naïve opponents, while respecting the game rules and always returning a legal move.
+
+<code>
+import random
+
+def policy(state, role):
+    """
+    Choose a move for the given role in the multipletictactoe game.
+    The only board that matters for winning is the middle board (2,2).
+    We first try to win, then block opponent's winning move,
+    otherwise play on a non‑middle board to keep control,
+    and finally fall back to any empty cell.
+    """
+    # Current player
+    player = role
+    opponent = 'o' if player == 'x' else 'x'
+
+    # Parse all cell facts
+    cells = {}                     # (br, bc, r, c) -> value ('b', 'x', 'o')
+    empty_cells = []              # list of empty cells (br, bc, r, c)
+
+    for fact in state:
+        if fact[0] == 'cell':
+            br = int(fact[1])     # board row   (1..3)
+            bc = int(fact[2])     # board col   (1..3)
+            r  = int(fact[3])     # cell row    (1..3)
+            c  = int(fact[4])     # cell col    (1..3)
+            val = fact[5]         # 'b', 'x', 'o'
+            cells[(br, bc, r, c)] = val
+            if val == 'b':
+                empty_cells.append((br, bc, r, c))
+
+    # Coordinates of the only relevant board
+    MIDDLE = (2, 2)
+
+    # ------------------------------------------------------------------
+    # Helper: after placing `mark` at (r,c) on the middle board,
+    # does it complete a line for that mark?
+    # ------------------------------------------------------------------
+    def would_win(mark, r, c):
+        # All lines of a 3x3 board
+        lines = [
+            [(1,1),(1,2),(1,3)],
+            [(2,1),(2,2),(2,3)],
+            [(3,1),(3,2),(3,3)],
+            [(1,1),(2,1),(3,1)],
+            [(1,2),(2,2),(3,2)],
+            [(1,3),(2,3),(3,3)],
+            [(1,1),(2,2),(3,3)],
+            [(1,3),(2,2),(3,1)]
+        ]
+        for line in lines:
+            if (r, c) in line:
+                other = [(rr, cc) for (rr, cc) in line if (rr, cc) != (r, c)]
+                v1 = cells.get((MIDDLE[0], MIDDLE[1], other[0][0], other[0][1]))
+                v2 = cells.get((MIDDLE[0], MIDDLE[1], other[1][0], other[1][1]))
+                if v1 == mark and v2 == mark:
+                    return True
+        return False
+
+    # ------------------------------------------------------------------
+    # 1. Can we win now?
+    # ------------------------------------------------------------------
+    winning_moves = []
+    for br, bc, r, c in empty_cells:
+        if br == MIDDLE[0] and bc == MIDDLE[1]:
+            if would_win(player, r, c):
+                winning_moves.append((br, bc, r, c))
+
+    if winning_moves:
+        move = random.choice(winning_moves)
+        return f"mark({move[0]},{move[1]},{move[2]},{move[3]})"
+
+    # ------------------------------------------------------------------
+    # 2. Can opponent win on his next turn?  Block it.
+    # ------------------------------------------------------------------
+    blocking_moves = []
+    for br, bc, r, c in empty_cells:
+        if br == MIDDLE[0] and bc == MIDDLE[1]:
+            if would_win(opponent, r, c):
+                blocking_moves.append((br, bc, r, c))
+
+    if blocking_moves:
+        move = random.choice(blocking_moves)
+        return f"mark({move[0]},{move[1]},{move[2]},{move[3]})"
+
+    # ------------------------------------------------------------------
+    # 3. Keep control: play somewhere else (non‑middle board)
+    # ------------------------------------------------------------------
+    non_middle_moves = [cell for cell in empty_cells
+                        if not (cell[0] == MIDDLE[0] and cell[1] == MIDDLE[1])]
+    if non_middle_moves:
+        move = random.choice(non_middle_moves)
+        return f"mark({move[0]},{move[1]},{move[2]},{move[3]})"
+
+    # ------------------------------------------------------------------
+    # 4. Fallback: any empty cell (including middle board)
+    # ------------------------------------------------------------------
+    if empty_cells:
+        move = random.choice(empty_cells)
+        return f"mark({move[0]},{move[1]},{move[2]},{move[3]})"
+
+    # ------------------------------------------------------------------
+    # Should never happen – board is full – but keep a legal answer.
+    # ------------------------------------------------------------------
+    return "mark(1,1,1,1)"
+</code>

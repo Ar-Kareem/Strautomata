@@ -1,0 +1,189 @@
+
+import numpy as np
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    # Board constants
+    BOARD_SIZE = 11
+    NUM_NODES = BOARD_SIZE * BOARD_SIZE
+    
+    # Helper: Convert (row, col) to index
+    def to_idx(r, c):
+        return r * BOARD_SIZE + c
+    
+    # Convert inputs to sets for O(1) lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Identify empty cells
+    empty_cells = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if (r, c) not in me_set and (r, c) not in opp_set:
+                empty_cells.append((r, c))
+    
+    # Safety check for full board (should not occur per rules)
+    if not empty_cells:
+        return (0, 0)
+    
+    # Opening: Play center if board is empty (strongest opening)
+    if not me and not opp:
+        return (5, 5)
+
+    # Neighbor offsets for Hex grid (based on the provided connectedness def)
+    # (r, c) touches: (r, c-1), (r, c+1) [Same row]
+    #                 (r-1, c), (r-1, c+1) [Top row]
+    #                 (r+1, c-1), (r+1, c) [Bottom row]
+    neighbor_deltas = [
+        (0, -1), (0, 1),
+        (-1, 0), (-1, 1),
+        (1, -1), (1, 0)
+    ]
+
+    # Solver function: Calculates 'Current Flow' through empty nodes for a given player config
+    def solve_flow(p_me, p_opp, p_color):
+        is_vertical = (p_color == 'b') # Black: Top-Bottom, White: Left-Right
+        
+        # Matrix Setup: A * v = b
+        # We model the board as a resistor network.
+        # Nodes are potentials.
+        mat = np.zeros((NUM_NODES, NUM_NODES))
+        rhs = np.zeros(NUM_NODES)
+        
+        # Conductance parameters
+        G_EMPTY = 1.0       # Standard link
+        G_WIRE = 1000.0     # Super-conductive (own stones)
+        G_CUT = 1e-6        # Insulative (opponent stones)
+        
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                u = to_idx(r, c)
+                u_in_me = (r, c) in p_me
+                u_in_opp = (r, c) in p_opp
+                
+                # Equation accumulators for node u
+                diag_val = 0.0
+                rhs_val = 0.0
+                
+                # --- Rail Connections ---
+                # Check if this node connects to Source (V=1) or Sink (V=0)
+                connects_source = (r == 0) if is_vertical else (c == 0)
+                connects_sink = (r == BOARD_SIZE - 1) if is_vertical else (c == BOARD_SIZE - 1)
+                
+                def get_rail_conductance():
+                    if u_in_opp: return G_CUT
+                    if u_in_me: return G_WIRE
+                    return G_EMPTY
+
+                if connects_source:
+                    g = get_rail_conductance()
+                    diag_val += g
+                    rhs_val += g * 1.0 # V_source = 1
+                
+                if connects_sink:
+                    g = get_rail_conductance()
+                    diag_val += g
+                    # rhs_val += g * 0.0 # V_sink = 0
+                
+                # --- Neighbor Connections ---
+                for dr, dc in neighbor_deltas:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                        v = to_idx(nr, nc)
+                        v_in_me = (nr, nc) in p_me
+                        v_in_opp = (nr, nc) in p_opp
+                        
+                        # Determine edge conductance G_uv
+                        # If the neighbor is blocked by opponent, the link is cut.
+                        if u_in_opp or v_in_opp:
+                            g_edge = G_CUT
+                        # If both are my stones, it's a wire.
+                        elif u_in_me and v_in_me:
+                            g_edge = G_WIRE
+                        else:
+                            # Standard empty space or connecting stone to empty
+                            g_edge = G_EMPTY
+                        
+                        # Update Matrix
+                        # Current from v to u: g_edge * (vv - vu)
+                        # We sum currents leaving u: sum(g_edge * (vu - vv)) ...
+                        # Row u: coeff of vu is +g, coeff of vv is -g
+                        diag_val += g_edge
+                        mat[u, v] -= g_edge
+                
+                mat[u, u] += diag_val
+                rhs[u] = rhs_val
+        
+        # Solve linear system
+        try:
+            potentials = np.linalg.solve(mat, rhs)
+        except np.linalg.LinAlgError:
+            # Fallback for singular matrix (rare fully disconnected states)
+            return np.zeros(NUM_NODES)
+            
+        # Calculate Current Flow through each EMPTY cell
+        # Flow = sum of absolute potential differences with neighbors (times conductance)
+        flows = np.zeros(NUM_NODES)
+        
+        for r in range(BOARD_SIZE):
+            for c in range(BOARD_SIZE):
+                if (r, c) not in p_me and (r, c) not in p_opp:
+                    u = to_idx(r, c)
+                    vp = potentials[u]
+                    
+                    total_current = 0.0
+                    
+                    # Rail Currents (approximate entering/leaving currents)
+                    connects_source = (r == 0) if is_vertical else (c == 0)
+                    connects_sink = (r == BOARD_SIZE - 1) if is_vertical else (c == BOARD_SIZE - 1)
+                    
+                    if connects_source:
+                        total_current += abs(1.0 - vp) * G_EMPTY
+                    if connects_sink:
+                        total_current += abs(0.0 - vp) * G_EMPTY
+                        
+                    # Neighbor Currents
+                    for dr, dc in neighbor_deltas:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                            v = to_idx(nr, nc)
+                            v_in_opp = (nr, nc) in p_opp
+                            
+                            # Using G_EMPTY or G_CUT for flow estimation into an empty cell
+                            g_edge = G_CUT if v_in_opp else G_EMPTY
+                            
+                            total_current += abs(vp - potentials[v]) * g_edge
+                    
+                    flows[u] = total_current
+        
+        return flows
+
+    # 1. Offense: My potentials/flows
+    offense_flows = solve_flow(me_set, opp_set, color)
+    
+    # 2. Defense: Opponent's potentials/flows (as if it was their turn)
+    opp_color_code = 'w' if color == 'b' else 'b'
+    defense_flows = solve_flow(opp_set, me_set, opp_color_code)
+    
+    # 3. Combine scores
+    # We want a move that is critical for me AND critical for opponent
+    total_scores = offense_flows + defense_flows
+    
+    # Selection
+    best_move = empty_cells[0]
+    best_score = -1.0
+    
+    center = BOARD_SIZE / 2.0
+    
+    for r, c in empty_cells:
+        idx = to_idx(r, c)
+        score = total_scores[idx]
+        
+        # Tie-breaker: distance to center (Manhattan-ish) to encourage robust shapes
+        dist = abs(r - center) + abs(c - center)
+        score += 1e-4 / (dist + 1.0)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+            
+    return best_move

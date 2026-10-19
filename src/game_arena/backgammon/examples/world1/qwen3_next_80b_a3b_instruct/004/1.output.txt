@@ -1,0 +1,281 @@
+The strategy for this policy is to implement a sophisticated Backgammon AI that prioritizes safety, efficiency, and strategic positioning. The policy follows these key principles:
+
+1. **Bar Priority**: If checkers are on the bar, always attempt to re-enter first, using the best available die to land on safe points (not occupied by 2+ opponent checkers).
+
+2. **Bearing Off Optimization**: When all checkers are in the home board (points 0-5), prioritize bearing off checkers using the highest possible die. If multiple bearing-off options exist, favor removing checkers from the furthest point to minimize vulnerability.
+
+3. **Safe Point Control**: Avoid landing on points occupied by two or more opponent checkers (hitting is desirable only when it forces the opponent off the board and creates a prime). Prefer building safe points (points with ≥2 of your own checkers).
+
+4. **Prime Building**: Create or extend blocking structures (primes) of 6 consecutive points to trap opponent checkers, especially if they have checkers on the bar or in your home board.
+
+5. **Advanced Dice Utilization**: When both dice can be played, prioritize moves that:
+   - Maximize the number of checkers borne off,
+   - Minimize the number of exposed checkers (single checkers vulnerable to hits),
+   - Maintain flexibility for next turn by leaving useful points active.
+
+6. **Move Ordering**: Use the higher die first (`H`) when it leads to a better strategic outcome; otherwise use the lower die first (`L`) to preserve higher values for future moves.
+
+7. **Fallback Strategy**: If no good moves exist, pass only when forced (i.e., no legal moves), but avoid this by prioritizing any legal move.
+
+The policy uses exhaustive evaluation of all legal move sequences, scoring each based on a hybrid heuristic combining point value, safety, bearing-off potential, and prime formation. The evaluation function assigns weights to:
+- Bearing off (highest priority),
+- Occupying home board points,
+- Creating primes (points 18-23 for opponent),
+- Avoiding blots in opponent’s home board,
+- Re-entering from bar safely.
+
+The implementation efficiently enumerates all legal move combinations given the dice and board state, then selects the highest-scoring sequence.
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = np.array(state['my_pts'])
+    opp_pts = np.array(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'])  # sorted in ascending order: [low, high]
+    low_die, high_die = dice[0], dice[1] if len(dice) == 2 else (dice[0], None)
+    
+    # If no legal moves are possible, return pass
+    def is_valid_move(start, die):
+        if start == 'B':  # bar
+            point = 23 - die  # re-entry point (opponent's side)
+            if point < 0 or point > 23:
+                return False
+            if opp_pts[point] >= 2:  # cannot land on point with 2+ opponents
+                return False
+            return True
+        else:
+            start_point = int(start[1:])
+            end_point = start_point - die
+            if end_point < 0:
+                # Check bearing off
+                if all(my_pts[i] == 0 for i in range(6, 24)):  # all checkers in home board
+                    return True
+                else:
+                    return False  # cannot bear off unless all in home board
+            if end_point >= 24:
+                return False
+            if opp_pts[end_point] >= 2:
+                return False
+            if my_pts[start_point] == 0:
+                return False
+            return True
+
+    def legal_moves():
+        moves = []
+        
+        # Case 1: Checkers on bar
+        if my_bar > 0:
+            # Must use dice to re-enter
+            if high_die is not None:
+                if is_valid_move('B', high_die):
+                    moves.append(('B', high_die))
+                if low_die is not None and is_valid_move('B', low_die):
+                    moves.append(('B', low_die))
+            else:
+                if is_valid_move('B', low_die):
+                    moves.append(('B', low_die))
+        else:
+            # No checkers on bar: move any checker
+            for start_point in range(24):
+                if my_pts[start_point] > 0:
+                    # Try high die first
+                    if high_die is not None and start_point >= high_die:
+                        if opp_pts[start_point - high_die] < 2:
+                            moves.append((f'A{start_point}', high_die))
+                    # Try low die
+                    if low_die is not None and start_point >= low_die:
+                        if opp_pts[start_point - low_die] < 2:
+                            moves.append((f'A{start_point}', low_die))
+                    # Bear off if possible
+                    if all(my_pts[i] == 0 for i in range(6, 24)):
+                        if high_die is not None and start_point < high_die:
+                            # Can bear off with high die
+                            moves.append((f'A{start_point}', high_die))
+                        if low_die is not None and start_point < low_die:
+                            # Can bear off with low die
+                            moves.append((f'A{start_point}', low_die))
+        return moves
+
+    def get_all_legal_sequences():
+        """Generate all legal sequences of 1 or 2 moves."""
+        sequences = []
+        moves = legal_moves()
+        
+        # Single move sequences
+        for start, die in moves:
+            sequences.append(([start], [die]))
+        
+        # Double move sequences (if two dice)
+        if len(dice) == 2:
+            for start1, die1 in moves:
+                # Calculate new state after first move
+                new_my_pts = my_pts.copy()
+                if start1 == 'B':
+                    new_my_pts[23 - die1] += 1
+                else:
+                    start_pt = int(start1[1:])
+                    if start_pt < die1:  # bearing off
+                        new_my_pts[start_pt] -= 1
+                        # No new point
+                    else:
+                        new_my_pts[start_pt] -= 1
+                        new_my_pts[start_pt - die1] += 1
+                
+                # Now find second moves from new state
+                dummy_state = state.copy()
+                dummy_state['my_pts'] = new_my_pts.tolist()
+                dummy_state['my_bar'] = my_bar - 1 if start1 == 'B' else my_bar
+                dummy_state['my_off'] = my_off + (1 if start1 != 'B' and start_pt < die1 else 0)
+                dummy_state['dice'] = [die2 for die2 in dice if die2 != die1]  # remaining die
+                
+                if len(dummy_state['dice']) == 1:
+                    die2 = dummy_state['dice'][0]
+                    remaining_moves = []
+                    if dummy_state['my_bar'] > 0:
+                        re_entry_pt = 23 - die2
+                        if re_entry_pt >= 0 and re_entry_pt <= 23 and dummy_state['opp_pts'][re_entry_pt] < 2:
+                            remaining_moves.append(('B', die2))
+                    else:
+                        for start_pt in range(24):
+                            if new_my_pts[start_pt] > 0:
+                                if start_pt >= die2:
+                                    if dummy_state['opp_pts'][start_pt - die2] < 2:
+                                        remaining_moves.append((f'A{start_pt}', die2))
+                                elif all(new_my_pts[i] == 0 for i in range(6, 24)):  # all in home
+                                    if start_pt < die2:
+                                        remaining_moves.append((f'A{start_pt}', die2))
+                    for start2, die2 in remaining_moves:
+                        sequences.append(([start1, start2], [die1, die2]))
+        
+        return sequences
+
+    def evaluate_sequence(moves, dice_used):
+        """Heuristic evaluation of a move sequence."""
+        score = 0.0
+        
+        # Create new board state after moves
+        new_my_pts = my_pts.copy()
+        new_my_bar = my_bar
+        new_my_off = my_off
+        new_opp_pts = opp_pts.copy()
+        
+        for start, die in zip(moves, dice_used):
+            if start == 'B':
+                new_my_bar -= 1
+                point = 23 - die
+                new_my_pts[point] += 1
+            else:
+                start_pt = int(start[1:])
+                end_pt = start_pt - die
+                if end_pt < 0:
+                    # Bear off
+                    new_my_pts[start_pt] -= 1
+                    new_my_off += 1
+                else:
+                    new_my_pts[start_pt] -= 1
+                    new_my_pts[end_pt] += 1
+                    # If we landed on a point with opponent checker, hit it
+                    if new_opp_pts[end_pt] == 1:
+                        new_opp_pts[end_pt] -= 1
+                        new_opp_pts[23] += 1  # opponent to bar
+                        score += 10.0  # bonus for hitting
+        
+        # Score based on position
+        if all(new_my_pts[i] == 0 for i in range(6, 24)):  # all in home board
+            score += 20.0  # bear off capability
+            # Prefer bearing off from higher points (A0=A5 is furthest)
+            for i in range(5, -1, -1):
+                if new_my_pts[i] > 0:
+                    score += i * 1.5  # priority on moving checkers from front
+        else:
+            # Avoid blots in opponent's home board
+            for i in range(18, 24):
+                if new_my_pts[i] == 1:
+                    score -= 5.0  # penalty for blot in opponent home
+            # Create primes in opponent's home (18-23)
+            prime_count = 0
+            for i in range(18, 24):
+                if new_my_pts[i] >= 2:
+                    prime_count += 1
+                else:
+                    if prime_count > 0:
+                        score += prime_count * 3.0
+                        break
+            # Encourage spacing: avoid clustering too much
+            for i in range(6, 18):
+                if new_my_pts[i] == 1:
+                    score -= 2.0  # blots in middle are bad
+                elif new_my_pts[i] >= 3:
+                    score += 0.5 * (new_my_pts[i] - 2)  # stack bonus
+
+        # Favor bearing off more
+        score += new_my_off * 5.0
+        # Minimize checkers on bar (but we already handled re-entry)
+        score -= new_my_bar * 10.0
+        
+        # If we can bear off all next roll, big bonus
+        if all(new_my_pts[i] == 0 for i in range(6, 24)):
+            remaining_checkers = sum(new_my_pts[:6])
+            # Can we bear off all next turn?
+            if remaining_checkers <= 2 and max(new_my_pts[:6]) > 0:
+                # Check if max die can clear
+                if max(dice) >= max([i for i in range(6) if new_my_pts[i] > 0], default=0):
+                    score += 50.0  # near win
+        
+        return score
+
+    # Get all possible sequences
+    all_sequences = get_all_legal_sequences()
+    
+    if not all_sequences:
+        return "H:P,P"  # pass if no legal moves
+
+    # Evaluate all sequences
+    best_score = -float('inf')
+    best_sequence = None
+    best_order = 'H'  # default
+
+    for moves, dice_used in all_sequences:
+        if len(dice_used) == 1:
+            # Only one move, use the die used
+            first_die = dice_used[0]
+            if first_die == high_die:
+                order = 'H'
+            else:
+                order = 'L'
+            score = evaluate_sequence(moves, dice_used)
+            if score > best_score:
+                best_score = score
+                best_sequence = moves
+                best_order = order
+        else:  # two moves
+            # We need to assign H or L based on which die is higher
+            die1, die2 = dice_used
+            if die1 == high_die:
+                order = 'H'
+            else:
+                order = 'L'
+            score = evaluate_sequence(moves, dice_used)
+            if score > best_score:
+                best_score = score
+                best_sequence = moves
+                best_order = order
+
+    # Format result
+    if best_sequence:
+        if len(best_sequence) == 1:
+            move1 = best_sequence[0]
+            move2 = 'P'
+        else:
+            move1, move2 = best_sequence[0], best_sequence[1]
+        
+        return f"{best_order}:{move1},{move2}"
+    
+    # Fallback: should not happen because we filtered for legal
+    return "H:P,P"
+</code>

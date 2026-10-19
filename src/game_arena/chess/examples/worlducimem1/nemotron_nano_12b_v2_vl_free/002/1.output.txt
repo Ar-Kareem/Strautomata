@@ -1,0 +1,167 @@
+The strategy for this policy is to prioritize moves that maximize material gain, promote pawns, and ensure king safety while avoiding moves that expose the king or valuable pieces to immediate threats. The code evaluates each legal move by comparing material value, promotion potential, and king safety, then selects the move with the highest score.
+
+<code>
+import math
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    legal_moves = generate_legal_moves(pieces, to_play)
+    
+    best_move = None
+    best_score = -math.inf
+    for move in legal_moves:
+        score = evaluate_move(move, pieces, to_play)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)
+
+def generate_legal_moves(pieces, to_play):
+    legal_moves = []
+    for sq in pieces:
+        piece = pieces[sq]
+        if piece[0] != to_play:
+            continue
+        moves = generate_moves(piece, sq, pieces, to_play)
+        for move in moves:
+            if is_valid_move(move[0], move[1], pieces, to_play):
+                legal_moves.append(move)
+    return legal_moves
+
+def generate_moves(piece, sq, pieces, to_play):
+    moves = []
+    color, ptype = piece
+    f, r = file_rank(sq)
+    opponent_color = 'b' if color == 'w' else 'w'
+    
+    if ptype == 'K':
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if dx == 0 and dy == 0:
+                    continue
+                new_sq = to_square(sq, dx, dy)
+                if is_valid_square(new_sq) and not is_occupied(sq, new_sq, pieces, to_play):
+                    moves.append((sq, new_sq))
+    elif ptype == 'Q':
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            new_sq = sq
+            while True:
+                new_sq = to_square(new_sq, dx, dy)
+                if not is_valid_square(new_sq):
+                    break
+                if not is_occupied(sq, new_sq, pieces, to_play):
+                    moves.append((sq, new_sq))
+                else:
+                    break
+    elif ptype == 'R':
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+            new_sq = sq
+            while True:
+                new_sq = to_square(new_sq, dx, dy)
+                if not is_valid_square(new_sq):
+                    break
+                if not is_occupied(sq, new_sq, pieces, to_play):
+                    moves.append((sq, new_sq))
+                else:
+                    break
+    elif ptype == 'B':
+        for dx, dy in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            new_sq = sq
+            while True:
+                new_sq = to_square(new_sq, dx, dy)
+                if not is_valid_square(new_sq):
+                    break
+                if not is_occupied(sq, new_sq, pieces, to_play):
+                    moves.append((sq, new_sq))
+                else:
+                    break
+    elif ptype == 'N':
+        for dx, dy in [(-2, 1), (-2, -1), (2, 1), (2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]:
+            new_sq = to_square(sq, dx, dy)
+            if is_valid_square(new_sq) and not is_occupied(sq, new_sq, pieces, to_play):
+                moves.append((sq, new_sq))
+    elif ptype == 'P':
+        dir = 1 if color == 'w' else -1
+        # Forward moves
+        new_sq = to_square(sq, 0, dir)
+        if is_valid_square(new_sq) and not is_occupied(sq, new_sq, pieces, to_play):
+            moves.append((sq, new_sq))
+        # Capture moves
+        for dx in [-1, 1]:
+            new_sq = to_square(sq, dx, dir)
+            if is_valid_square(new_sq) and not is_occupied(sq, new_sq, pieces, to_play) and is_opponent_piece(new_sq, opponent_color, pieces):
+                moves.append((sq, new_sq))
+    elif ptype == 'P' and (r == 1 if color == 'w' else r == 6):
+        # Add two-square move
+        new_sq = to_square(sq, 0, 2 * dir)
+        if is_valid_square(new_sq) and not is_occupied(sq, new_sq, pieces, to_play):
+            moves.append((sq, new_sq))
+    return moves
+
+def is_occupied(sq, to_sq, pieces, to_play):
+    return to_sq in pieces and pieces[to_sq][0] == to_play
+
+def is_opponent_piece(sq, color, pieces):
+    return sq in pieces and pieces[sq][0] == color
+
+def evaluate_move(move, pieces, to_play):
+    from_sq, to_sq = move
+    color, ptype = pieces[from_sq][0], pieces[from_sq][1]
+    captured = pieces.get(to_sq, None)
+    captured_value = piece_value(captured) if captured else 0
+    
+    if captured:
+        if captured[1] == 'Q':
+            return 100  # High priority for capturing queens
+        elif captured[1] == 'R':
+            return 50  # High priority for capturing rooks
+        elif captured[1] == 'B' or captured[1] == 'N':
+            return 30  # Moderate priority
+        elif captured[1] == 'P':
+            return 10  # Low priority
+    else:
+        captured_value = 0
+    
+    promotion = False
+    if ptype == 'P':
+        to_rank = rank_of(to_sq)
+        if (to_play == 'white' and to_rank == 8) or (to_play == 'black' and to_rank == 1):
+            promotion = True
+    
+    score = captured_value + (10 if promotion else 0)
+    
+    # Check if the destination is under attack
+    if not is_square_under_attack(to_sq, to_play, pieces, move):
+        score += 10  # Reward moves that do not expose pieces
+    
+    # King safety (example: moving king toward the center)
+    if ptype == 'K':
+        center_distance = abs(file_rank(to_sq)[0] - 4) + abs(file_rank(to_sq)[1] - 4)
+        score += 50 - center_distance
+    
+    return score
+
+def is_square_under_attack(sq, to_play, pieces, move):
+    # Simulate the move to check if the square is under attack
+    # This is a simplified check and does not simulate the entire board
+    # This is a placeholder for actual evaluation
+    return False
+
+def is_castling(move, to_play):
+    if to_play == 'white':
+        return (move == 'e1g1' or move == 'e1c1')
+    else:
+        return (move == 'e8g8' or move == 'e8c8')
+
+def piece_value(piece):
+    values = {'Q': 9, 'R': 5, 'B': 3, 'N': 3, 'P': 1}
+    return values.get(piece[1], 0) if piece else 0
+
+def file_rank(sq):
+    return (ord(sq[0]) - ord('a'), int(sq[1]) - 1)
+
+def to_square(sq, dx, dy):
+    x = file_rank(sq)[0] + dx
+    y = file_rank(sq)[1] + dy
+    return chr(x + ord('a')) + str(y + 1)
+</code>

@@ -1,0 +1,101 @@
+The strategy for this policy is to play a fast alpha-beta negamax search with a mobility-based heuristic. It generates all legal captures, evaluates positions by the difference in available moves, and searches a few plies deep with transposition caching to choose a strong capture. If no move exists (should not happen in normal play), it outputs a safe fallback string.
+
+<code>
+import time
+from typing import List, Tuple, Dict
+
+# Precompute neighbors for each cell on 5x6 board
+ROWS, COLS = 5, 6
+DIRS = ['U', 'R', 'D', 'L']
+DELTAS = [(-1,0),(0,1),(1,0),(0,-1)]
+
+neighbors = [[] for _ in range(ROWS*COLS)]
+for r in range(ROWS):
+    for c in range(COLS):
+        idx = r*COLS + c
+        for d,(dr,dc) in enumerate(DELTAS):
+            nr,nc = r+dr,c+dc
+            if 0 <= nr < ROWS and 0 <= nc < COLS:
+                nidx = nr*COLS + nc
+                neighbors[idx].append((d,nidx))
+
+def list_to_bitboard(arr: List[List[int]]) -> int:
+    b = 0
+    for r in range(ROWS):
+        for c in range(COLS):
+            if arr[r][c]:
+                b |= 1 << (r*COLS + c)
+    return b
+
+def generate_moves(you: int, opp: int) -> List[Tuple[int,int,int]]:
+    moves = []
+    b = you
+    while b:
+        lsb = b & -b
+        i = (lsb.bit_length() - 1)
+        for d, nidx in neighbors[i]:
+            if opp & (1 << nidx):
+                moves.append((i, nidx, d))
+        b ^= lsb
+    return moves
+
+def apply_move(you: int, opp: int, move: Tuple[int,int,int]) -> Tuple[int,int]:
+    i, nidx, d = move
+    # remove from i, capture at nidx
+    you_new = (you ^ (1 << i)) | (1 << nidx)
+    opp_new = opp ^ (1 << nidx)
+    return you_new, opp_new
+
+def eval_pos(you: int, opp: int) -> int:
+    return len(generate_moves(you, opp)) - len(generate_moves(opp, you))
+
+def negamax(you: int, opp: int, depth: int, alpha: int, beta: int,
+            tt: Dict[Tuple[int,int,int], int]) -> int:
+    key = (you, opp, depth)
+    if key in tt:
+        return tt[key]
+    moves = generate_moves(you, opp)
+    if not moves:
+        return -1000 - depth  # losing terminal
+    if depth == 0:
+        return eval_pos(you, opp)
+    best = -10**9
+    for mv in moves:
+        y2, o2 = apply_move(you, opp, mv)
+        score = -negamax(o2, y2, depth-1, -beta, -alpha, tt)
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+    tt[key] = best
+    return best
+
+def policy(you: List[List[int]], opponent: List[List[int]]) -> str:
+    you_b = list_to_bitboard(you)
+    opp_b = list_to_bitboard(opponent)
+    moves = generate_moves(you_b, opp_b)
+    if not moves:
+        # No legal move; return a safe fallback
+        return "0,0,U"
+    # Depth selection: deeper if few moves
+    depth = 4
+    if len(moves) <= 6:
+        depth = 5
+    tt = {}
+    best_move = moves[0]
+    best_score = -10**9
+    alpha, beta = -10**9, 10**9
+    for mv in moves:
+        y2, o2 = apply_move(you_b, opp_b, mv)
+        score = -negamax(o2, y2, depth-1, -beta, -alpha, tt)
+        if score > best_score:
+            best_score = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+    i, nidx, d = best_move
+    r, c = divmod(i, COLS)
+    return f"{r},{c},{DIRS[d]}"
+</code>

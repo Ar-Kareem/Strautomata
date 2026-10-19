@@ -1,0 +1,113 @@
+The strategy for this policy is to maximize the number of pawns captured within the remaining moves using a depth-first search with memoization over the game state. The game state is encoded using a bit mask for pawn positions (15 cells, 14 pawns initially) and the knight's current position. For each legal knight move, we recursively compute the maximum capturable pawns from the resulting state with one fewer move remaining. The move yielding the highest expected capture count is selected. If the state indicates the player has already moved (contains a "played" proposition), the policy returns "tick" to end the turn. The search efficiently handles the small 5×3 board by memoizing on (position, pawn_mask, remaining_moves), which bounds the state space to approximately 4 million entries in the worst case but typically much fewer due to the limited knight connectivity on this board size.
+
+<code>
+from typing import List, Tuple
+
+# Precompute knight move neighbors for 5x3 board (indices 0-14)
+# Index mapping: idx = (r-1)*3 + (c-1) where r in 1..5, c in 1..3
+_NEIGHBORS: List[Tuple[int, ...]] = []
+for r in range(1, 6):
+    for c in range(1, 4):
+        idx = (r - 1) * 3 + (c - 1)
+        neighs = []
+        for dr, dc in [(2, 1), (2, -1), (-2, 1), (-2, -1), (1, 2), (1, -2), (-1, 2), (-1, -2)]:
+            nr, nc = r + dr, c + dc
+            if 1 <= nr <= 5 and 1 <= nc <= 3:
+                neighs.append((nr - 1) * 3 + (nc - 1))
+        _NEIGHBORS.append(tuple(neighs))
+
+def policy(state: List[List[object]], role: str) -> str:
+    # Parse state
+    knight_idx = None
+    pawn_mask = 0
+    step = 1
+    needs_tick = False
+    
+    for fact in state:
+        if not fact:
+            continue
+        if fact[0] == "cell" and fact[1] == role:
+            r = int(fact[2])
+            c = int(fact[3])
+            idx = (r - 1) * 3 + (c - 1)
+            cell_type = fact[4]
+            if cell_type == "knight":
+                knight_idx = idx
+            elif cell_type == "pawn":
+                pawn_mask |= (1 << idx)
+        elif fact[0] == "step":
+            step = int(fact[1])
+        elif fact[0] == "played" and fact[1] == role:
+            needs_tick = True
+    
+    if needs_tick:
+        return "tick"
+    
+    if knight_idx is None:
+        # Should not happen in valid game
+        return "tick"
+    
+    # Calculate remaining moves (16 total per player)
+    if role == "left":
+        moves_made = (step - 1) // 2
+    else:
+        moves_made = (step - 2) // 2
+    remaining = 16 - moves_made
+    
+    if remaining <= 0:
+        return "tick"
+    
+    # Function to evaluate a position using DFS with memoization
+    memo = {}
+    
+    def dfs(pos: int, mask: int, rem: int) -> int:
+        """Return max captures achievable from pos with mask and rem moves remaining."""
+        if rem == 0:
+            return 0
+        key = (pos, mask, rem)
+        if key in memo:
+            return memo[key]
+        
+        best = 0
+        for nidx in _NEIGHBORS[pos]:
+            bit = 1 << nidx
+            if mask & bit:
+                # Capture this pawn
+                val = 1 + dfs(nidx, mask ^ bit, rem - 1)
+            else:
+                val = dfs(nidx, mask, rem - 1)
+            if val > best:
+                best = val
+                # Pruning: can't do better than rem captures
+                if best == rem:
+                    break
+        memo[key] = best
+        return best
+    
+    # Evaluate all legal moves from current position
+    best_target = None
+    best_score = -1
+    
+    for nidx in _NEIGHBORS[knight_idx]:
+        bit = 1 << nidx
+        if pawn_mask & bit:
+            score = 1 + dfs(nidx, pawn_mask ^ bit, remaining - 1)
+        else:
+            score = dfs(nidx, pawn_mask, remaining - 1)
+        
+        if score > best_score:
+            best_score = score
+            best_target = nidx
+    
+    if best_target is None:
+        # No legal moves (should not happen on 5x3 board)
+        return "tick"
+    
+    # Convert indices back to coordinates for the action string
+    fr = knight_idx // 3 + 1
+    fc = knight_idx % 3 + 1
+    tr = best_target // 3 + 1
+    tc = best_target % 3 + 1
+    
+    return f"move({role},{fr},{fc},{tr},{tc})"
+</code>

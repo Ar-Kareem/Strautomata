@@ -1,0 +1,227 @@
+
+import numpy as np
+import time
+from collections import deque
+
+# Game constants
+DIRECTIONS = [(-1,0), (-1,1), (0,1), (1,1), (1,0), (1,-1), (0,-1), (-1,-1)]
+
+# Precomputed center control rewards
+CENTER_REWARD = np.array([
+    [10, 20, 30, 40, 40, 30, 20, 10],
+    [20, 30, 40, 50, 50, 40, 30, 20],
+    [30, 40, 50, 60, 60, 50, 40, 30],
+    [40, 50, 60, 70, 70, 60, 50, 40],
+    [40, 50, 60, 70, 70, 60, 50, 40],
+    [30, 40, 50, 60, 60, 50, 40, 30],
+    [20, 30, 40, 50, 50, 40, 30, 20],
+    [10, 20, 30, 40, 40, 30, 20, 10]
+])
+
+def policy(board):
+    """Main policy function for Lines of Action."""
+    board = np.asarray(board, dtype=np.int8)
+    legal_moves = get_legal_moves(board, 1)
+    if not legal_moves:
+        return "0,0:0,0"
+    
+    # 1. Immediate win
+    for move in legal_moves:
+        if check_win(make_move(board, move, 1), 1):
+            return move_to_string(move)
+    
+    # 2. Block opponent win
+    opp_win_squares = set()
+    for move in get_legal_moves(board, -1):
+        if check_win(make_move(board, move, -1), -1):
+            opp_win_squares.add(move[1])
+    
+    if opp_win_squares:
+        for move in legal_moves:
+            if move[1] in opp_win_squares:
+                return move_to_string(move)
+    
+    # 3. Shallow minimax search
+    best_move = None
+    best_score = -np.inf
+    
+    for move in order_moves(board, legal_moves, 1):
+        new_board = make_move(board, move, 1)
+        opp_best = np.inf
+        
+        for opp_move in get_legal_moves(new_board, -1):
+            score = evaluate(make_move(new_board, opp_move, -1))
+            if score < opp_best:
+                opp_best = score
+        
+        if not get_legal_moves(new_board, -1):
+            opp_best = 10000
+        
+        if opp_best > best_score:
+            best_score = opp_best
+            best_move = move
+    
+    return move_to_string(best_move if best_move else legal_moves[0])
+
+def order_moves(board, moves, player):
+    """Prioritize captures, center control, and connectivity."""
+    scored = []
+    for move in moves:
+        score = 0
+        (fr, fc), (tr, tc) = move
+        
+        if board[tr, tc] == -player:
+            score += 1000
+        score += CENTER_REWARD[tr, tc]
+        
+        for dr, dc in DIRECTIONS:
+            nr, nc = tr + dr, tc + dc
+            if 0 <= nr < 8 and 0 <= nc < 8 and board[nr, nc] == player:
+                score += 50
+                break
+        
+        scored.append((score, move))
+    
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [m for _, m in scored]
+
+def evaluate(board):
+    """Evaluate board state for player 1."""
+    if check_win(board, 1):
+        return 100000
+    if check_win(board, -1):
+        return -100000
+    
+    own_pieces = np.sum(board == 1)
+    opp_pieces = np.sum(board == -1)
+    score = (own_pieces - opp_pieces) * 200
+    
+    score -= count_groups(board, 1) * 500
+    score += count_groups(board, -1) * 300
+    
+    score += np.sum(CENTER_REWARD * (board == 1)) * 3
+    score -= np.sum(CENTER_REWARD * (board == -1)) * 2
+    
+    return score
+
+def count_groups(board, player):
+    """Count connected components using flood fill."""
+    visited = np.zeros((8,8), dtype=bool)
+    groups = 0
+    pieces_r, pieces_c = np.where(board == player)
+    
+    for r, c in zip(pieces_r, pieces_c):
+        if visited[r, c]:
+            continue
+        
+        groups += 1
+        stack = [(r, c)]
+        visited[r, c] = True
+        
+        while stack:
+            cr, cc = stack.pop()
+            for dr, dc in DIRECTIONS:
+                nr, nc = cr + dr, cc + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    if board[nr, nc] == player and not visited[nr, nc]:
+                        visited[nr, nc] = True
+                        stack.append((nr, nc))
+    
+    return groups
+
+def get_legal_moves(board, player):
+    """Generate all legal moves."""
+    moves = []
+    pieces_r, pieces_c = np.where(board == player)
+    
+    for r, c in zip(pieces_r, pieces_c):
+        for dr, dc in DIRECTIONS:
+            line_len = count_line_length(board, r, c, dr, dc)
+            if line_len == 0:
+                continue
+            
+            for sign in [1, -1]:
+                tr = r + dr * line_len * sign
+                tc = c + dc * line_len * sign
+                
+                if not (0 <= tr < 8 and 0 <= tc < 8):
+                    continue
+                if board[tr, tc] == player:
+                    continue
+                if not is_path_clear(board, r, c, dr, dc, line_len, sign, player):
+                    continue
+                
+                moves.append(((r, c), (tr, tc)))
+    
+    return moves
+
+def count_line_length(board, r, c, dr, dc):
+    """Count pieces in line including the piece at (r,c)."""
+    count = 0
+    
+    # Positive direction
+    pr, pc = r + dr, c + dc
+    while 0 <= pr < 8 and 0 <= pc < 8:
+        if board[pr, pc] != 0:
+            count += 1
+        pr += dr
+        pc += dc
+    
+    # Negative direction
+    pr, pc = r - dr, c - dc
+    while 0 <= pr < 8 and 0 <= pc < 8:
+        if board[pr, pc] != 0:
+            count += 1
+        pr -= dr
+        pc -= dc
+    
+    if board[r, c] != 0:
+        count += 1
+    
+    return count
+
+def is_path_clear(board, r, c, dr, dc, distance, sign, player):
+    """Check path is free of opponent pieces."""
+    step = 1 if sign > 0 else -1
+    for i in range(1, distance):
+        check_r = r + dr * i * step
+        check_c = c + dc * i * step
+        if board[check_r, check_c] == -player:
+            return False
+    return True
+
+def make_move(board, move, player):
+    """Execute move on board copy."""
+    new_board = board.copy()
+    (fr, fc), (tr, tc) = move
+    new_board[tr, tc] = player
+    new_board[fr, fc] = 0
+    return new_board
+
+def check_win(board, player):
+    """Check if all player's pieces are connected."""
+    pieces = np.where(board == player)
+    if len(pieces[0]) <= 1:
+        return True
+    
+    visited = np.zeros((8,8), dtype=bool)
+    stack = [(pieces[0][0], pieces[1][0])]
+    visited[pieces[0][0], pieces[1][0]] = True
+    count = 1
+    
+    while stack:
+        r, c = stack.pop()
+        for dr, dc in DIRECTIONS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < 8 and 0 <= nc < 8:
+                if board[nr, nc] == player and not visited[nr, nc]:
+                    visited[nr, nc] = True
+                    count += 1
+                    stack.append((nr, nc))
+    
+    return count == len(pieces[0])
+
+def move_to_string(move):
+    """Convert move to string format."""
+    (fr, fc), (tr, tc) = move
+    return f"{fr},{fc}:{tr},{tc}"

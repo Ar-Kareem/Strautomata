@@ -1,0 +1,115 @@
+To solve this problem, we need to develop a policy for the Amazon game on a 6x6 board. The policy must generate a legal move for the player's amazons (represented by `1` on the board) and an arrow shot from the landing square. The move should be strategic, considering both the player's mobility and the opponent's mobility after the move.
+
+### Approach
+1. **Move Generation**: For each amazon (value `1`) on the board, generate all possible moves. An amazon can move any number of squares in eight directions (horizontal, vertical, diagonal) as long as the path is unobstructed and the destination is empty.
+2. **Arrow Shot**: After moving an amazon, shoot an arrow from the landing square in any of the eight directions, ensuring the path is unobstructed and the arrow lands on an empty square. The starting square of the amazon move is considered empty during the arrow's path check.
+3. **Evaluation**: For each generated move:
+   - **Simulate the Move**: Update the board to reflect the move (move the amazon, shoot the arrow).
+   - **Check Opponent's Mobility**: Count the number of legal moves available to the opponent (value `2`) on the new board. If the opponent has no moves, the current move is a winning move.
+   - **Evaluate Mobility**: Calculate the player's and opponent's mobilities on the new board. The player's mobility is the number of legal moves available to the player (value `1`), and the opponent's mobility is the number of legal moves available to the opponent (value `2`).
+   - **Score Calculation**: Use the difference between the player's mobility and the opponent's mobility as the score for the move. Higher scores indicate better positions.
+4. **Best Move Selection**: Choose the move with the highest score. If multiple moves have the same score, select any of them.
+
+### Solution Code
+```python
+import numpy as np
+
+directions = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)]
+
+def generate_moves(board, player):
+    moves = []
+    rows, cols = board.shape
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] == player:
+                for dr, dc in directions:
+                    step = 1
+                    while 0 <= r + step * dr < rows and 0 <= c + step * dc < cols and board[r + step * dr, c + step * dc] == 0:
+                        to = (r + step * dr, c + step * dc)
+                        arrow_targets = []
+                        for dr2, dc2 in directions:
+                            step2 = 1
+                            while 0 <= to[0] + step2 * dr2 < rows and 0 <= to[1] + step2 * dc2 < cols:
+                                r_a = to[0] + step2 * dr2
+                                c_a = to[1] + step2 * dc2
+                                if (r_a, c_a) == (r, c):
+                                    val = 0
+                                else:
+                                    val = board[r_a, c_a]
+                                if val != 0:
+                                    break
+                                arrow_targets.append((r_a, c_a))
+                                step2 += 1
+                        for arrow in arrow_targets:
+                            moves.append(((r, c), to, arrow))
+                        step += 1
+    return moves
+
+def count_moves(board, player):
+    count = 0
+    rows, cols = board.shape
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] == player:
+                for dr, dc in directions:
+                    step = 1
+                    while 0 <= r + step * dr < rows and 0 <= c + step * dc < cols and board[r + step * dr, c + step * dc] == 0:
+                        to = (r + step * dr, c + step * dc)
+                        for dr2, dc2 in directions:
+                            step2 = 1
+                            while 0 <= to[0] + step2 * dr2 < rows and 0 <= to[1] + step2 * dc2 < cols:
+                                r_a = to[0] + step2 * dr2
+                                c_a = to[1] + step2 * dc2
+                                if (r_a, c_a) == (r, c):
+                                    val = 0
+                                else:
+                                    val = board[r_a, c_a]
+                                if val != 0:
+                                    break
+                                count += 1
+                                step2 += 1
+                        step += 1
+    return count
+
+def format_move(move):
+    return f"{move[0][0]},{move[0][1]}:{move[1][0]},{move[1][1]}:{move[2][0]},{move[2][1]}"
+
+def policy(board):
+    moves = generate_moves(board, 1)
+    if not moves:
+        return "0,0:0,0:0,0"
+    
+    best_move = None
+    best_score = -float('inf')
+    
+    for move in moves:
+        new_board = board.copy()
+        new_board[move[0][0], move[0][1]] = 0
+        new_board[move[1][0], move[1][1]] = 1
+        new_board[move[2][0], move[2][1]] = -1
+        
+        opponent_moves = count_moves(new_board, 2)
+        if opponent_moves == 0:
+            return format_move(move)
+        
+        our_moves = count_moves(new_board, 1)
+        score = our_moves - opponent_moves
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+            
+    return format_move(best_move)
+```
+
+### Explanation
+1. **Move Generation**: The `generate_moves` function checks all possible moves for each amazon (value `1`). For each amazon, it explores eight directions, moving step-by-step until blocked. For each valid landing square, it checks possible arrow shots in all eight directions, treating the amazon's starting square as empty during the check.
+2. **Move Counting**: The `count_moves` function counts all possible moves for a given player (either `1` or `2`) by simulating each amazon's moves and arrow shots, similar to `generate_moves` but only counting valid moves.
+3. **Policy Execution**: The `policy` function generates all possible moves for the player. For each move:
+   - It simulates the move on a copy of the board.
+   - It counts the opponent's moves. If the opponent has no moves, the current move wins immediately.
+   - It calculates the player's and opponent's mobilities on the new board and uses their difference as the score.
+   - The move with the highest score is selected. If multiple moves score equally, any is chosen.
+4. **Result Formatting**: The selected move is formatted into the required string format before returning.
+
+This approach ensures the policy makes strategic decisions by balancing immediate threats and future mobility, aiming to maximize the player's advantage while minimizing the opponent's.

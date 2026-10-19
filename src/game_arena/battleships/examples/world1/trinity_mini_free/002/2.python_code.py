@@ -1,0 +1,48 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Track all unknown cells (0) and hits (1)
+    unknown_cells = []
+    hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                unknown_cells.append((r, c))
+            elif board[r][c] == 1:
+                hits.append((r, c))
+    
+    # If there are hits, prioritize adjacent unknown cells
+    if hits:
+        candidates = []
+        for (r, c) in unknown_cells:
+            # Check adjacent cells for hits
+            adjacent_hits = 0
+            for dr, dc in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10:
+                    if board[nr][nc] == 1:
+                        adjacent_hits += 1
+            if adjacent_hits > 0:
+                candidates.append((r, c, adjacent_hits))
+        
+        # Choose candidate with most adjacent hits, then highest row/col
+        if candidates:
+            candidates.sort(key=lambda x: (x[2], x[0], x[1]), reverse=True)
+            return (candidates[0][0], candidates[0][1])
+    
+    # No hits: prioritize rows/columns with most hits
+    hit_counts = [0] * 10
+    for (r, c) in hits:
+        hit_counts[r] += 1
+    
+    # Find row with most hits (prioritize higher rows)
+    max_hits = max(hit_counts)
+    candidate_rows = [i for i, count in enumerate(hit_counts) if count == max_hits]
+    target_row = max(candidate_rows)  # Highest row with max hits
+    
+    # Find unknown cell in target_row with highest column
+    for c in range(9, -1, -1):
+        if board[target_row][c] == 0:
+            return (target_row, c)
+    
+    # Fallback: random unknown cell
+    return unknown_cells[0]

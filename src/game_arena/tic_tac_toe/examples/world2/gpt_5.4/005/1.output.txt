@@ -1,0 +1,309 @@
+The strategy for this policy is a strong, safe 4x4 Tic Tac Toe player based on depth-limited minimax with alpha-beta pruning, plus fast tactical checks.
+
+Core ideas:
+1. Always return a legal move, even on malformed or unexpected boards.
+2. First look for immediate winning moves.
+3. Then block any immediate opponent winning moves.
+4. Prefer strong positional moves using a heuristic:
+   - favor lines with our marks and no opponent marks,
+   - value cells that participate in many promising rows/columns/diagonals,
+   - prioritize center-ish influence.
+5. Use minimax with alpha-beta pruning on candidate moves only, not all moves, to stay within time limits.
+6. Detect terminal states correctly for 4-in-a-row on rows, columns, and the two diagonals.
+
+This gives much stronger play than a purely greedy heuristic while remaining fast enough for the arena.
+
+<code>
+from typing import List, Tuple
+import math
+
+N = 4
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Defensive fallback: always return a legal move if possible.
+    empties = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not empties:
+        return (0, 0)
+
+    lines = _all_lines()
+
+    # 1) Immediate win
+    for r, c in empties:
+        board[r][c] = 1
+        if _is_win(board, 1):
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # 2) Immediate block
+    opp_wins = []
+    for r, c in empties:
+        board[r][c] = -1
+        if _is_win(board, -1):
+            opp_wins.append((r, c))
+        board[r][c] = 0
+    if opp_wins:
+        # If multiple blocks exist, choose the best-looking one.
+        return max(opp_wins, key=lambda mv: _move_priority(board, mv[0], mv[1], 1, lines))
+
+    # 3) Minimax search with move ordering and heuristic evaluation
+    moves = _ordered_moves(board, 1, lines)
+    # Narrow branching for speed
+    if len(moves) > 8:
+        moves = moves[:8]
+
+    best_move = moves[0]
+    best_score = -math.inf
+
+    # Dynamic search depth based on game phase
+    remaining = len(empties)
+    if remaining >= 12:
+        depth = 4
+    elif remaining >= 8:
+        depth = 5
+    elif remaining >= 5:
+        depth = 7
+    else:
+        depth = 12  # near endgame, often solve exactly
+
+    alpha = -math.inf
+    beta = math.inf
+
+    for r, c in moves:
+        board[r][c] = 1
+        score = _minimax(board, depth - 1, False, alpha, beta, lines)
+        board[r][c] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+        alpha = max(alpha, best_score)
+
+    return best_move
+
+
+def _all_lines():
+    lines = []
+    # Rows
+    for r in range(N):
+        lines.append([(r, c) for c in range(N)])
+    # Cols
+    for c in range(N):
+        lines.append([(r, c) for r in range(N)])
+    # Diagonals
+    lines.append([(i, i) for i in range(N)])
+    lines.append([(i, N - 1 - i) for i in range(N)])
+    return lines
+
+
+def _is_win(board, player):
+    # Rows and columns
+    for i in range(N):
+        if all(board[i][j] == player for j in range(N)):
+            return True
+        if all(board[j][i] == player for j in range(N)):
+            return True
+    # Diagonals
+    if all(board[i][i] == player for i in range(N)):
+        return True
+    if all(board[i][N - 1 - i] == player for i in range(N)):
+        return True
+    return False
+
+
+def _terminal_score(board):
+    if _is_win(board, 1):
+        return 100000
+    if _is_win(board, -1):
+        return -100000
+    if all(board[r][c] != 0 for r in range(N) for c in range(N)):
+        return 0
+    return None
+
+
+def _minimax(board, depth, maximizing, alpha, beta, lines):
+    term = _terminal_score(board)
+    if term is not None:
+        return term
+    if depth == 0:
+        return _evaluate(board, lines)
+
+    player = 1 if maximizing else -1
+    moves = _ordered_moves(board, player, lines)
+
+    # Prune move list for speed except in very small endgames
+    empties = sum(1 for r in range(N) for c in range(N) if board[r][c] == 0)
+    if empties > 6 and len(moves) > 7:
+        moves = moves[:7]
+
+    if maximizing:
+        value = -math.inf
+        for r, c in moves:
+            board[r][c] = 1
+            value = max(value, _minimax(board, depth - 1, False, alpha, beta, lines))
+            board[r][c] = 0
+            alpha = max(alpha, value)
+            if beta <= alpha:
+                break
+        return value
+    else:
+        value = math.inf
+        for r, c in moves:
+            board[r][c] = -1
+            value = min(value, _minimax(board, depth - 1, True, alpha, beta, lines))
+            board[r][c] = 0
+            beta = min(beta, value)
+            if beta <= alpha:
+                break
+        return value
+
+
+def _ordered_moves(board, player, lines):
+    empties = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    # Strong tactical ordering: immediate win, immediate block, then heuristic.
+    winning = []
+    blocking = []
+    scored = []
+
+    for r, c in empties:
+        board[r][c] = player
+        if _is_win(board, player):
+            board[r][c] = 0
+            winning.append((r, c))
+            continue
+        board[r][c] = 0
+
+        board[r][c] = -player
+        if _is_win(board, -player):
+            board[r][c] = 0
+            blocking.append((r, c))
+            continue
+        board[r][c] = 0
+
+        scored.append(((r, c), _move_priority(board, r, c, player, lines)))
+
+    if winning:
+        return winning
+    if blocking:
+        blocking.sort(key=lambda mv: _move_priority(board, mv[0], mv[1], player, lines), reverse=True)
+        return blocking + [mv for mv, _ in sorted(scored, key=lambda x: x[1], reverse=True)]
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [mv for mv, _ in scored]
+
+
+def _move_priority(board, r, c, player, lines):
+    # Preference for moves participating in valuable lines.
+    score = 0
+
+    # Mild center preference on 4x4: the 2x2 middle is strongest.
+    if 1 <= r <= 2 and 1 <= c <= 2:
+        score += 3
+    elif (r in (0, 3)) and (c in (0, 3)):
+        score += 1
+    else:
+        score += 2
+
+    for line in lines:
+        if (r, c) not in line:
+            continue
+        vals = [board[x][y] for x, y in line]
+        my_count = vals.count(player)
+        opp_count = vals.count(-player)
+        empty_count = vals.count(0)
+
+        if opp_count == 0:
+            # Open line for us
+            score += [0, 2, 8, 40, 0][my_count]
+            score += empty_count
+        elif my_count == 0:
+            # Potentially useful defensively
+            score += [0, 1, 4, 20, 0][opp_count]
+
+    # Simulate move for sharper tactical preference.
+    board[r][c] = player
+    if _is_win(board, player):
+        score += 10000
+    else:
+        # Count next-turn winning threats created
+        threats = 0
+        for rr in range(N):
+            for cc in range(N):
+                if board[rr][cc] == 0:
+                    board[rr][cc] = player
+                    if _is_win(board, player):
+                        threats += 1
+                    board[rr][cc] = 0
+        score += threats * 200
+    board[r][c] = 0
+
+    return score
+
+
+def _evaluate(board, lines):
+    term = _terminal_score(board)
+    if term is not None:
+        return term
+
+    score = 0
+
+    # Evaluate line potential
+    for line in lines:
+        vals = [board[r][c] for r, c in line]
+        my_count = vals.count(1)
+        opp_count = vals.count(-1)
+        empty_count = vals.count(0)
+
+        if my_count > 0 and opp_count > 0:
+            continue  # blocked line
+        if my_count == 0 and opp_count == 0:
+            score += 1
+            continue
+
+        if opp_count == 0:
+            score += [0, 5, 20, 120, 0][my_count]
+            if empty_count == 1 and my_count == 3:
+                score += 500
+        elif my_count == 0:
+            score -= [0, 5, 22, 140, 0][opp_count]
+            if empty_count == 1 and opp_count == 3:
+                score -= 700
+
+    # Cell influence
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1:
+                score += _cell_weight(r, c)
+            elif board[r][c] == -1:
+                score -= _cell_weight(r, c)
+
+    # Fork-like threats: count immediate wins available next move
+    my_threats = _count_immediate_wins(board, 1)
+    opp_threats = _count_immediate_wins(board, -1)
+    score += 300 * my_threats
+    score -= 350 * opp_threats
+
+    return score
+
+
+def _count_immediate_wins(board, player):
+    cnt = 0
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                board[r][c] = player
+                if _is_win(board, player):
+                    cnt += 1
+                board[r][c] = 0
+    return cnt
+
+
+def _cell_weight(r, c):
+    # 2x2 center preferred, then edges/corners according to line participation.
+    weights = [
+        [3, 4, 4, 3],
+        [4, 6, 6, 4],
+        [4, 6, 6, 4],
+        [3, 4, 4, 3],
+    ]
+    return weights[r][c]
+</code>

@@ -1,0 +1,306 @@
+The strategy for this policy is to play *tactically correct Clobber* using **iterative-deepening alpha–beta negamax** with a **transposition table**. It always:
+1) Generates all legal captures,  
+2) Immediately takes a move that leaves the opponent with **zero** replies (instant win), otherwise  
+3) Searches deeper within the time limit, optimizing primarily for **mobility advantage** (your legal moves minus opponent legal moves), with a small material term as a tiebreak.
+
+<code>
+import time
+import random
+from typing import List, Tuple, Optional, Dict
+
+# Board is 5 rows x 6 cols => 30 squares, index = r*6 + c
+ROWS, COLS, N = 5, 6, 30
+MATE = 100000  # large value for terminal positions
+
+
+# --- Precomputation: neighbors and capture masks ---
+DIRS = [('U', -COLS), ('R', 1), ('D', COLS), ('L', -1)]
+
+NEIGHBORS: List[List[Tuple[str, int, int]]] = [[] for _ in range(N)]
+CAPTURE_MASK: List[int] = [0] * N
+
+for r in range(ROWS):
+    for c in range(COLS):
+        i = r * COLS + c
+        for d, delta in DIRS:
+            nr, nc = r, c
+            if d == 'U':
+                nr = r - 1
+            elif d == 'D':
+                nr = r + 1
+            elif d == 'L':
+                nc = c - 1
+            else:  # 'R'
+                nc = c + 1
+            if 0 <= nr < ROWS and 0 <= nc < COLS:
+                j = nr * COLS + nc
+                b = 1 << j
+                NEIGHBORS[i].append((d, j, b))
+                CAPTURE_MASK[i] |= b
+
+
+# --- Optional symmetry maps (used only for caching scores) ---
+def _build_map(func):
+    m = [0] * N
+    for r in range(ROWS):
+        for c in range(COLS):
+            i = r * COLS + c
+            rr, cc = func(r, c)
+            m[i] = rr * COLS + cc
+    return m
+
+MAPS = []
+MAPS.append(_build_map(lambda r, c: (r, c)))                 # identity
+MAPS.append(_build_map(lambda r, c: (r, COLS - 1 - c)))      # horizontal flip
+MAPS.append(_build_map(lambda r, c: (ROWS - 1 - r, c)))      # vertical flip
+MAPS.append(_build_map(lambda r, c: (ROWS - 1 - r, COLS - 1 - c)))  # both
+
+TRANS_BITS: List[List[int]] = []
+for mp in MAPS:
+    tb = [0] * N
+    for i in range(N):
+        tb[i] = 1 << mp[i]
+    TRANS_BITS.append(tb)
+
+
+def transform_bits(bits: int, trans_bit: List[int]) -> int:
+    out = 0
+    b = bits
+    while b:
+        lsb = b & -b
+        i = lsb.bit_length() - 1
+        out |= trans_bit[i]
+        b -= lsb
+    return out
+
+
+def canonical_key(you_bits: int, opp_bits: int) -> int:
+    # Return a canonical integer key among symmetric transforms:
+    # key = (you<<30)|opp, minimized over {id, hflip, vflip, hv}
+    best = None
+    for tb in TRANS_BITS:
+        y = transform_bits(you_bits, tb)
+        o = transform_bits(opp_bits, tb)
+        k = (y << N) | o
+        if best is None or k < best:
+            best = k
+    return best if best is not None else ((you_bits << N) | opp_bits)
+
+
+# --- Bitboard utilities ---
+def moves_count(you_bits: int, opp_bits: int) -> int:
+    cnt = 0
+    b = you_bits
+    while b:
+        lsb = b & -b
+        i = lsb.bit_length() - 1
+        cnt += (opp_bits & CAPTURE_MASK[i]).bit_count()
+        b -= lsb
+    return cnt
+
+
+def gen_moves(you_bits: int, opp_bits: int) -> List[Tuple[int, int, str]]:
+    # move: (from_idx, to_idx, dir)
+    moves = []
+    b = you_bits
+    while b:
+        lsb = b & -b
+        i = lsb.bit_length() - 1
+        for d, j, jb in NEIGHBORS[i]:
+            if opp_bits & jb:
+                moves.append((i, j, d))
+        b -= lsb
+    return moves
+
+
+def apply_move(you_bits: int, opp_bits: int, mv: Tuple[int, int, str]) -> Tuple[int, int]:
+    i, j, _ = mv
+    ib = 1 << i
+    jb = 1 << j
+    # move i -> j capturing opponent at j
+    new_you = (you_bits ^ ib) | jb
+    new_opp = opp_bits ^ jb
+    return new_you, new_opp
+
+
+# --- Search engine ---
+class _Timeout(Exception):
+    pass
+
+
+class Searcher:
+    __slots__ = ("deadline", "tt", "nodes", "rng")
+
+    def __init__(self, deadline: float):
+        self.deadline = deadline
+        # transposition table: key -> (depth, score)
+        self.tt: Dict[int, Tuple[int, int]] = {}
+        self.nodes = 0
+        self.rng = random.Random(0xC10BB3R)
+
+    def _time_check(self):
+        # amortize time checks
+        self.nodes += 1
+        if (self.nodes & 2047) == 0:
+            if time.perf_counter() >= self.deadline:
+                raise _Timeout
+
+    def evaluate(self, you_bits: int, opp_bits: int) -> int:
+        # Mobility is the main signal in Clobber; material is minor tie-break.
+        my_mob = moves_count(you_bits, opp_bits)
+        op_mob = moves_count(opp_bits, you_bits)
+        mat = you_bits.bit_count() - opp_bits.bit_count()
+        return 12 * (my_mob - op_mob) + 1 * mat
+
+    def negamax(self, you_bits: int, opp_bits: int, depth: int, alpha: int, beta: int, ply: int) -> int:
+        self._time_check()
+
+        key = canonical_key(you_bits, opp_bits)
+        hit = self.tt.get(key)
+        if hit is not None:
+            hit_depth, hit_score = hit
+            if hit_depth >= depth:
+                return hit_score
+
+        mv_list = gen_moves(you_bits, opp_bits)
+        if not mv_list:
+            # No legal move => loss for side to move.
+            return -MATE + ply
+
+        if depth == 0:
+            return self.evaluate(you_bits, opp_bits)
+
+        # Move ordering: prefer moves that reduce opponent mobility (and quick wins)
+        scored = []
+        for mv in mv_list:
+            ny, no = apply_move(you_bits, opp_bits, mv)
+            # opponent to move next: (no, ny)
+            op_mob = moves_count(no, ny)
+            scored.append((op_mob, mv))
+        scored.sort(key=lambda x: x[0])  # smaller opponent mobility first
+
+        best = -MATE
+        a = alpha
+        for op_mob, mv in scored:
+            ny, no = apply_move(you_bits, opp_bits, mv)
+            score = -self.negamax(no, ny, depth - 1, -beta, -a, ply + 1)
+            if score > best:
+                best = score
+            if score > a:
+                a = score
+                if a >= beta:
+                    break
+
+        self.tt[key] = (depth, best)
+        return best
+
+    def search_root(self, you_bits: int, opp_bits: int, depth: int) -> Tuple[Tuple[int, int, str], int]:
+        mv_list = gen_moves(you_bits, opp_bits)
+        if not mv_list:
+            # Caller should never be asked for a move here; still return something.
+            return (0, 0, 'U'), -MATE
+
+        # Immediate win check
+        for mv in mv_list:
+            ny, no = apply_move(you_bits, opp_bits, mv)
+            if moves_count(no, ny) == 0:
+                return mv, MATE - 1
+
+        # Order moves similarly to internal nodes
+        scored = []
+        for mv in mv_list:
+            ny, no = apply_move(you_bits, opp_bits, mv)
+            op_mob = moves_count(no, ny)
+            scored.append((op_mob, mv))
+        scored.sort(key=lambda x: x[0])
+
+        best_mv = scored[0][1]
+        best_sc = -MATE
+        alpha, beta = -MATE, MATE
+
+        for op_mob, mv in scored:
+            ny, no = apply_move(you_bits, opp_bits, mv)
+            sc = -self.negamax(no, ny, depth - 1, -beta, -alpha, 1)
+            if sc > best_sc:
+                best_sc = sc
+                best_mv = mv
+            if sc > alpha:
+                alpha = sc
+
+        return best_mv, best_sc
+
+
+# --- Input parsing ---
+def _flatten_5x6(x) -> List[int]:
+    # Accept: flat length-30 list, nested 5x6 lists, or numpy-like with .shape/.flatten()
+    if hasattr(x, "flatten"):
+        arr = list(x.flatten())
+        return [int(v) for v in arr]
+    if isinstance(x, list):
+        if len(x) == N and all(isinstance(v, (int, bool)) for v in x):
+            return [int(v) for v in x]
+        if len(x) == ROWS and all(isinstance(row, list) and len(row) == COLS for row in x):
+            out = []
+            for r in range(ROWS):
+                for c in range(COLS):
+                    out.append(int(x[r][c]))
+            return out
+    # Fallback: try iterating
+    out = [int(v) for v in x]
+    if len(out) != N:
+        raise ValueError("Invalid board shape")
+    return out
+
+
+def _to_bits(flat: List[int]) -> int:
+    bits = 0
+    for i, v in enumerate(flat):
+        if v:
+            bits |= 1 << i
+    return bits
+
+
+def _move_to_str(mv: Tuple[int, int, str]) -> str:
+    i, _, d = mv
+    r, c = divmod(i, COLS)
+    return f"{r},{c},{d}"
+
+
+# --- Required API ---
+def policy(you: List[int], opponent: List[int]) -> str:
+    yflat = _flatten_5x6(you)
+    oflat = _flatten_5x6(opponent)
+    yb = _to_bits(yflat)
+    ob = _to_bits(oflat)
+
+    legal = gen_moves(yb, ob)
+    if not legal:
+        # No legal moves exist in this position (the game is lost).
+        # Arena should not require a legal move here, but we must return a string.
+        return "0,0,U"
+
+    # Fast path: take any immediate win
+    for mv in legal:
+        ny, no = apply_move(yb, ob, mv)
+        if moves_count(no, ny) == 0:
+            return _move_to_str(mv)
+
+    # Iterative deepening alpha-beta within time limit
+    start = time.perf_counter()
+    deadline = start + 0.95  # keep margin under 1s
+    searcher = Searcher(deadline)
+
+    # If we time out immediately, at least return a legal move.
+    best_mv = legal[0]
+
+    # Depth schedule: small board, but branching can be high; stop when time runs out.
+    # Typically reaches ~7-11 plies in 1s depending on position.
+    try:
+        for depth in range(1, 13):
+            mv, sc = searcher.search_root(yb, ob, depth)
+            best_mv = mv
+    except _Timeout:
+        pass
+
+    return _move_to_str(best_mv)
+</code>

@@ -1,0 +1,191 @@
+
+import copy
+
+def _all_my_points(state):
+    """return list of point indices (0‑23) that contain at least one of my checkers."""
+    return [i for i, c in enumerate(state["my_pts"]) if c > 0]
+
+def _all_in_home(state):
+    """True if all my checkers are on points 0‑5 (the home board)."""
+    for i in range(6, 24):
+        if state["my_pts"][i] > 0:
+            return False
+    return True
+
+def _dest_from_bar(die):
+    """Destination point when entering from the bar (player moves from 23 → 0)."""
+    return 24 - die          # 23 for die=1, 18 for die=6
+
+def _can_move(state, src, die):
+    """
+    Determine whether a checker can be moved from `src` using `die`.
+    Returns (True/False, hit_flag, bear_off_flag, new_state_if_move).
+    """
+    new_state = copy.deepcopy(state)
+
+    # source handling
+    if src == "B":
+        if new_state["my_bar"] == 0:
+            return False, False, False, None
+        dest = _dest_from_bar(die)
+        new_state["my_bar"] -= 1
+    else:
+        src = int(src)                     # point index 0‑23
+        if new_state["my_pts"][src] == 0:
+            return False, False, False, None
+        dest = src - die
+        new_state["my_pts"][src] -= 1
+
+    # bearing off ?
+    if src != "B" and dest < 0:
+        # can only bear off if all my checkers are in the home board
+        if not _all_in_home(state):
+            # illegal move – restore source count
+            if src == "B":
+                new_state["my_bar"] += 1
+            else:
+                new_state["my_pts"][src] += 1
+            return False, False, False, None
+        # bearing off
+        new_state["my_off"] += 1
+        return True, False, True, new_state
+
+    # normal move onto the board
+    if dest < 0 or dest > 23:
+        # illegal destination (should not happen)
+        if src == "B":
+            new_state["my_bar"] += 1
+        else:
+            new_state["my_pts"][src] += 1
+        return False, False, False, None
+
+    # check opponent occupancy
+    opp_cnt = new_state["opp_pts"][dest]
+    if opp_cnt >= 2:
+        # blocked point
+        if src == "B":
+            new_state["my_bar"] += 1
+        else:
+            new_state["my_pts"][src] += 1
+        return False, False, False, None
+    elif opp_cnt == 1:
+        # hit!
+        new_state["opp_pts"][dest] = 0
+        new_state["opp_bar"] += 1
+        new_state["my_pts"][dest] += 1
+        return True, True, False, new_state
+    else:
+        # empty or occupied by me
+        new_state["my_pts"][dest] += 1
+        return True, False, False, new_state
+
+
+def _possible_moves(state, die):
+    """
+    Return a list of tuples (src_str, hit, bear_off, resulting_state)
+    for all legal moves with the given die.
+    """
+    moves = []
+
+    # if there are checkers on the bar, they must move first
+    if state["my_bar"] > 0:
+        ok, hit, off, ns = _can_move(state, "B", die)
+        if ok:
+            moves.append(("B", hit, off, ns))
+        return moves
+
+    for pt in _all_my_points(state):
+        ok, hit, off, ns = _can_move(state, str(pt), die)
+        if ok:
+            moves.append((str(pt), hit, off, ns))
+
+    return moves
+
+
+def _enumerate_sequences(state):
+    """
+    Generate all legal move sequences for the current dice.
+    Returns a list of tuples:
+        (order_char, src1_str, src2_str, resulting_state, score)
+    """
+    dice = state["dice"]
+    if not dice:
+        return [("H", "P", "P", state, 0)]
+
+    # sort dice to know high / low
+    high = max(dice)
+    low = min(dice)
+
+    seqs = []
+
+    # Helper to score a sequence (higher is better)
+    def score_seq(hit1, off1, hit2, off2, src1, src2):
+        s = 0
+        if hit1:
+            s += 100
+        if hit2:
+            s += 100
+        if off1:
+            s += 50
+        if off2:
+            s += 50
+        # advance furthest checker (larger index) – boost the larger src point
+        try:
+            i1 = int(src1) if src1 != "B" else -1
+            i2 = int(src2) if src2 != "B" else -1
+            s += max(i1, i2) * 0.1
+        except:
+            pass
+        return s
+
+    # Try both orders (H first means high die first, L first means low die first)
+    for order_char, first_die, second_die in [
+        ("H", high, low),
+        ("L", low, high)
+    ]:
+        # First move possibilities
+        first_moves = _possible_moves(state, first_die)
+        for src1, hit1, off1, st1 in first_moves:
+            # Second move possibilities on the intermediate state
+            second_moves = _possible_moves(st1, second_die)
+            if second_moves:
+                for src2, hit2, off2, st2 in second_moves:
+                    sc = score_seq(hit1, off1, hit2, off2, src1, src2)
+                    seqs.append((order_char, src1, src2, st2, sc))
+            else:
+                # No second move possible – must respect the rule
+                # (only one die can be played). The engine will enforce that
+                # we must use the higher die when possible. We will still
+                # generate the sequence; later we keep only the best legal one.
+                sc = score_seq(hit1, off1, False, False, src1, "P")
+                seqs.append((order_char, src1, "P", st1, sc))
+
+    # If no sequence with two dice succeeded, try single‑die moves
+    if not seqs:
+        # try higher die first
+        for die, order_char in [(high, "H"), (low, "L")]:
+            moves = _possible_moves(state, die)
+            for src, hit, off, ns in moves:
+                sc = score_seq(hit, off, False, False, src, "P")
+                seqs.append((order_char, src, "P", ns, sc))
+                break  # only need one
+
+    # If still empty, we can only pass
+    if not seqs:
+        seqs.append(("H", "P", "P", state, 0))
+
+    return seqs
+
+
+def policy(state: dict) -> str:
+    """
+    Return a legal move string for the given back‑gammon state.
+    The format is "<ORDER>:<FROM1>,<FROM2>".
+    """
+    sequences = _enumerate_sequences(state)
+
+    # Choose the sequence with the highest score; tie‑break by order char
+    best = max(sequences, key=lambda x: (x[4], x[0]))
+
+    order, src1, src2, _, _ = best
+    return f"{order}:{src1},{src2}"

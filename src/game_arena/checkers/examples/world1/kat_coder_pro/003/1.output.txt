@@ -1,0 +1,377 @@
+# Strategy Description
+
+The policy I will implement is a simple minimax algorithm with alpha-beta pruning. The minimax algorithm is a decision rule used in artificial intelligence, decision theory, game theory, statistics, and philosophy for minimizing the possible loss for a worst case (maximum loss) scenario. When dealing with gains, it is referred to as "maximin"—to maximize the minimum gain. The algorithm explores all possible moves to a certain depth (in this case, depth 3) and chooses the move that leads to the best outcome, assuming that the opponent also plays optimally.
+
+For the evaluation function, I will use the following heuristics:
+
+1. Piece Value: Kings are worth more than regular pieces. In this implementation, kings are worth 2 points and regular pieces are worth 1 point.
+2. Position Value: Pieces closer to the opponent's end of the board are more valuable because they are closer to becoming kings.
+3. Mobility: The more moves a player can make, the better their position.
+
+The algorithm will explore all possible moves to a depth of 3, evaluate the resulting positions, and choose the move that leads to the best outcome.
+
+<code>
+import numpy as np
+from collections import defaultdict
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    # Convert input to numpy arrays for easier manipulation
+    my_men = np.array(my_men)
+    my_kings = np.array(my_kings)
+    opp_men = np.array(opp_men)
+    opp_kings = np.array(opp_kings)
+    
+    # Define the board size
+    board_size = 8
+    
+    # Define the piece values
+    king_value = 2
+    man_value = 1
+    
+    # Define the position values
+    # Pieces closer to the opponent's end of the board are more valuable
+    position_values = np.array([
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0],
+        [0.0, 0.1, 0.2, 0.2, 0.2, 0.2, 0.1, 0.0],
+        [0.0, 0.1, 0.2, 0.3, 0.3, 0.2, 0.1, 0.0],
+        [0.0, 0.1, 0.2, 0.3, 0.3, 0.2, 0.1, 0.0],
+        [0.0, 0.1, 0.2, 0.2, 0.2, 0.2, 0.1, 0.0],
+        [0.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    ])
+    
+    # Define the depth of the search
+    depth = 3
+    
+    # Define the alpha-beta pruning values
+    alpha = -np.inf
+    beta = np.inf
+    
+    # Define the current player
+    current_player = color
+    
+    # Define the best move
+    best_move = None
+    best_value = -np.inf
+    
+    # Define the possible moves
+    possible_moves = get_possible_moves(my_men, my_kings, opp_men, opp_kings, current_player)
+    
+    # If there are no possible moves, return None
+    if not possible_moves:
+        return None
+    
+    # For each possible move
+    for move in possible_moves:
+        # Make the move
+        new_my_men, new_my_kings, new_opp_men, new_opp_kings = make_move(my_men, my_kings, opp_men, opp_kings, move, current_player)
+        
+        # Evaluate the move
+        value = minimax(new_my_men, new_my_kings, new_opp_men, new_opp_kings, depth - 1, alpha, beta, False, current_player)
+        
+        # If the value is better than the best value, update the best value and best move
+        if value > best_value:
+            best_value = value
+            best_move = move
+        
+        # Update alpha
+        alpha = max(alpha, best_value)
+    
+    # Return the best move
+    return best_move
+
+def get_possible_moves(my_men, my_kings, opp_men, opp_kings, current_player):
+    # Define the possible moves
+    possible_moves = []
+    
+    # Define the board size
+    board_size = 8
+    
+    # If the current player is black
+    if current_player == 'b':
+        # For each of my men
+        for man in my_men:
+            # Define the possible moves for this man
+            man_moves = []
+            
+            # Check if the man can move diagonally to the left
+            if man[0] > 0 and man[1] > 0 and (man[0] - 1, man[1] - 1) not in my_men and (man[0] - 1, man[1] - 1) not in my_kings and (man[0] - 1, man[1] - 1) not in opp_men and (man[0] - 1, man[1] - 1) not in opp_kings:
+                man_moves.append((man, (man[0] - 1, man[1] - 1)))
+            
+            # Check if the man can move diagonally to the right
+            if man[0] > 0 and man[1] < board_size - 1 and (man[0] - 1, man[1] + 1) not in my_men and (man[0] - 1, man[1] + 1) not in my_kings and (man[0] - 1, man[1] + 1) not in opp_men and (man[0] - 1, man[1] + 1) not in opp_kings:
+                man_moves.append((man, (man[0] - 1, man[1] + 1)))
+            
+            # Check if the man can capture an opponent's piece to the left
+            if man[0] > 1 and man[1] > 1 and (man[0] - 1, man[1] - 1) in opp_men and (man[0] - 2, man[1] - 2) not in my_men and (man[0] - 2, man[1] - 2) not in my_kings and (man[0] - 2, man[1] - 2) not in opp_men and (man[0] - 2, man[1] - 2) not in opp_kings:
+                man_moves.append((man, (man[0] - 2, man[1] - 2)))
+            
+            # Check if the man can capture an opponent's piece to the right
+            if man[0] > 1 and man[1] < board_size - 2 and (man[0] - 1, man[1] + 1) in opp_men and (man[0] - 2, man[1] + 2) not in my_men and (man[0] - 2, man[1] + 2) not in my_kings and (man[0] - 2, man[1] + 2) not in opp_men and (man[0] - 2, man[1] + 2) not in opp_kings:
+                man_moves.append((man, (man[0] - 2, man[1] + 2)))
+            
+            # Add the man moves to the possible moves
+            possible_moves.extend(man_moves)
+        
+        # For each of my kings
+        for king in my_kings:
+            # Define the possible moves for this king
+            king_moves = []
+            
+            # Check if the king can move diagonally to the left and up
+            if king[0] < board_size - 1 and king[1] > 0 and (king[0] + 1, king[1] - 1) not in my_men and (king[0] + 1, king[1] - 1) not in my_kings and (king[0] + 1, king[1] - 1) not in opp_men and (king[0] + 1, king[1] - 1) not in opp_kings:
+                king_moves.append((king, (king[0] + 1, king[1] - 1)))
+            
+            # Check if the king can move diagonally to the right and up
+            if king[0] < board_size - 1 and king[1] < board_size - 1 and (king[0] + 1, king[1] + 1) not in my_men and (king[0] + 1, king[1] + 1) not in my_kings and (king[0] + 1, king[1] + 1) not in opp_men and (king[0] + 1, king[1] + 1) not in opp_kings:
+                king_moves.append((king, (king[0] + 1, king[1] + 1)))
+            
+            # Check if the king can move diagonally to the left and down
+            if king[0] > 0 and king[1] > 0 and (king[0] - 1, king[1] - 1) not in my_men and (king[0] - 1, king[1] - 1) not in my_kings and (king[0] - 1, king[1] - 1) not in opp_men and (king[0] - 1, king[1] - 1) not in opp_kings:
+                king_moves.append((king, (king[0] - 1, king[1] - 1)))
+            
+            # Check if the king can move diagonally to the right and down
+            if king[0] > 0 and king[1] < board_size - 1 and (king[0] - 1, king[1] + 1) not in my_men and (king[0] - 1, king[1] + 1) not in my_kings and (king[0] - 1, king[1] + 1) not in opp_men and (king[0] - 1, king[1] + 1) not in opp_kings:
+                king_moves.append((king, (king[0] - 1, king[1] + 1)))
+            
+            # Check if the king can capture an opponent's piece to the left and up
+            if king[0] < board_size - 2 and king[1] > 1 and (king[0] + 1, king[1] - 1) in opp_men and (king[0] + 2, king[1] - 2) not in my_men and (king[0] + 2, king[1] - 2) not in my_kings and (king[0] + 2, king[1] - 2) not in opp_men and (king[0] + 2, king[1] - 2) not in opp_kings:
+                king_moves.append((king, (king[0] + 2, king[1] - 2)))
+            
+            # Check if the king can capture an opponent's piece to the right and up
+            if king[0] < board_size - 2 and king[1] < board_size - 2 and (king[0] + 1, king[1] + 1) in opp_men and (king[0] + 2, king[1] + 2) not in my_men and (king[0] + 2, king[1] + 2) not in my_kings and (king[0] + 2, king[1] + 2) not in opp_men and (king[0] + 2, king[1] + 2) not in opp_kings:
+                king_moves.append((king, (king[0] + 2, king[1] + 2)))
+            
+            # Check if the king can capture an opponent's piece to the left and down
+            if king[0] > 1 and king[1] > 1 and (king[0] - 1, king[1] - 1) in opp_men and (king[0] - 2, king[1] - 2) not in my_men and (king[0] - 2, king[1] - 2) not in my_kings and (king[0] - 2, king[1] - 2) not in opp_men and (king[0] - 2, king[1] - 2) not in opp_kings:
+                king_moves.append((king, (king[0] - 2, king[1] - 2)))
+            
+            # Check if the king can capture an opponent's piece to the right and down
+            if king[0] > 1 and king[1] < board_size - 2 and (king[0] - 1, king[1] + 1) in opp_men and (king[0] - 2, king[1] + 2) not in my_men and (king[0] - 2, king[1] + 2) not in my_kings and (king[0] - 2, king[1] + 2) not in opp_men and (king[0] - 2, king[1] + 2) not in opp_kings:
+                king_moves.append((king, (king[0] - 2, king[1] + 2)))
+            
+            # Add the king moves to the possible moves
+            possible_moves.extend(king_moves)
+    else:  # If the current player is white
+        # For each of my men
+        for man in my_men:
+            # Define the possible moves for this man
+            man_moves = []
+            
+            # Check if the man can move diagonally to the left
+            if man[0] < board_size - 1 and man[1] > 0 and (man[0] + 1, man[1] - 1) not in my_men and (man[0] + 1, man[1] - 1) not in my_kings and (man[0] + 1, man[1] - 1) not in opp_men and (man[0] + 1, man[1] - 1) not in opp_kings:
+                man_moves.append((man, (man[0] + 1, man[1] - 1)))
+            
+            # Check if the man can move diagonally to the right
+            if man[0] < board_size - 1 and man[1] < board_size - 1 and (man[0] + 1, man[1] + 1) not in my_men and (man[0] + 1, man[1] + 1) not in my_kings and (man[0] + 1, man[1] + 1) not in opp_men and (man[0] + 1, man[1] + 1) not in opp_kings:
+                man_moves.append((man, (man[0] + 1, man[1] + 1)))
+            
+            # Check if the man can capture an opponent's piece to the left
+            if man[0] < board_size - 2 and man[1] > 1 and (man[0] + 1, man[1] - 1) in opp_men and (man[0] + 2, man[1] - 2) not in my_men and (man[0] + 2, man[1] - 2) not in my_kings and (man[0] + 2, man[1] - 2) not in opp_men and (man[0] + 2, man[1] - 2) not in opp_kings:
+                man_moves.append((man, (man[0] + 2, man[1] - 2)))
+            
+            # Check if the man can capture an opponent's piece to the right
+            if man[0] < board_size - 2 and man[1] < board_size - 2 and (man[0] + 1, man[1] + 1) in opp_men and (man[0] + 2, man[1] + 2) not in my_men and (man[0] + 2, man[1] + 2) not in my_kings and (man[0] + 2, man[1] + 2) not in opp_men and (man[0] + 2, man[1] + 2) not in opp_kings:
+                man_moves.append((man, (man[0] + 2, man[1] + 2)))
+            
+            # Add the man moves to the possible moves
+            possible_moves.extend(man_moves)
+        
+        # For each of my kings
+        for king in my_kings:
+            # Define the possible moves for this king
+            king_moves = []
+            
+            # Check if the king can move diagonally to the left and up
+            if king[0] < board_size - 1 and king[1] > 0 and (king[0] + 1, king[1] - 1) not in my_men and (king[0] + 1, king[1] - 1) not in my_kings and (king[0] + 1, king[1] - 1) not in opp_men and (king[0] + 1, king[1] - 1) not in opp_kings:
+                king_moves.append((king, (king[0] + 1, king[1] - 1)))
+            
+            # Check if the king can move diagonally to the right and up
+            if king[0] < board_size - 1 and king[1] < board_size - 1 and (king[0] + 1, king[1] + 1) not in my_men and (king[0] + 1, king[1] + 1) not in my_kings and (king[0] + 1, king[1] + 1) not in opp_men and (king[0] + 1, king[1] + 1) not in opp_kings:
+                king_moves.append((king, (king[0] + 1, king[1] + 1)))
+            
+            # Check if the king can move diagonally to the left and down
+            if king[0] > 0 and king[1] > 0 and (king[0] - 1, king[1] - 1) not in my_men and (king[0] - 1, king[1] - 1) not in my_kings and (king[0] - 1, king[1] - 1) not in opp_men and (king[0] - 1, king[1] - 1) not in opp_kings:
+                king_moves.append((king, (king[0] - 1, king[1] - 1)))
+            
+            # Check if the king can move diagonally to the right and down
+            if king[0] > 0 and king[1] < board_size - 1 and (king[0] - 1, king[1] + 1) not in my_men and (king[0] - 1, king[1] + 1) not in my_kings and (king[0] - 1, king[1] + 1) not in opp_men and (king[0] - 1, king[1] + 1) not in opp_kings:
+                king_moves.append((king, (king[0] - 1, king[1] + 1)))
+            
+            # Check if the king can capture an opponent's piece to the left and up
+            if king[0] < board_size - 2 and king[1] > 1 and (king[0] + 1, king[1] - 1) in opp_men and (king[0] + 2, king[1] - 2) not in my_men and (king[0] + 2, king[1] - 2) not in my_kings and (king[0] + 2, king[1] - 2) not in opp_men and (king[0] + 2, king[1] - 2) not in opp_kings:
+                king_moves.append((king, (king[0] + 2, king[1] - 2)))
+            
+            # Check if the king can capture an opponent's piece to the right and up
+            if king[0] < board_size - 2 and king[1] < board_size - 2 and (king[0] + 1, king[1] + 1) in opp_men and (king[0] + 2, king[1] + 2) not in my_men and (king[0] + 2, king[1] + 2) not in my_kings and (king[0] + 2, king[1] + 2) not in opp_men and (king[0] + 2, king[1] + 2) not in opp_kings:
+                king_moves.append((king, (king[0] + 2, king[1] + 2)))
+            
+            # Check if the king can capture an opponent's piece to the left and down
+            if king[0] > 1 and king[1] > 1 and (king[0] - 1, king[1] - 1) in opp_men and (king[0] - 2, king[1] - 2) not in my_men and (king[0] - 2, king[1] - 2) not in my_kings and (king[0] - 2, king[1] - 2) not in opp_men and (king[0] - 2, king[1] - 2) not in opp_kings:
+                king_moves.append((king, (king[0] - 2, king[1] - 2)))
+            
+            # Check if the king can capture an opponent's piece to the right and down
+            if king[0] > 1 and king[1] < board_size - 2 and (king[0] - 1, king[1] + 1) in opp_men and (king[0] - 2, king[1] + 2) not in my_men and (king[0] - 2, king[1] + 2) not in my_kings and (king[0] - 2, king[1] + 2) not in opp_men and (king[0] - 2, king[1] + 2) not in opp_kings:
+                king_moves.append((king, (king[0] - 2, king[1] + 2)))
+            
+            # Add the king moves to the possible moves
+            possible_moves.extend(king_moves)
+    
+    # Return the possible moves
+    return possible_moves
+
+def make_move(my_men, my_kings, opp_men, opp_kings, move, current_player):
+    # Define the board size
+    board_size = 8
+    
+    # Define the new positions
+    new_my_men = my_men.copy()
+    new_my_kings = my_kings.copy()
+    new_opp_men = opp_men.copy()
+    new_opp_kings = opp_kings.copy()
+    
+    # Define the from and to positions
+    from_pos = move[0]
+    to_pos = move[1]
+    
+    # If the move is a capture
+    if abs(from_pos[0] - to_pos[0]) == 2:
+        # Define the captured position
+        captured_pos = ((from_pos[0] + to_pos[0]) // 2, (from_pos[1] + to_pos[1]) // 2)
+        
+        # If the captured piece is an opponent's man
+        if captured_pos in new_opp_men:
+            # Remove the captured piece
+            new_opp_men = np.delete(new_opp_men, np.where(np.all(new_opp_men == captured_pos, axis=1))[0], axis=0)
+        
+        # If the captured piece is an opponent's king
+        elif captured_pos in new_opp_kings:
+            # Remove the captured piece
+            new_opp_kings = np.delete(new_opp_kings, np.where(np.all(new_opp_kings == captured_pos, axis=1))[0], axis=0)
+    
+    # Move the piece
+    # If the piece is a man
+    if from_pos in new_my_men:
+        # Remove the piece from its original position
+        new_my_men = np.delete(new_my_men, np.where(np.all(new_my_men == from_pos, axis=1))[0], axis=0)
+        
+        # If the piece reaches the opponent's end of the board, promote it to a king
+        if (current_player == 'b' and to_pos[0] == 0) or (current_player == 'w' and to_pos[0] == board_size - 1):
+            new_my_kings = np.append(new_my_kings, [to_pos], axis=0)
+        else:
+            new_my_men = np.append(new_my_men, [to_pos], axis=0)
+    
+    # If the piece is a king
+    elif from_pos in new_my_kings:
+        # Remove the piece from its original position
+        new_my_kings = np.delete(new_my_kings, np.where(np.all(new_my_kings == from_pos, axis=1))[0], axis=0)
+        
+        # Add the piece to its new position
+        new_my_kings = np.append(new_my_kings, [to_pos], axis=0)
+    
+    # Return the new positions
+    return new_my_men, new_my_kings, new_opp_men, new_opp_kings
+
+def evaluate(my_men, my_kings, opp_men, opp_kings, position_values):
+    # Define the piece values
+    king_value = 2
+    man_value = 1
+    
+    # Calculate the score
+    score = 0
+    
+    # Add the value of my pieces
+    score += len(my_men) * man_value
+    score += len(my_kings) * king_value
+    
+    # Subtract the value of the opponent's pieces
+    score -= len(opp_men) * man_value
+    score -= len(opp_kings) * king_value
+    
+    # Add the position values of my pieces
+    for man in my_men:
+        score += position_values[man[0], man[1]]
+    
+    for king in my_kings:
+        score += position_values[king[0], king[1]]
+    
+    # Subtract the position values of the opponent's pieces
+    for man in opp_men:
+        score -= position_values[man[0], man[1]]
+    
+    for king in opp_kings:
+        score -= position_values[king[0], king[1]]
+    
+    # Return the score
+    return score
+
+def minimax(my_men, my_kings, opp_men, opp_kings, depth, alpha, beta, is_maximizing_player, current_player):
+    # If the depth is 0, return the evaluation of the current position
+    if depth == 0:
+        return evaluate(my_men, my_kings, opp_men, opp_kings, np.zeros((8, 8)))
+    
+    # If it's the maximizing player's turn
+    if is_maximizing_player:
+        # Define the best value
+        best_value = -np.inf
+        
+        # Get the possible moves
+        possible_moves = get_possible_moves(my_men, my_kings, opp_men, opp_kings, current_player)
+        
+        # If there are no possible moves, return the evaluation of the current position
+        if not possible_moves:
+            return evaluate(my_men, my_kings, opp_men, opp_kings, np.zeros((8, 8)))
+        
+        # For each possible move
+        for move in possible_moves:
+            # Make the move
+            new_my_men, new_my_kings, new_opp_men, new_opp_kings = make_move(my_men, my_kings, opp_men, opp_kings, move, current_player)
+            
+            # Evaluate the move
+            value = minimax(new_my_men, new_my_kings, new_opp_men, new_opp_kings, depth - 1, alpha, beta, False, current_player)
+            
+            # Update the best value
+            best_value = max(best_value, value)
+            
+            # Update alpha
+            alpha = max(alpha, best_value)
+            
+            # If beta is less than or equal to alpha, break
+            if beta <= alpha:
+                break
+        
+        # Return the best value
+        return best_value
+    else:  # If it's the minimizing player's turn
+        # Define the best value
+        best_value = np.inf
+        
+        # Get the possible moves
+        possible_moves = get_possible_moves(opp_men, opp_kings, my_men, my_kings, 'b' if current_player == 'w' else 'w')
+        
+        # If there are no possible moves, return the evaluation of the current position
+        if not possible_moves:
+            return evaluate(my_men, my_kings, opp_men, opp_kings, np.zeros((8, 8)))
+        
+        # For each possible move
+        for move in possible_moves:
+            # Make the move
+            new_opp_men, new_opp_kings, new_my_men, new_my_kings = make_move(opp_men, opp_kings, my_men, my_kings, move, 'b' if current_player == 'w' else 'w')
+            
+            # Evaluate the move
+            value = minimax(new_my_men, new_my_kings, new_opp_men, new_opp_kings, depth - 1, alpha, beta, True, current_player)
+            
+            # Update the best value
+            best_value = min(best_value, value)
+            
+            # Update beta
+            beta = min(beta, best_value)
+            
+            # If beta is less than or equal to alpha, break
+            if beta <= alpha:
+                break
+        
+        # Return the best value
+        return best_value
+</code>

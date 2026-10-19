@@ -1,0 +1,173 @@
+The strategy for this policy is to implement a greedy heuristic-based Go player that prioritizes strong local moves while maintaining global awareness. The AI evaluates every legal move using a combination of the following factors:
+
+1. **Liberty Maximization and Minimization**: It prefers moves that add liberties for its own groups and reduce liberties for opponent groups.
+2. **Capture Moves**: It prioritizes moves that immediately capture opponent stones.
+3. **Defense**: It identifies and defends its own groups in atari (one liberty left).
+4. **Eye and Territory Formation**: It favors moves on the third and fourth lines, encouraging secure territory and influence.
+5. **Suicide Prevention**: It avoids illegal (suicide) moves unless they result in a capture.
+6. **Pattern and Shape**: Prefers strong shapes (e.g., avoiding isolated single stones).
+7. **Board Centrality**: Encourages influence toward the center in the earlier stages.
+
+To ensure legality, all candidate moves are filtered to exclude suicide moves unless they result in a capture. If no better move is found, it passes with (0, 0).
+
+The implementation uses efficient group and liberty computation with a simple BFS for group detection and does not rely on external AI libraries, ensuring fast execution under 1 second.
+
+<code>
+import numpy as np
+from typing import List, Tuple, Set, Dict
+from collections import deque
+
+def policy(me: List[Tuple[int, int]], opponent: List[Tuple[int, int]]) -> Tuple[int, int]:
+    # Initialize 19x19 board: 1 for me, -1 for opponent, 0 for empty
+    board = np.zeros((19, 19), dtype=np.int8)
+    for r, c in me:
+        board[r-1, c-1] = 1
+    for r, c in opponent:
+        board[r-1, c-1] = -1
+
+    # All possible moves
+    empty_cells = [(r, c) for r in range(19) for c in range(19) if board[r, c] == 0]
+    
+    if not empty_cells:
+        return (0, 0)  # pass
+
+    # Utility: get neighbors
+    def neighbors(r, c):
+        return [(nr, nc) for nr, nc in [(r-1,c), (r+1,c), (r,c-1), (r,c+1)]
+                if 0 <= nr < 19 and 0 <= nc < 19]
+
+    # Utility: get group and liberties using BFS
+    def get_group_and_liberties(start_r, start_c, color):
+        visited = set()
+        group = []
+        queue = deque([(start_r, start_c)])
+        liberties = set()
+        while queue:
+            r, c = queue.popleft()
+            if (r, c) in visited:
+                continue
+            visited.add((r, c))
+            if board[r, c] == color:
+                group.append((r, c))
+                for nr, nc in neighbors(r, c):
+                    if board[nr, nc] == 0:
+                        liberties.add((nr, nc))
+                    elif board[nr, nc] == color:
+                        if (nr, nc) not in visited:
+                            queue.append((nr, nc))
+        return group, liberties
+
+    # Precompute my groups and their liberties
+    my_groups = []
+    my_liberties = []
+    opponent_groups = []
+    opponent_liberties = []
+
+    visited_me = set()
+    visited_opponent = set()
+
+    for r in range(19):
+        for c in range(19):
+            if (r, c) not in visited_me and board[r, c] == 1:
+                group, libs = get_group_and_liberties(r, c, 1)
+                my_groups.append(group)
+                my_liberties.append(libs)
+                visited_me.update(group)
+            if (r, c) not in visited_opponent and board[r, c] == -1:
+                group, libs = get_group_and_liberties(r, c, -1)
+                opponent_groups.append(group)
+                opponent_liberties.append(libs)
+                visited_opponent.update(group)
+
+    # Score each empty cell
+    best_score = -1e9
+    best_move = (0, 0)  # default pass
+
+    for r, c in empty_cells:
+        score = 0.0
+
+        # 1. Capture: how many opponent groups can be captured?
+        capture_count = 0
+        for i, (group, libs) in enumerate(zip(opponent_groups, opponent_liberties)):
+            if (r, c) in libs and len(libs) == 1:
+                capture_count += len(group)
+
+        if capture_count > 0:
+            score += 10 * capture_count
+            # Bonus for larger captures
+            score += 5
+
+        # 2. Check if move reduces opponent liberty or adds own liberty
+        # Simulate move
+        board[r, c] = 1
+        my_new_liberties = set()
+        for i, group in enumerate(my_groups):
+            if any((nr, nc) in neighbors(r, c) for nr, nc in group):
+                # This group is adjacent
+                full_group = group + [(r, c)]
+                for gr, gc in full_group:
+                    for nr, nc in neighbors(gr, gc):
+                        if board[nr, nc] == 0:
+                            my_new_liberties.add((nr, nc))
+        board[r, c] = 0
+
+        # Compare with original liberties for adjacent groups
+        original_liberties = set()
+        for i, group in enumerate(my_groups):
+            if any((nr, nc) in neighbors(r, c) for nr, nc in group):
+                original_liberties |= my_liberties[i]
+        liberty_gain = len(my_new_liberties) - len(original_liberties)
+
+        if liberty_gain > 0:
+            score += liberty_gain * 2
+
+        # 3. Check if move connects to own groups
+        adjacent_own = sum(1 for nr, nc in neighbors(r, c) if board[nr, nc] == 1)
+        if adjacent_own >= 2:
+            score += 3  # bonus for connecting or forming strong shape
+
+        # 4. Check if move puts own group(s) into atari danger?
+        # But avoid move that is suicide unless it captures
+        suicide = True
+        for nr, nc in neighbors(r, c):
+            if board[nr, nc] == 0:
+                suicide = False
+                break
+        if suicide and capture_count == 0:
+            continue  # illegal move: skip
+
+        # 5. Opponent defense: does this move prevent opponent from capturing *us*?
+        for i, (group, libs) in enumerate(zip(my_groups, my_liberties)):
+            if (r, c) in neighbors(*group[0]) and len(libs) == 1 and capture_count == 0:
+                # We are in atari and this move saves us
+                score += 20
+
+        # 6. Opponent atari: does this move put opponent into atari?
+        for i, (group, libs) in enumerate(zip(opponent_groups, opponent_liberties)):
+            if (r, c) in libs and len(libs) == 2:
+                # After placing, opponent group would have only 1 liberty
+                score += 8
+
+        # 7. Opening / midgame: prefer 3rd and 4th lines
+        row_dist = min(r, 18 - r)
+        col_dist = min(c, 18 - c)
+        if 2 <= row_dist <= 5 or 2 <= col_dist <= 5:
+            score += 1
+        if (r == 3 or r == 4 or r == 15 or r == 16) and (c == 3 or c == 4 or c == 15 or c == 16):
+            score += 0.5
+        # Center influence
+        center_dist = abs(r - 9.5) + abs(c - 9.5)
+        if center_dist < 10:
+            score += 0.5
+
+        # 8. Avoid too many isolated stones
+        if adjacent_own == 0:
+            score -= 1  # slight penalty for isolated play early
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = (r + 1, c + 1)  # convert to 1-indexed
+
+    return best_move
+</code>

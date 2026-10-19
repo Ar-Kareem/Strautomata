@@ -1,0 +1,134 @@
+**Strategy**
+
+- The board is only 5 × 6, so a fast greedy look‑ahead is sufficient.
+- I always pick a move that captures an opponent piece.
+- For every legal capture I compute a simple heuristic:
+  - `my_adj` = number of opponent pieces that are orthogonally adjacent to any of my pieces after the capture.
+  - `opp_adj` = number of my pieces that are orthogonally adjacent to any of the opponent’s pieces after the capture.
+  - The score is `my_adj – opp_adj`.  
+    A higher score means I will have more future captures and the opponent fewer.
+- If a capture leaves the opponent with **no legal move**, I play that move immediately (a forced win).
+- Ties are broken by choosing the capture whose destination cell has the smallest `row + col` sum.
+- The implementation works for both flat (30‑element) and nested 5×6 lists.
+
+```python
+<code>
+import numpy as np
+from typing import List
+
+def policy(you: List[int], opponent: List[int]) -> str:
+    """
+    Choose a legal capture move for a Clobber game on a 5×6 board.
+    Returns a string in the form "row,col,dir".
+    """
+    # --------------------------------------------------------------------
+    # Convert input to numpy arrays of shape (5,6)
+    # --------------------------------------------------------------------
+    try:
+        you_np = np.asarray(you, dtype=int)
+        opp_np = np.asarray(opponent, dtype=int)
+    except Exception:
+        # Fallback if input is not convertible – should not happen in the arena.
+        raise ValueError("Input must be a list of ints or a 5×6 nested list.")
+    
+    # Flatten if the caller gave us a single flat list (e.g. from JSON)
+    if you_np.shape == (5, 6):
+        pass
+    elif you_np.size == 30:          # one flat list of length 30
+        you_np = you_np.reshape((5, 6))
+        opp_np = opp_np.reshape((5, 6))
+    else:
+        # Assume nested lists
+        you_np = np.array(you, dtype=int)
+        opp_np = np.array(opponent, dtype=int)
+    
+    # --------------------------------------------------------------------
+    # Directions and neighbours
+    # --------------------------------------------------------------------
+    dirs = {
+        'U': (-1, 0),
+        'D': ( 1, 0),
+        'L': (0, -1),
+        'R': (0,  1)
+    }
+    orthogonal = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    # --------------------------------------------------------------------
+    # Helper: count how many opponent pieces are adjacent to my pieces
+    # --------------------------------------------------------------------
+    def count_adjacent(board_my: np.ndarray, board_opp: np.ndarray) -> int:
+        total = 0
+        for i in range(5):
+            for j in range(6):
+                if board_my[i, j] == 1:
+                    for dr, dc in orthogonal:
+                        ni, nj = i + dr, j + dc
+                        if 0 <= ni < 5 and 0 <= nj < 6 and board_opp[ni, nj] == 1:
+                            total += 1
+        return total
+    
+    # --------------------------------------------------------------------
+    # Evaluate all legal captures
+    # --------------------------------------------------------------------
+    candidates = []   # list of (score, row, col, direction)
+    
+    for i in range(5):
+        for j in range(6):
+            if you_np[i, j] == 0:
+                continue
+            for ch, (dr, dc) in dirs.items():
+                ni, nj = i + dr, j + dc
+                if 0 <= ni < 5 and 0 <= nj < 6 and opp_np[ni, nj] == 1:
+                    # Simulate the capture
+                    new_board = you_np.copy()
+                    new_board[i, j] = 0
+                    new_board[ni, nj] = 1
+                    opp_np[ni, nj] = 0   # remove opponent piece
+                    
+                    # Quick win check: does opponent have any move now?
+                    opp_has_move = False
+                    for ii in range(5):
+                        for jj in range(6):
+                            if opp_np[ii, jj] == 1:
+                                for dr2, dc2 in orthogonal:
+                                    if (new_board[ii + dr2, jj + dc2] == 1):
+                                        opp_has_move = True
+                                        break
+                                if opp_has_move:
+                                    break
+                        if opp_has_move:
+                            break
+                    
+                    if not opp_has_move:
+                        return f"{i},{j},{ch}"
+                    
+                    # Compute heuristic score
+                    my_adj = count_adjacent(new_board, opp_np)
+                    opp_adj = count_adjacent(you_np, new_board)   # opponent's perspective
+                    score = my_adj - opp_adj
+                    
+                    candidates.append((score, i, j, ch))
+    
+    # --------------------------------------------------------------------
+    # No capture available – the arena is expected to guarantee at least one.
+    # (If it happens, we return a dummy move to avoid a crash.)
+    # --------------------------------------------------------------------
+    if not candidates:
+        # Choose the first piece with any opponent neighbour (fallback)
+        for i in range(5):
+            for j in range(6):
+                if you_np[i, j] == 1:
+                    for ch, (dr, dc) in dirs.items():
+                        ni, nj = i + dr, j + dc
+                        if 0 <= ni < 5 and 0 <= nj < 6 and opp_np[ni, nj] == 1:
+                            return f"{i},{j},{ch}"
+        # If truly no move, return a placeholder (should never be reached)
+        return "0,0,0"
+    
+    # --------------------------------------------------------------------
+    # Pick the best capture (max score, tie‑break on smallest destination sum)
+    # --------------------------------------------------------------------
+    best = max(candidates, key=lambda x: (x[0], x[2] + x[3]))
+    return f"{best[1]},{best[2]},{best[3]}"
+</code>
+```

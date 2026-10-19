@@ -1,0 +1,264 @@
+The strategy for this policy is based on an **Iterative Deepening Alpha-Beta Search** combined with efficient **Bitboard** state representation.
+
+1.  **Bitboard Representation**: The 5x6 grid is represented as 30-bit integers. This allows the policy to generate moves, check validity, and evaluate board states using fast bitwise operations ($O(1)$) rather than iterating over arrays.
+2.  **Heuristic Evaluation**: The policy focuses on **Mobility**. In Clobber, the first player unable to move loses. Therefore, the evaluation function calculates the difference between the number of legal moves available to the agent and the number of legal moves available to the opponent (`MyMobility - OpponentMobility`). This guides the agent to states that restrict the opponent while preserving its own options.
+3.  **Search Algorithm**: A Negamax implementation of Alpha-Beta pruning is used. It employs a Transposition Table to cache results of previously seen states, improving search depth by avoiding redundant calculations.
+4.  **Time Management**: The search depth is dynamically increased (Iterative Deepening). The policy continuously checks the elapsed time and will gracefully abort the search to return the best move found in the deepest completed iteration within the 1-second limit.
+
+<code>
+import time
+import numpy as np
+
+def policy(you: list[int], opponent: list[int]) -> str:
+    """
+    Determines the next move for the Clobber game on a 5x6 grid.
+    Uses Iterative Deepening Alpha-Beta search with Bitboards.
+    """
+    start_time = time.time()
+    TIME_LIMIT = 0.90  # Seconds to allow before aborting to handle return overhead
+    
+    # -------------------------------------------------------------------------
+    # 1. State Representation (Bitboards)
+    # -------------------------------------------------------------------------
+    # Flattens the input 5x6 arrays into 30-bit integers.
+    # Bit index k corresponds to row r, col c via: k = r*6 + c.
+    
+    def to_bitboard(grid):
+        arr = np.array(grid).flatten()
+        bb = 0
+        for i, val in enumerate(arr):
+            if val == 1:
+                bb |= (1 << i)
+        return bb
+
+    my_board = to_bitboard(you)
+    opp_board = to_bitboard(opponent)
+
+    # -------------------------------------------------------------------------
+    # 2. Bitwise Logic & Constants
+    # -------------------------------------------------------------------------
+    ROWS, COLS = 5, 6
+    SIZE = 30
+    
+    # Masks to prevent wrap-around logic errors during shifting
+    MASK_ALL = (1 << SIZE) - 1
+    
+    # Columns 0 and 5
+    MASK_COL_0 = sum(1 << (r * COLS + 0) for r in range(ROWS))
+    MASK_COL_5 = sum(1 << (r * COLS + 5) for r in range(ROWS))
+    
+    # Rows 0 and 4
+    MASK_ROW_0 = sum(1 << c for c in range(COLS))
+    MASK_ROW_4 = sum(1 << (4 * COLS + c) for c in range(COLS))
+    
+    NOT_COL_5 = MASK_ALL ^ MASK_COL_5
+    NOT_COL_0 = MASK_ALL ^ MASK_COL_0
+    NOT_ROW_4 = MASK_ALL ^ MASK_ROW_4
+    NOT_ROW_0 = MASK_ALL ^ MASK_ROW_0
+
+    # Helper for counting set bits (population count)
+    if hasattr(int, "bit_count"):
+        def popcount(n): return n.bit_count()
+    else:
+        def popcount(n): return bin(n).count('1')
+
+    def get_moves_list(me, opp):
+        """
+        Generates all legal moves.
+        Returns a list of tuples: (from_index, to_index, direction_char)
+        """
+        moves = []
+        
+        # Move Right (Index + 1), valid if not in Col 5
+        # We need a piece at 'k' (me) and a piece at 'k+1' (opp)
+        # (opp >> 1) shifts opp pieces to the left, aligning k+1 to k
+        starts = (me & NOT_COL_5) & (opp >> 1)
+        while starts:
+            k = (starts & -starts).bit_length() - 1
+            moves.append((k, k+1, 'R'))
+            starts &= starts - 1
+            
+        # Move Left (Index - 1), valid if not in Col 0
+        starts = (me & NOT_COL_0) & (opp << 1)
+        while starts:
+            k = (starts & -starts).bit_length() - 1
+            moves.append((k, k-1, 'L'))
+            starts &= starts - 1
+
+        # Move Down (Index + 6), valid if not in Row 4
+        starts = (me & NOT_ROW_4) & (opp >> 6)
+        while starts:
+            k = (starts & -starts).bit_length() - 1
+            moves.append((k, k+6, 'D'))
+            starts &= starts - 1
+
+        # Move Up (Index - 6), valid if not in Row 0
+        starts = (me & NOT_ROW_0) & (opp << 6)
+        while starts:
+            k = (starts & -starts).bit_length() - 1
+            moves.append((k, k-6, 'U'))
+            starts &= starts - 1
+            
+        return moves
+
+    def mobility_diff(me, opp):
+        """
+        Heuristic: My Mobility - Opponent Mobility.
+        Calculated using bitwise ops for speed.
+        """
+        # Count My Moves
+        my_moves = 0
+        my_moves += popcount((me & NOT_COL_5) & (opp >> 1)) # R
+        my_moves += popcount((me & NOT_COL_0) & (opp << 1)) # L
+        my_moves += popcount((me & NOT_ROW_4) & (opp >> 6)) # D
+        my_moves += popcount((me & NOT_ROW_0) & (opp << 6)) # U
+        
+        # Count Opp Moves
+        opp_moves = 0
+        opp_moves += popcount((opp & NOT_COL_5) & (me >> 1)) # R
+        opp_moves += popcount((opp & NOT_COL_0) & (me << 1)) # L
+        opp_moves += popcount((opp & NOT_ROW_4) & (me >> 6)) # D
+        opp_moves += popcount((opp & NOT_ROW_0) & (me << 6)) # U
+        
+        return my_moves - opp_moves
+
+    # -------------------------------------------------------------------------
+    # 3. Search Engine (Alpha-Beta with TT and ID)
+    # -------------------------------------------------------------------------
+    tt = {}
+    nodes_visited = 0
+    class TimeOut(Exception): pass
+
+    def negamax(me, opp, depth, alpha, beta):
+        nonlocal nodes_visited
+        nodes_visited += 1
+        
+        # Check time every 1024 nodes
+        if (nodes_visited & 1023) == 0:
+            if time.time() - start_time > TIME_LIMIT:
+                raise TimeOut
+
+        # TT Lookup
+        # Key includes players to distinguish whose turn it is
+        key = (me, opp)
+        if key in tt:
+            entry_depth, entry_val, entry_flag = tt[key]
+            if entry_depth >= depth:
+                if entry_flag == 0: return entry_val # Exact
+                if entry_flag == 1: alpha = max(alpha, entry_val) # LowerBound
+                if entry_flag == 2: beta = min(beta, entry_val) # UpperBound
+                if alpha >= beta: return entry_val
+
+        # Base case
+        if depth == 0:
+            return mobility_diff(me, opp)
+
+        # Generate Moves
+        moves = get_moves_list(me, opp)
+        
+        # Terminal State: No moves = Loss
+        if not moves:
+            # Return a score indicating loss. 
+            # We add depth to "score" to prefer losing later rather than sooner if inevitable.
+            return -10000 + depth  
+
+        # Move Ordering: Sort by simple heuristic (mobility of resulting state)
+        # This helps Alpha-Beta prune more branches.
+        move_scores = []
+        for m in moves:
+            f, t, _ = m
+            # Apply move logic: remove piece at f, add piece at t for me, remove piece at t for opp
+            # Note: In resulting state, it is opp's turn.
+            new_me = (me ^ (1 << f)) | (1 << t)
+            new_opp = opp ^ (1 << t)
+            
+            # Simple 1-ply eval proxy for sorting
+            # We want to Maximize the Negamax result, so we pick moves that result in good states for us.
+            score = mobility_diff(new_me, new_opp)
+            move_scores.append((score, new_me, new_opp))
+        
+        # Sort descending
+        move_scores.sort(key=lambda x: x[0], reverse=True)
+        
+        best_val = -float('inf')
+        flag = 2 # Default UpperBound
+        
+        for _, new_me, new_opp in move_scores:
+            # Recursive call: swap roles, negate score
+            try:
+                val = -negamax(new_opp, new_me, depth - 1, -beta, -alpha)
+            except TimeOut:
+                raise
+
+            if val > best_val:
+                best_val = val
+            
+            if best_val > alpha:
+                alpha = best_val
+                flag = 0 # Exact (or at least improved lower bound)
+            
+            if alpha >= beta:
+                flag = 1 # LowerBound (Fail High)
+                break
+        
+        tt[key] = (depth, best_val, flag)
+        return best_val
+
+    # -------------------------------------------------------------------------
+    # 4. Main Execution Loop
+    # -------------------------------------------------------------------------
+    legal_moves = get_moves_list(my_board, opp_board)
+    
+    # If no moves, game over (we lost), but API requires a string.
+    # Return a dummy move (0,0,'U') or the first one if logic fails differently.
+    if not legal_moves:
+        return "0,0,U"
+
+    best_move = legal_moves[0]
+    
+    # Iterative Deepening
+    try:
+        # Depth 1 to 40
+        for d in range(1, 41):
+            alpha = -float('inf')
+            beta = float('inf')
+            current_depth_best = None
+            max_val = -float('inf')
+            
+            # Evaluate root moves
+            # Sort legal_moves based on previous iteration score would be better, 
+            # but simple re-sort here is fast enough.
+            
+            for m in legal_moves:
+                f, t, _ = m
+                new_me = (my_board ^ (1 << f)) | (1 << t)
+                new_opp = opp_board ^ (1 << t)
+                
+                # Search
+                val = -negamax(new_opp, new_me, d - 1, -beta, -alpha)
+                
+                if val > max_val:
+                    max_val = val
+                    current_depth_best = m
+                
+                alpha = max(alpha, val)
+            
+            if current_depth_best:
+                best_move = current_depth_best
+                
+                # Optimization: Sort moves for next iteration so best is checked first
+                legal_moves.remove(best_move)
+                legal_moves.insert(0, best_move)
+            
+            # If we found a winning line (high score), we can stop, 
+            # or if we are definitely losing, we still try to stall.
+            if max_val > 9000:
+                break
+                
+    except TimeOut:
+        pass # Return the best move found in the last fully completed depth
+        
+    f, t, dr = best_move
+    row, col = divmod(f, 6)
+    return f"{row},{col},{dr}"
+</code>

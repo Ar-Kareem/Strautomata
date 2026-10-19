@@ -1,0 +1,115 @@
+The strategy for this policy uses a Minimax search with Alpha-Beta pruning, enhanced by a static positional weight table. 
+
+1.  **Positional Heuristic**: The board is evaluated based on a matrix that prioritizes corners (vulnerable but powerful), edges, and penalizes "C-squares" and "X-squares" adjacent to corners (which often lead to the opponent taking the corner).
+2.  **Mobility**: The policy considers the number of legal moves available to both players, as restricting the opponent's options is crucial in Othello.
+3.  **Search Depth**: It performs a depth-limited search (depth 4) to anticipate opponent responses and choose the path leading to the most favorable board state.
+4.  **Move Validation**: It implements the full Othello logic to identify legal moves and simulate state transitions.
+
+<code>
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    # Evaluation weights for an 8x8 board
+    WEIGHTS = np.array([
+        [100, -20, 10,  5,  5, 10, -20, 100],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [ 10,  -2,  5,  1,  1,  5,  -2,  10],
+        [  5,  -2,  1,  1,  1,  1,  -2,   5],
+        [  5,  -2,  1,  1,  1,  1,  -2,   5],
+        [ 10,  -2,  5,  1,  1,  5,  -2,  10],
+        [-20, -50, -2, -2, -2, -2, -50, -20],
+        [100, -20, 10,  5,  5, 10, -20, 100]
+    ])
+
+    def get_legal_moves(player_board, opp_board):
+        moves = []
+        empty = ~(player_board | opp_board)
+        for r in range(8):
+            for c in range(8):
+                if empty[r, c] and can_flip(r, c, player_board, opp_board):
+                    moves.append((r, c))
+        return moves
+
+    def can_flip(r, c, player_board, opp_board):
+        for dr, dc in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+            nr, nc = r + dr, c + dc
+            found_opp = False
+            while 0 <= nr < 8 and 0 <= nc < 8 and opp_board[nr, nc]:
+                nr += dr
+                nc += dc
+                found_opp = True
+            if found_opp and 0 <= nr < 8 and 0 <= nc < 8 and player_board[nr, nc]:
+                return True
+        return False
+
+    def make_move(r, c, player_board, opp_board):
+        new_player = player_board.copy()
+        new_opp = opp_board.copy()
+        new_player[r, c] = 1
+        for dr, dc in [(-1,-1), (-1,0), (-1,1), (0,-1), (0,1), (1,-1), (1,0), (1,1)]:
+            nr, nc = r + dr, c + dc
+            to_flip = []
+            while 0 <= nr < 8 and 0 <= nc < 8 and opp_board[nr, nc]:
+                to_flip.append((nr, nc))
+                nr += dr
+                nc += dc
+            if to_flip and 0 <= nr < 8 and 0 <= nc < 8 and player_board[nr, nc]:
+                for fr, fc in to_flip:
+                    new_player[fr, fc] = 1
+                    new_opp[fr, fc] = 0
+        return new_player, new_opp
+
+    def evaluate(p_board, o_board):
+        # Position score
+        score = np.sum(p_board * WEIGHTS) - np.sum(o_board * WEIGHTS)
+        # Mobility score
+        p_moves = len(get_legal_moves(p_board, o_board))
+        o_moves = len(get_legal_moves(o_board, p_board))
+        score += (p_moves - o_moves) * 10
+        return score
+
+    def minimax(p_board, o_board, depth, alpha, beta, maximizing):
+        legal_moves = get_legal_moves(p_board, o_board) if maximizing else get_legal_moves(o_board, p_board)
+        
+        if depth == 0 or (not legal_moves and not get_legal_moves(o_board, p_board) if maximizing else not get_legal_moves(p_board, o_board)):
+            return evaluate(p_board, o_board) if maximizing else evaluate(o_board, p_board)
+
+        if not legal_moves:
+            return minimax(p_board, o_board, depth - 1, alpha, beta, not maximizing)
+
+        if maximizing:
+            max_eval = -float('inf')
+            for r, c in legal_moves:
+                np_b, no_b = make_move(r, c, p_board, o_board)
+                eval = minimax(no_b, np_b, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha: break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for r, c in legal_moves:
+                no_b, np_b = make_move(r, c, p_board, o_board)
+                eval = minimax(np_b, no_b, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha: break
+            return min_eval
+
+    legal_moves = get_legal_moves(you, opponent)
+    if not legal_moves:
+        return "pass"
+
+    best_move = legal_moves[0]
+    best_val = -float('inf')
+    
+    # Simple depth-limited search (Depth 4)
+    for r, c in legal_moves:
+        ny, no = make_move(r, c, you, opponent)
+        val = minimax(no, ny, 3, -float('inf'), float('inf'), False)
+        if val > best_val:
+            best_val = val
+            best_move = (r, c)
+
+    return f"{chr(ord('a') + best_move[1])}{best_move[0] + 1}"
+</code>

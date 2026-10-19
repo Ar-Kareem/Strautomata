@@ -1,0 +1,122 @@
+**Strategy Overview**
+
+The policy searches all legal moves for the current player, simulates each move and scores the resulting board with a simple heuristic:
+
+1. **Progress towards the goal** – each piece gains points the closer it is to its home‑row (row 7 for Black, row 0 for White).  
+2. **Opponent setback** – the opponent’s progress is subtracted, so moves that block or capture opponent pieces increase the score.  
+3. **Capture bonus** – a small extra value is added for a capture.  
+4. **Winning bonuses** – a very large bonus is added if the move reaches the goal row or eliminates the last opponent piece.
+
+The move with the highest score is returned.  
+If, for any reason, no move is found (which can only happen in a completely blocked position), a simple forward move is chosen as a safe fallback.  
+
+The algorithm runs in well under a millisecond for an 8×8 board and always produces a legal move.
+
+---
+
+```python
+from typing import List, Tuple, Set
+
+def _board_score(me: Set[Tuple[int, int]],
+                 opp: Set[Tuple[int, int]],
+                 color: str) -> int:
+    """
+    Heuristic score of a board position.
+    Positive values favour the player `color`.
+    """
+    if color == 'b':          # Black moves upward, wants larger row index
+        my_progress = sum(r for r, _ in me)
+        opp_progress = sum(7 - r for r, _ in opp)   # opponent is White
+    else:                     # White moves downward, wants smaller row index
+        my_progress = sum(7 - r for r, _ in me)
+        opp_progress = sum(r for r, _ in opp)      # opponent is Black
+    return my_progress - opp_progress
+
+
+def policy(me: List[Tuple[int, int]],
+           opp: List[Tuple[int, int]],
+           color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    """
+    Return a legal move for the player `color`.
+    `me`  – list of coordinates of own pieces
+    `opp` – list of coordinates of opponent pieces
+    Move is a tuple ((from_row, from_col), (to_row, to_col)).
+    """
+    # --- basic data ---------------------------------------------------------
+    me_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opp)
+
+    dr = 1 if color == 'b' else -1          # direction of forward movement
+   goto_row = 7 if color == 'b' else 0      # winning row for the player
+
+    best_move: Tuple[Tuple[int, int], Tuple[int, int]] = None
+    best_score: int = -10 ** 9               # very low initial value
+
+    # --- generate and evaluate all legal moves -----------------------------
+    for r, c in me:
+        for dc in (-1, 0, 1):                # left-diagonal, straight, right-diagonal
+            nr = r + dr
+            nc = c + dc
+            if not (0 <= nr < 8 and 0 <= nc < 8):
+                continue                     # move would leave the board
+
+            target = (nr, nc)
+
+            # straight move: must be empty
+            if dc == 0:
+                if target in me_set or target in opp_set:
+                    continue
+                capture = False
+
+            # diagonal move: may be empty or contain an opponent piece
+            else:
+                if target in me_set:
+                    continue                 # cannot land on own piece
+                capture = target in opp_set
+
+            # ----- simulate the move ---------------------------------------
+            new_me = set(me_set)
+            new_me.remove((r, c))
+            new_me.add(target)
+
+            new_opp = set(opp_set)
+            if capture:
+                new_opp.remove(target)
+
+            # ----- evaluate the resulting position -------------------------
+            score = _board_score(new_me, new_opp, color)
+
+            # small bonuses to guide the search
+            if capture:
+                score += 5                     # favour captures
+            if nr == goto_row:
+                score += 1000                  # reaching the goal row wins
+            if not new_opp:
+                score += 1000                  # capturing the last opponent piece wins
+
+            # ----- keep the best move ---------------------------------------
+            if score > best_score:
+                best_score = score
+                best_move = ((r, c), (nr, nc))
+
+    # --- fallback (should never be needed, but guarantees a legal move) ---
+    if best_move is None:
+        for r, c in me:
+            nr = r + dr
+            if 0 <= nr < 8:
+                # try straight forward first
+                if (nr, c) not in me_set and (nr, c) not in opp_set:
+                    best_move = ((r, c), (nr, c))
+                    break
+                # otherwise try any diagonal that is empty
+                for dc in (-1, 1):
+                    nc = c + dc
+                    if 0 <= nc < 8 and (nr, nc) not in me_set and (nr, nc) not in opp_set:
+                        best_move = ((r, c), (nr, nc))
+                        break
+            if best_move:
+                break
+
+    # At this point best_move is guaranteed to be a legal move
+    return best_move
+```

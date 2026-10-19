@@ -1,0 +1,135 @@
+
+from typing import List, Tuple
+from functools import lru_cache
+
+# Constants for piece values
+CENTER = 1
+CORNERS = 2
+EDGES = 3
+
+@lru_cache(maxsize=None)
+def score(board: List[List[int]]) -> int:
+    """Return a heuristic score for the given board (my perspective)."""
+    # Center weight > corners > edges
+    return sum(
+        CELL
+        for (i, row) in enumerate(board)
+        for (j, cell) in enumerate(row)
+        if cell != 0
+    )
+
+def win(board: List[List[int]], player: int) -> bool:
+    """Check whether `player` has a winning line."""
+    lines = [
+        (0, 0, 0, 1, 0, 2),   # rows
+        (1, 0, 1, 1, 1, 2),
+        (2, 0, 2, 1, 2, 2),
+        (0, 0, 1, 0, 2, 0),   # columns
+        (0, 1, 1, 1, 2, 1),
+        (0, 2, 1, 2, 2, 2),
+        (0, 0, 1, 1, 2, 2),   # diagonals
+        (0, 2, 1, 1, 2, 0),
+    ]
+    return all(board[x][y] == player for (x1, y1, x2, y2, x3, y3) in lines)
+
+def check_threats(board: List[List[int]]) -> Tuple[int, int] | None:
+    """Return the best winning move for us or a block for the opponent if it exists."""
+    # Winning move
+    winning_moves = []
+    for i, row in enumerate(board):
+        for j, cell in enumerate(row):
+            if cell == 0:
+                new_board = [r[:] for r in board]
+                new_board[i][j] = 1
+                if win(new_board, 1):
+                    winning_moves.append((i, j))
+    if winning_moves:
+        return winning_moves[0]  # any winning move
+
+    # Opponent winning move
+    blocking_moves = []
+    for i, row in enumerate(board):
+        for j, cell in enumerate(row):
+            if cell == 0:
+                new_board = [r[:] for r in board]
+                new_board[i][j] = -1
+                if win(new_board, -1):
+                    blocking_moves.append((i, j))
+    if blocking_moves:
+        return blocking_moves[0]
+
+    return None
+
+def best_move(board: List[List[int]]) -> Tuple[int, int]:
+    """Select the optimal move using minimax with heuristic evaluation."""
+    # 1. Immediate threats
+    threat = check_threats(board)
+    if threat:
+        return threat
+
+    # 2. Generate all legal moves sorted by preference
+    moves = []
+    for i, row in enumerate(board):
+        for j, cell in enumerate(row):
+            if cell == 0:
+                moves.append((i, j))
+
+    # Preferred order: center, corners, edges
+    preferred = [(1, 1), (0, 0), (0, 2), (2, 0), (2, 2), (0, 1), (1, 0), (1, 2), (2, 1)]
+    order = []
+    for m in preferred:
+        if m in moves:
+            order.append(m)
+
+    # All other remaining moves (random order is fine, but deterministic sort keeps it stable)
+    other = sorted([m for m in moves if m not in preferred])
+    for m in other:
+        order.append(m)
+
+    # 3. Minimax evaluation
+    def minimax(b: List[List[int]]) -> Tuple[int, int, int]:
+        """Return (best_score, row, col) for the board `b` when it's my turn."""
+        if win(b, 1):
+            return 10, 0, 0  # win for me
+        if win(b, -1):
+            return -10, 0, 0  # loss for me
+        if not any(cell == 0 for row in b for cell in row):
+            return 0, 0, 0  # draw
+
+        best_score = -float('inf')
+        best_move = None
+
+        for (i, j) in order:
+            if b[i][j] != 0:
+                continue
+            new_board = [r[:] for r in b]
+            new_board[i][j] = 1
+            score, _, _ = minimax(new_board)
+            if score > best_score:
+                best_score = score
+                best_move = (i, j)
+
+        return best_score, best_move[0], best_move[1]
+
+    # Evaluate all legal moves
+    evaluations = [(score(board), i, j) for i, row in enumerate(board) for j, cell in enumerate(row) if cell == 0]
+    evaluations.sort(reverse=True)  # sort by descending heuristic score
+
+    # If a move is already best according to heuristic, return it
+    for sc, i, j in evaluations:
+        # Simulate this move quickly
+        new_board = [r[:] for r in board]
+        new_board[i][j] = 1
+        # If we win immediately, we can return it
+        if win(new_board, 1):
+            return i, j
+        # Otherwise, pick the first move that is not a worse threat later
+        break
+
+    # Use minimax on the heuristically sorted order
+    best_score, best_row, best_col = minimax(board)
+    return best_row, best_col
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    """Public API: given the current board, return the next move (row, col)."""
+    return best_move(board)

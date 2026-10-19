@@ -1,0 +1,121 @@
+The strategy uses a **shortest-path resistance** heuristic. For any board state, the algorithm calculates the minimum number of empty cells a player needs to occupy to connect their two sides (0 if already connected). This is computed using Dijkstra's algorithm (0-1 BFS) where existing stones have cost 0, empty cells have cost 1, and opponent stones are impassable.
+
+The policy follows these priorities:
+1. **Win immediately**: If a legal move completes a connection for me, play it.
+2. **Block immediate win**: If the opponent can win on their next turn (their shortest-path distance is 1), block one of their winning cells.
+3. **Heuristic evaluation**: For all other empty cells, compute the value as:  
+   `value = (my_current_dist - my_dist_if_I_play_there) + 1.1 × (opp_current_dist - opp_dist_if_I_block_there)`  
+   This prioritizes moves that simultaneously advance my own connection and block the opponent's. A small bonus is given to central cells early in the game to maximize mobility.
+
+This approach efficiently balances offense and defense within the 1-second time limit for an 11×11 board.
+
+<code>
+```python
+import heapq
+from typing import List, Tuple, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[int, int]:
+    size = 11
+    me_set: Set[Tuple[int, int]] = set(me)
+    opp_set: Set[Tuple[int, int]] = set(opp)
+    
+    # Directions for hex grid: (r, c) -> (r, c-1), (r, c+1), (r-1, c), (r-1, c+1), (r+1, c), (r+1, c-1)
+    DIRS = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, -1)]
+    
+    def get_neighbors(r: int, c: int):
+        for dr, dc in DIRS:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < size and 0 <= nc < size:
+                yield (nr, nc)
+    
+    def shortest_path(my_stones: Set[Tuple[int, int]], opp_stones: Set[Tuple[int, int]], col: str) -> int:
+        """Return minimum number of empty cells needed to connect sides. INF (1000) if impossible."""
+        INF = 1000
+        dist = [[INF] * size for _ in range(size)]
+        pq = []
+        
+        if col == 'b':  # Black: top (row 0) to bottom (row 10)
+            sources = [(0, c) for c in range(size)]
+            is_target = lambda r, c: r == size - 1
+        else:  # White: left (col 0) to right (col 10)
+            sources = [(r, 0) for r in range(size)]
+            is_target = lambda r, c: c == size - 1
+        
+        # Initialize priority queue with source cells
+        for r, c in sources:
+            if (r, c) in opp_stones:
+                continue
+            cost = 0 if (r, c) in my_stones else 1
+            if cost < dist[r][c]:
+                dist[r][c] = cost
+                heapq.heappush(pq, (cost, r, c))
+        
+        while pq:
+            d, r, c = heapq.heappop(pq)
+            if d > dist[r][c]:
+                continue
+            if is_target(r, c):
+                return d
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opp_stones:
+                    continue
+                nd = d + (0 if (nr, nc) in my_stones else 1)
+                if nd < dist[nr][nc]:
+                    dist[nr][nc] = nd
+                    heapq.heappush(pq, (nd, nr, nc))
+        return INF
+    
+    # Get all empty cells
+    empty = [(r, c) for r in range(size) for c in range(size) 
+             if (r, c) not in me_set and (r, c) not in opp_set]
+    
+    if not empty:
+        return (0, 0)  # Should not happen per problem statement
+    
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    # 1. Check for immediate winning move
+    for r, c in empty:
+        if shortest_path(me_set | {(r, c)}, opp_set, color) == 0:
+            return (r, c)
+    
+    # 2. Check for opponent immediate win and block
+    blocks = []
+    for r, c in empty:
+        if shortest_path(opp_set | {(r, c)}, me_set, opp_color) == 0:
+            blocks.append((r, c))
+    if blocks:
+        return blocks[0]
+    
+    # 3. Evaluate all moves by path improvement
+    d_me_now = shortest_path(me_set, opp_set, color)
+    d_opp_now = shortest_path(opp_set, me_set, opp_color)
+    
+    best_move = empty[0]
+    best_score = -float('inf')
+    
+    # Early game threshold for center bonus
+    total_stones = len(me) + len(opp)
+    early_game = total_stones < 24
+    
+    for r, c in empty:
+        # Distance if I play here
+        d_me_new = shortest_path(me_set | {(r, c)}, opp_set, color)
+        # Distance for opponent if I block here (they cannot use this cell)
+        d_opp_new = shortest_path(opp_set, me_set | {(r, c)}, opp_color)
+        
+        # Score: benefit to me (reduction in distance) + benefit from blocking opponent
+        score = (d_me_now - d_me_new) * 1000 + (d_opp_now - d_opp_new) * 1100
+        
+        # Early game: slight preference for center to maximize connectivity
+        if early_game:
+            center_bonus = (5 - abs(r - 5)) + (5 - abs(c - 5))
+            score += center_bonus * 5
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    return best_move
+```
+</code>

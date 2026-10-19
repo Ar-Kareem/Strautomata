@@ -1,0 +1,202 @@
+
+import random
+from copy import deepcopy
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Returns the next move for a 4x4 Tic Tac Toe game.
+    board: 4x4 list of lists (0=empty, 1=player, -1=opponent)
+    Returns: tuple(row, col)
+    """
+    
+    # Helper function to check if a player has won
+    def check_win(board_state, player):
+        # Check rows
+        for row in board_state:
+            if all(cell == player for cell in row):
+                return True
+        # Check columns
+        for col in range(4):
+            if all(board_state[row][col] == player for row in range(4)):
+                return True
+        # Check main diagonal
+        if all(board_state[i][i] == player for i in range(4)):
+            return True
+        # Check anti-diagonal
+        if all(board_state[i][3-i] == player for i in range(4)):
+            return True
+        return False
+    
+    # Find all empty cells
+    empty_cells = []
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                empty_cells.append((i, j))
+    
+    # 1. WIN: Check if we can win immediately
+    for row, col in empty_cells:
+        board[row][col] = 1
+        if check_win(board, 1):
+            board[row][col] = 0
+            return (row, col)
+        board[row][col] = 0
+    
+    # 2. BLOCK: Check if opponent can win and block them
+    for row, col in empty_cells:
+        board[row][col] = -1
+        if check_win(board, -1):
+            board[row][col] = 0
+            return (row, col)
+        board[row][col] = 0
+    
+    # 3. FORK: Create a double threat (two winning lines)
+    for row, col in empty_cells:
+        board[row][col] = 1
+        win_count = count_threats(board, 1)
+        if win_count >= 2:
+            board[row][col] = 0
+            return (row, col)
+        board[row][col] = 0
+    
+    # 4. BLOCK FORK: Block opponent's fork
+    for row, col in empty_cells:
+        board[row][col] = -1
+        opp_win_count = count_threats(board, -1)
+        if opp_win_count >= 2:
+            board[row][col] = 0
+            return (row, col)
+        board[row][col] = 0
+    
+    # 5. STRATEGIC: Use minimax with depth limit
+    best_score = float('-inf')
+    best_moves = []
+    
+    for row, col in empty_cells:
+        board[row][col] = 1
+        score = minimax(board, 3, False, float('-inf'), float('inf'))
+        board[row][col] = 0
+        
+        if score > best_score:
+            best_score = score
+            best_moves = [(row, col)]
+        elif score == best_score:
+            best_moves.append((row, col))
+    
+    # Return best move with some randomness to avoid predictable behavior
+    return random.choice(best_moves)
+
+
+def count_threats(board, player):
+    """Count potential winning lines for a player (3 in a row with 4th empty)"""
+    count = 0
+    
+    # Check rows
+    for i in range(4):
+        row = board[i]
+        player_count = row.count(player)
+        empty_count = row.count(0)
+        if player_count == 3 and empty_count == 1:
+            count += 1
+    
+    # Check columns
+    for j in range(4):
+        col = [board[i][j] for i in range(4)]
+        player_count = col.count(player)
+        empty_count = col.count(0)
+        if player_count == 3 and empty_count == 1:
+            count += 1
+    
+    # Check main diagonal
+    diag = [board[i][i] for i in range(4)]
+    player_count = diag.count(player)
+    empty_count = diag.count(0)
+    if player_count == 3 and empty_count == 1:
+        count += 1
+    
+    # Check anti-diagonal
+    anti_diag = [board[i][3-i] for i in range(4)]
+    player_count = anti_diag.count(player)
+    empty_count = anti_diag.count(0)
+    if player_count == 3 and empty_count == 1:
+        count += 1
+    
+    return count
+
+
+def evaluate(board):
+    """Evaluate the board from the perspective of player 1"""
+    if check_win_static(board, 1):
+        return 1000
+    if check_win_static(board, -1):
+        return -1000
+    
+    score = 0
+    
+    # Score based on threats (almost wins)
+    score += count_threats(board, 1) * 10
+    score -= count_threats(board, -1) * 10
+    
+    # Strategic positioning
+    strategic_squares = [(0, 0), (0, 3), (3, 0), (3, 3), (1, 1), (1, 2), (2, 1), (2, 2)]
+    for i, j in strategic_squares:
+        if board[i][j] == 1:
+            score += 1
+        elif board[i][j] == -1:
+            score -= 1
+    
+    return score
+
+
+def check_win_static(board_state, player):
+    """Static check win function"""
+    # Check rows
+    for row in board_state:
+        if all(cell == player for cell in row):
+            return True
+    # Check columns
+    for col in range(4):
+        if all(board_state[row][col] == player for row in range(4)):
+            return True
+    # Check main diagonal
+    if all(board_state[i][i] == player for i in range(4)):
+        return True
+    # Check anti-diagonal
+    if all(board_state[i][3-i] == player for i in range(4)):
+        return True
+    return False
+
+
+def minimax(board, depth, is_maximizing, alpha, beta):
+    """Minimax algorithm with alpha-beta pruning"""
+    if depth == 0 or check_win_static(board, 1) or check_win_static(board, -1):
+        return evaluate(board)
+    
+    empty_cells = []
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                empty_cells.append((i, j))
+    
+    if is_maximizing:
+        max_eval = float('-inf')
+        for row, col in empty_cells:
+            board[row][col] = 1
+            eval = minimax(board, depth - 1, False, alpha, beta)
+            board[row][col] = 0
+            max_eval = max(max_eval, eval)
+            alpha = max(alpha, eval)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for row, col in empty_cells:
+            board[row][col] = -1
+            eval = minimax(board, depth - 1, True, alpha, beta)
+            board[row][col] = 0
+            min_eval = min(min_eval, eval)
+            beta = min(beta, eval)
+            if beta <= alpha:
+                break
+        return min_eval

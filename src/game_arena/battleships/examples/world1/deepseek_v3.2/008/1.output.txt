@@ -1,0 +1,449 @@
+<thinking>
+We need to implement a smart targeting policy for Battleship. The board is 10x10, ships are lengths 5, 4, 3, 3, 2. The board contains 0 (unknown), -1 (miss), 1 (hit). We must return a row, col for next shot not previously fired at.
+
+We need an algorithm that:
+1. First does random probing (or parity-based) until we get a hit.
+2. Once we have a hit, we need to hunt for the rest of the ship: check adjacent cells (up, down, left, right) that are unknown and within bounds.
+3. When we have multiple hits in a line, we should continue in that direction until we get a miss, then try the opposite direction.
+4. After sinking a ship, we need to go back to hunting mode.
+
+We need to keep state between calls. Since the policy function is called repeatedly, we need to store state in global variables. However, the function might be re-initialized each time? Actually, the game will call our function repeatedly within the same Python process, so we can use module-level variables.
+
+We should maintain:
+- A set of previously fired cells (we can infer from board: any cell with -1 or 1 has been fired at).
+- A queue of targets (cells adjacent to hits that we need to try).
+- Knowledge of sunk ships? We can infer if we have sunk a ship: if we have hits that are not part of a live ship (i.e., all cells of a ship are hit and we haven't marked them as sunk). However, the board only shows hits and misses; we don't get explicit sink notification. But we can infer: if we have a cluster of hits and all adjacent cells (including diagonals?) are either misses or hits, and the shape is a straight line, and the length matches a ship, we can mark it as sunk. But we need to be careful.
+
+Simpler approach: when we get a hit, we add its neighbors to a target list. When we try a neighbor and it's a miss, we remove that direction. When we try a neighbor and it's a hit, we continue in that direction. When we have a line of hits, we only need to try the two ends. If we hit a ship and then later get a miss on both ends, the ship is sunk (since we've hit all cells). However, we might not have hit all cells: for example, we might have hit two cells of a 3-length ship, but the third cell might be elsewhere if we didn't correctly identify the orientation. Actually, we can assume that ships are placed in straight lines. So once we have at least two hits in a line, we know the orientation. Then we can try both ends until we get misses. Once we get misses on both ends, we have sunk that ship.
+
+We need to manage multiple ships: we might have multiple unsunk hit clusters. We should prioritize finishing a ship before starting a new one.
+
+Implementation plan:
+- Use global variables: target_queue (list of cells to try), hit_cells (set of cells we've hit), sunk_ships (list of sets of cells that we've sunk), board_state (our own copy of board to track additional info).
+- On each call, we update our internal state from the board.
+- Determine which hits belong to which ship. We can cluster adjacent hits (orthogonally adjacent) into groups. For each group, if we haven't sunk it, we need to target its perimeter.
+- For each unsunk group, we can generate potential target cells: all cells adjacent orthogonally to any hit in the group that are unknown. If the group has at least two hits in a line, we can restrict to cells along that line (the two ends). If the group has only one hit, we need to try all four directions.
+- We prioritize groups that have more hits (closer to sinking).
+- If no unsunk groups, we go into hunting mode: we can use a parity-based pattern (since ships are at least length 2, we can target every other cell in a checkerboard pattern) or just random.
+
+Alternatively, we can implement a probability density map (heatmap) approach: compute for each unknown cell the probability that it contains a ship given the current hits and misses, and choose the cell with highest probability. This might be more accurate but heavier.
+
+Given 1 second time limit, we can compute probability density quickly.
+
+Simpler yet effective: use a two-stage process:
+1. Hunt mode: target cells with a checkerboard pattern (like even parity: (row+col)%2 == 0) because ships occupy at least two contiguous cells, so they must touch both parities. But actually, if we target only one parity, we might miss ships that are entirely on the other parity? For a ship of length 2, it occupies one even and one odd cell (since adjacent cells have different parity). So if we target only even cells, we will definitely hit any ship at least once? Wait: adjacent cells have opposite parity. So a ship of length 2 covers one even and one odd. If we target only even, we will hit the even cell. For length 3: cells: even, odd, even (if starting even) or odd, even, odd. So it will have at least one even cell. So targeting even cells only will eventually hit every ship. But we might waste shots. However, we can improve by using a denser pattern: target all cells but in a pattern that maximizes coverage.
+
+But we can combine: first random parity, but once we get a hit, switch to targeting around it.
+
+Let's implement stateful target queue.
+
+We'll maintain:
+- A list of pending targets (cells to shoot at).
+- A set of hits that are not yet part of a sunk ship.
+- A way to detect when a ship is sunk: when we have a cluster of hits and all adjacent cells are either misses or out of bounds, and the cluster size matches a ship length? But we don't know which ship it is. However, we can assume that if we have a cluster of hits and there are no unknown cells adjacent orthogonally to any hit in that cluster, then the ship is sunk. Because ships are contiguous, and if there were more cells of the same ship, they would be adjacent. So if we have hits A,B,C and there is no unknown cell adjacent to A, B, or C (orthogonally), then the ship must be exactly A,B,C. However, there could be a case where the ship is length 4, but we only have 3 hits and the fourth cell is adjacent but we haven't tried it yet because it's not in our target queue? Actually, if we have a cluster of hits, we should have added all adjacent unknowns to the target queue. So if we have tried all adjacent unknowns (they became misses), then the ship is fully revealed. So we can mark a cluster as sunk when for every hit in the cluster, all orthogonal neighbors are either hits (part of the cluster) or misses.
+
+Thus we can maintain clusters of hits and check if they are "closed".
+
+Algorithm outline:
+
+Initialize:
+- pending_targets = []  # queue of cells to try
+- hit_cells = set()
+- miss_cells = set()
+- clusters = []  # list of sets, each set is a cluster of hits that are connected orthogonally
+
+On each call:
+1. Update hit_cells and miss_cells from board: iterate over all cells, if board[r][c] == 1 and (r,c) not in hit_cells, add to hit_cells. If board[r][c] == -1 and (r,c) not in miss_cells, add to miss_cells.
+2. Rebuild clusters from hit_cells: find connected components (orthogonal adjacency). For each cluster, if it's not already in clusters, add it. Also, remove clusters that are sunk: a cluster is sunk if for every cell in cluster, all orthogonal neighbors are either in the same cluster or in miss_cells or out of bounds. If sunk, remove from clusters and maybe mark them so we don't target around them (but we already have misses around them).
+3. If there are clusters (unsunk ships):
+   - For each cluster, generate candidate targets: orthogonal neighbors of any cell in the cluster that are unknown (not in hit_cells, not in miss_cells, and not already in pending_targets). But if the cluster has at least two cells, we can infer orientation: if cells are in a horizontal line (same row), then only left and right ends are candidates; if vertical, only up and down ends. If only one cell, all four directions.
+   - Add these candidates to pending_targets (avoid duplicates).
+   - Sort pending_targets by priority: maybe give higher priority to cells that are adjacent to more than one hit (crossing) but that's rare.
+4. If pending_targets is empty (no unsunk clusters or we exhausted candidates), we need to hunt. We can use a probability map or simple pattern. Let's implement a parity-based hunt with randomness to avoid being predictable.
+   - We can maintain a set of cells we've already fired at (hit_cells ∪ miss_cells). Then choose a cell that is unknown and has not been fired at. We can bias towards cells that have higher chance: e.g., cells that are not isolated (have many unknown neighbors) but that's complicated.
+   - Simple: generate a list of all unknown cells, then pick one. But we can improve by using a checkerboard pattern: prefer cells where (row+col)%2 == 0 (or 1) because ships occupy both parities. Actually, if we target only one parity, we will eventually hit all ships, but we might waste shots. However, we can alternate parity each time we hunt? Let's just pick random unknown cells, but to be efficient, we can use a parity bias: we want to maximize the probability of hitting a ship. The optimal hunting pattern is to shoot every other cell in a checkerboard, because that guarantees hitting any ship of length >=2 at least once. So we can precompute a list of cells with parity 0, then parity 1, and shoot them in random order within each parity. But we need to avoid re-shooting. So we can maintain a set of untried cells, and when in hunt mode, we pick from untried cells with parity 0 first, then parity 1. However, if we have already shot many cells, we just need to pick from remaining unknown cells.
+
+   Let's implement: maintain a set of all cells (0..9,0..9). At start, untried = all cells. Each time we shoot, remove from untried. When hunting, we can select from untried using a heuristic: compute for each untried cell a weight based on how many unknown neighbors it has (since ships are more likely to be placed in open areas). Actually, we can compute a simple probability density by considering all possible placements of remaining ships given the current board. That might be heavy but doable with 1 second and small board.
+
+   Let's consider a simpler approach: parity + density. We can assign each unknown cell a score = number of ways a ship of length k could be placed covering that cell, given the current constraints (misses are blocked, hits are already counted). But we need to know which ships are still alive. We don't know which ships are sunk. However, we can infer: if we have sunk clusters, we can deduce which ship lengths are left. But that's complex.
+
+   Instead, we can use a basic heatmap that ignores sunk ships and just considers all possible placements of all ships (without overlap) that are consistent with the current board. That's computationally expensive but with 10x10 and 5 ships, there are many possibilities. However, we can approximate by considering each cell independently: for each unknown cell, count how many ways a ship of length L could be placed such that it covers that cell and does not conflict with known misses (hits are allowed? Actually, if we have a hit, that cell is already part of a ship, so we shouldn't count placements that would put a ship there unless it's the same ship? This gets messy.
+
+   Let's stick with the target queue method and when no targets, we shoot at random but with parity bias.
+
+   Implementation steps:
+
+   Global variables:
+   - untried_set: set of all cells initially.
+   - hit_set, miss_set: as above.
+   - clusters: list of sets of hits.
+   - pending_targets: list of cells to try next.
+
+   On each call:
+     update hits and misses from board.
+     update untried_set: remove any cell that is hit or miss (if not already removed).
+     rebuild clusters.
+     mark sunk clusters: if cluster is sunk, remove from clusters (and maybe add its cells to sunk set).
+     if clusters exist:
+         for each cluster:
+             if cluster size == 1:
+                 add all four orthogonal neighbors that are in untried_set to pending_targets.
+             else:
+                 determine orientation: check if all cells share same row (horizontal) or same column (vertical).
+                 get the min and max row/col.
+                 add the two end cells (left/right or up/down) if they are in untried_set.
+         shuffle pending_targets to avoid predictability? Actually, we should prioritize clusters with more hits? We can sort clusters by size descending.
+         Then pop from pending_targets (we can use a queue). We'll maintain pending_targets as a list and remove duplicates.
+     if pending_targets empty:
+         # hunt mode
+         # choose a cell from untried_set with highest priority.
+         # We can compute a simple heuristic: for each untried cell, count how many untried cells are in its row and column (to favor dense areas). Or we can use parity: prefer cells where (row+col)%2 == 0.
+         # Let's do: compute score = (number of untried cells in same row + number in same column) + (1 if parity even else 0)
+         # Then pick cell with max score.
+         # However, we need to be efficient: compute once per turn.
+         best_cell = None
+         best_score = -1
+         for cell in untried_set:
+             r,c = cell
+             # count untried in same row and column (including itself)
+             row_count = sum(1 for j in range(10) if (r,j) in untried_set)
+             col_count = sum(1 for i in range(10) if (i,c) in untried_set)
+             score = row_count + col_count + (1 if (r+c)%2==0 else 0)
+             if score > best_score:
+                 best_score = score
+                 best_cell = cell
+         pending_targets.append(best_cell)
+
+     # Now select next target from pending_targets
+     # We'll maintain pending_targets as a list, and we'll pop from front (FIFO). But we might want to prioritize certain cells. For simplicity, we'll use a deque.
+     target = pending_targets.pop(0)  # but ensure it's still untried? It should be because we only add untried cells. However, we might have added a cell that later becomes hit/miss by the time we pop it. So we need to check.
+     while pending_targets and target not in untried_set:
+         target = pending_targets.pop(0)
+     if target not in untried_set:
+         # fallback: pick any untried cell
+         target = next(iter(untried_set))
+
+     return target
+
+ We need to avoid infinite loops and ensure we always return a valid cell.
+
+ Let's implement.
+
+ Edge cases: when we add neighbors to pending_targets, we might add duplicates. We can use a set for pending_targets to avoid duplicates, but need order. Use OrderedSet? We'll use a list and a set to check membership.
+
+ We'll implement pending_targets as a list, and maintain a set pending_set to check duplicates.
+
+ Let's code.
+
+ We'll need to import collections for deque.
+
+ Steps in code:
+
+ Initialize:
+   untried_set = set((r,c) for r in range(10) for c in range(10))
+   hit_set = set()
+   miss_set = set()
+   clusters = []  # list of sets
+   pending_targets = []
+   pending_set = set()
+
+ In policy(board):
+   # 1. update hit_set, miss_set, untried_set
+   for r in range(10):
+     for c in range(10):
+        val = board[r][c]
+        if val == 1 and (r,c) not in hit_set:
+            hit_set.add((r,c))
+            if (r,c) in untried_set: untried_set.remove((r,c))
+        elif val == -1 and (r,c) not in miss_set:
+            miss_set.add((r,c))
+            if (r,c) in untried_set: untried_set.remove((r,c))
+        # note: if val == 0, do nothing
+
+   # 2. rebuild clusters from hit_set
+   # find connected components (orthogonal)
+   remaining_hits = hit_set.copy()
+   new_clusters = []
+   while remaining_hits:
+        start = remaining_hits.pop()
+        stack = [start]
+        cluster = set([start])
+        while stack:
+            r,c = stack.pop()
+            for dr,dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                nr,nc = r+dr, c+dc
+                if (nr,nc) in remaining_hits:
+                    remaining_hits.remove((nr,nc))
+                    cluster.add((nr,nc))
+                    stack.append((nr,nc))
+        new_clusters.append(cluster)
+
+   # 3. determine which clusters are sunk
+   unsunk_clusters = []
+   for cluster in new_clusters:
+        sunk = True
+        for (r,c) in cluster:
+            # check orthogonal neighbors
+            for dr,dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                nr,nc = r+dr, c+dc
+                if 0 <= nr < 10 and 0 <= nc < 10:
+                    if (nr,nc) not in hit_set and (nr,nc) not in miss_set:
+                        # there is an unknown adjacent cell, ship might extend
+                        sunk = False
+                        break
+            if not sunk:
+                break
+        if not sunk:
+            unsunk_clusters.append(cluster)
+   clusters = unsunk_clusters
+
+   # 4. if there are clusters, generate targets
+   if clusters:
+        # sort clusters by size descending (largest first, to finish them)
+        clusters.sort(key=lambda c: len(c), reverse=True)
+        for cluster in clusters:
+            if len(cluster) == 1:
+                # single hit, add all four neighbors
+                r,c = next(iter(cluster))
+                for dr,dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                    nr,nc = r+dr, c+dc
+                    if 0 <= nr < 10 and 0 <= nc < 10:
+                        if (nr,nc) in untried_set and (nr,nc) not in pending_set:
+                            pending_targets.append((nr,nc))
+                            pending_set.add((nr,nc))
+            else:
+                # determine orientation
+                rows = [r for (r,c) in cluster]
+                cols = [c for (r,c) in cluster]
+                if len(set(rows)) == 1:  # horizontal
+                    row = rows[0]
+                    min_col = min(cols)
+                    max_col = max(cols)
+                    # left end
+                    if min_col-1 >= 0 and (row, min_col-1) in untried_set and (row, min_col-1) not in pending_set:
+                        pending_targets.append((row, min_col-1))
+                        pending_set.add((row, min_col-1))
+                    # right end
+                    if max_col+1 < 10 and (row, max_col+1) in untried_set and (row, max_col+1) not in pending_set:
+                        pending_targets.append((row, max_col+1))
+                        pending_set.add((row, max_col+1))
+                elif len(set(cols)) == 1:  # vertical
+                    col = cols[0]
+                    min_row = min(rows)
+                    max_row = max(rows)
+                    # top end
+                    if min_row-1 >= 0 and (min_row-1, col) in untried_set and (min_row-1, col) not in pending_set:
+                        pending_targets.append((min_row-1, col))
+                        pending_set.add((min_row-1, col))
+                    # bottom end
+                    if max_row+1 < 10 and (max_row+1, col) in untried_set and (max_row+1, col) not in pending_set:
+                        pending_targets.append((max_row+1, col))
+                        pending_set.add((max_row+1, col))
+                else:
+                    # degenerate: cluster not in straight line? Should not happen if ships are straight, but could if two ships are adjacent? Actually, ships cannot touch, but they can be diagonal. However, hits from different ships could be adjacent diagonally, but not orthogonally because ships cannot touch (usually in Battleship they cannot be adjacent, but the rules might allow touching? Typically they cannot be adjacent, but we don't know. Assuming they can be placed with at least one cell gap? The problem statement says "no overlaps, straight lines" but doesn't specify about adjacency. Let's assume they can be adjacent. So we might have a cluster that is not a straight line if two ships are orthogonally adjacent? That would mean two ships touching, which might be allowed. So we need to handle that case: treat as multiple clusters? But our clustering algorithm groups orthogonally adjacent hits, so if two ships touch, they become one cluster. That's problematic.
+
+                    # For simplicity, if cluster is not straight, we treat each hit individually? We'll fallback to adding all neighbors of each hit.
+                    for (r,c) in cluster:
+                        for dr,dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                            nr,nc = r+dr, c+dc
+                            if 0 <= nr < 10 and 0 <= nc < 10:
+                                if (nr,nc) in untried_set and (nr,nc) not in pending_set:
+                                    pending_targets.append((nr,nc))
+                                    pending_set.add((nr,nc))
+
+   # 5. if no pending targets, hunt
+   if not pending_targets:
+        # compute best cell
+        best_cell = None
+        best_score = -1
+        for (r,c) in untried_set:
+            # count untried in same row and column
+            row_count = sum(1 for j in range(10) if (r,j) in untried_set)
+            col_count = sum(1 for i in range(10) if (i,c) in untried_set)
+            score = row_count + col_count + (1 if (r+c)%2==0 else 0)
+            if score > best_score:
+                best_score = score
+                best_cell = (r,c)
+        if best_cell is not None:
+            pending_targets.append(best_cell)
+            pending_set.add(best_cell)
+
+   # 6. select next target from pending_targets
+   while pending_targets:
+        candidate = pending_targets.pop(0)
+        pending_set.remove(candidate)
+        if candidate in untried_set:
+            return candidate
+   # fallback: any untried cell
+   if untried_set:
+        return next(iter(untried_set))
+   else:
+        # should not happen, but return (0,0)
+        return (0,0)
+
+We need to ensure that we don't add cells that are already in pending_set. We'll maintain pending_set.
+
+Also, we need to clear pending_targets when we add new ones? We should not clear, because we might have leftover targets from previous turns that are still valid. However, if a cluster is sunk, we might have pending targets that are adjacent to that cluster but now irrelevant. But those cells are still unknown and could be part of another ship. So we can keep them. But we might want to prioritize new cluster targets. We added new targets at the end of pending_targets, so we pop from front, so older targets get tried first. That's okay because they were added earlier and might still be good.
+
+We need to be careful: when we add targets for a cluster, we might add cells that are already in pending_targets. We use pending_set to avoid duplicates.
+
+Also, we need to update pending_targets when we shoot: we remove the candidate from pending_targets and pending_set. But what if we added a cell that later becomes hit or miss before we pop it? We check at popping time.
+
+Potential issue: we might have multiple clusters and we add targets for each, but we might add the same cell for two different clusters. That's fine, we avoid duplicates.
+
+Now, we need to define global variables. Since the function will be called multiple times, we need to initialize them only once. We can use a flag.
+
+Let's write the code.
+
+We'll import collections for deque maybe, but we'll use list.
+
+We'll also randomize the order of neighbors to avoid being predictable? But we want deterministic behavior for testing. We can shuffle pending_targets after adding, but we need to prioritize ends of ships. Actually, we can add them in a specific order: left then right, etc. That's fine.
+
+We'll also consider that ships cannot be placed diagonally, so we only consider orthogonal adjacency.
+
+Let's implement.
+</thinking>
+
+<code>
+import random
+
+# Global state
+untried_set = set((r, c) for r in range(10) for c in range(10))
+hit_set = set()
+miss_set = set()
+clusters = []  # list of sets of hits that are connected and not yet sunk
+pending_targets = []   # queue of cells to try next
+pending_set = set()    # to avoid duplicates in pending_targets
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    global untried_set, hit_set, miss_set, clusters, pending_targets, pending_set
+
+    # 1. Update our knowledge from the board
+    for r in range(10):
+        for c in range(10):
+            val = board[r][c]
+            if val == 1 and (r, c) not in hit_set:
+                hit_set.add((r, c))
+                if (r, c) in untried_set:
+                    untried_set.remove((r, c))
+            elif val == -1 and (r, c) not in miss_set:
+                miss_set.add((r, c))
+                if (r, c) in untried_set:
+                    untried_set.remove((r, c))
+
+    # 2. Rebuild clusters from current hits
+    remaining_hits = hit_set.copy()
+    new_clusters = []
+    while remaining_hits:
+        start = remaining_hits.pop()
+        stack = [start]
+        cluster = {start}
+        while stack:
+            r, c = stack.pop()
+            for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in remaining_hits:
+                    remaining_hits.remove((nr, nc))
+                    cluster.add((nr, nc))
+                    stack.append((nr, nc))
+        new_clusters.append(cluster)
+
+    # 3. Determine which clusters are sunk (no unknown orthogonal neighbors)
+    unsunk_clusters = []
+    for cluster in new_clusters:
+        sunk = True
+        for (r, c) in cluster:
+            for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10:
+                    if (nr, nc) not in hit_set and (nr, nc) not in miss_set:
+                        sunk = False
+                        break
+            if not sunk:
+                break
+        if not sunk:
+            unsunk_clusters.append(cluster)
+    clusters = unsunk_clusters
+
+    # 4. If there are unsunk clusters, generate target cells around them
+    if clusters:
+        # Prioritize larger clusters (closer to sinking)
+        clusters.sort(key=len, reverse=True)
+        for cluster in clusters:
+            if len(cluster) == 1:
+                r, c = next(iter(cluster))
+                for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < 10 and 0 <= nc < 10:
+                        if (nr, nc) in untried_set and (nr, nc) not in pending_set:
+                            pending_targets.append((nr, nc))
+                            pending_set.add((nr, nc))
+            else:
+                rows = [r for (r, c) in cluster]
+                cols = [c for (r, c) in cluster]
+                if len(set(rows)) == 1:   # horizontal
+                    row = rows[0]
+                    min_col = min(cols)
+                    max_col = max(cols)
+                    # left end
+                    if min_col - 1 >= 0 and (row, min_col - 1) in untried_set and (row, min_col - 1) not in pending_set:
+                        pending_targets.append((row, min_col - 1))
+                        pending_set.add((row, min_col - 1))
+                    # right end
+                    if max_col + 1 < 10 and (row, max_col + 1) in untried_set and (row, max_col + 1) not in pending_set:
+                        pending_targets.append((row, max_col + 1))
+                        pending_set.add((row, max_col + 1))
+                elif len(set(cols)) == 1:   # vertical
+                    col = cols[0]
+                    min_row = min(rows)
+                    max_row = max(rows)
+                    # top end
+                    if min_row - 1 >= 0 and (min_row - 1, col) in untried_set and (min_row - 1, col) not in pending_set:
+                        pending_targets.append((min_row - 1, col))
+                        pending_set.add((min_row - 1, col))
+                    # bottom end
+                    if max_row + 1 < 10 and (max_row + 1, col) in untried_set and (max_row + 1, col) not in pending_set:
+                        pending_targets.append((max_row + 1, col))
+                        pending_set.add((max_row + 1, col))
+                else:
+                    # Cluster is not a straight line (touching ships). Add all orthogonal neighbors.
+                    for (r, c) in cluster:
+                        for dr, dc in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < 10 and 0 <= nc < 10:
+                                if (nr, nc) in untried_set and (nr, nc) not in pending_set:
+                                    pending_targets.append((nr, nc))
+                                    pending_set.add((nr, nc))
+
+    # 5. If no pending targets, enter hunting mode: pick the best unknown cell.
+    if not pending_targets:
+        best_cell = None
+        best_score = -1
+        for (r, c) in untried_set:
+            # Count unknown cells in the same row and column (including itself)
+            row_count = sum(1 for j in range(10) if (r, j) in untried_set)
+            col_count = sum(1 for i in range(10) if (i, c) in untried_set)
+            # Slight preference for even parity (checkerboard pattern)
+            parity_bonus = 1 if (r + c) % 2 == 0 else 0
+            score = row_count + col_count + parity_bonus
+            if score > best_score:
+                best_score = score
+                best_cell = (r, c)
+        if best_cell is not None:
+            pending_targets.append(best_cell)
+            pending_set.add(best_cell)
+
+    # 6. Select the next target from the queue, ensuring it's still untried.
+    while pending_targets:
+        candidate = pending_targets.pop(0)
+        pending_set.remove(candidate)
+        if candidate in untried_set:
+            return candidate
+
+    # Fallback: any untried cell (should not happen)
+    if untried_set:
+        return next(iter(untried_set))
+    else:
+        # No untried cells left (game over)
+        return (0, 0)
+</code>

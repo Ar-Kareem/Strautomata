@@ -1,0 +1,254 @@
+The strategy for this policy is an alpha–beta searched Kalah agent with iterative deepening under a tight time budget. It prioritizes (1) forcing extra turns, (2) immediate captures, (3) preventing opponent counterplay via deeper search, and (4) endgame correctness by sweeping remaining seeds when a side empties. A transposition table and strong move ordering (extra-turn/capture first) let it search deeper than simple heuristics while always returning a legal move.
+
+<code>
+import time
+from typing import List, Tuple, Dict, Optional
+
+# --------- Kalah (6 houses) policy with iterative-deepening alpha-beta ---------
+
+HOUSES = 6
+STORE = 6
+CYCLE = 13  # your 6 houses + your store + opponent 6 houses (opponent store is skipped)
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _is_terminal(you: List[int], opp: List[int]) -> bool:
+    return sum(you[:HOUSES]) == 0 or sum(opp[:HOUSES]) == 0
+
+
+def _final_score_diff(you: List[int], opp: List[int]) -> int:
+    """
+    Exact final (you_store - opp_store) after sweeping remaining stones if terminal (or near-terminal).
+    """
+    y_house = sum(you[:HOUSES])
+    o_house = sum(opp[:HOUSES])
+    y_store = you[STORE]
+    o_store = opp[STORE]
+    if y_house == 0:
+        o_store += o_house
+        o_house = 0
+    elif o_house == 0:
+        y_store += y_house
+        y_house = 0
+    return y_store - o_store
+
+
+def _apply_move(you: List[int], opp: List[int], move: int) -> Tuple[List[int], List[int], bool]:
+    """
+    Apply a legal move for the current player ("you") from house index `move`.
+    Returns (new_you, new_opp, extra_turn).
+    """
+    ny = you[:]  # copy
+    no = opp[:]
+    seeds = ny[move]
+    ny[move] = 0
+
+    pos = move  # last position index in the 13-slot cycle: 0..5 houses, 6 store, 7..12 opp houses
+    extra_turn = False
+
+    for k in range(seeds):
+        pos = (pos + 1) % CYCLE
+
+        is_last = (k == seeds - 1)
+
+        if pos <= 5:  # your house
+            if is_last:
+                was_empty = (ny[pos] == 0)
+                ny[pos] += 1
+                # Capture if last seed lands in your empty house and opposite has stones
+                if was_empty and no[5 - pos] > 0:
+                    captured = no[5 - pos] + ny[pos]
+                    no[5 - pos] = 0
+                    ny[pos] = 0
+                    ny[STORE] += captured
+            else:
+                ny[pos] += 1
+
+        elif pos == 6:  # your store
+            ny[STORE] += 1
+            if is_last:
+                extra_turn = True
+
+        else:  # opponent house
+            no[pos - 7] += 1
+
+    # Sweep if game ended
+    y_house = sum(ny[:HOUSES])
+    o_house = sum(no[:HOUSES])
+    if y_house == 0:
+        no[STORE] += o_house
+        for i in range(HOUSES):
+            no[i] = 0
+        extra_turn = False
+    elif o_house == 0:
+        ny[STORE] += y_house
+        for i in range(HOUSES):
+            ny[i] = 0
+        extra_turn = False
+
+    return ny, no, extra_turn
+
+
+def _eval(you: List[int], opp: List[int]) -> int:
+    """
+    Static evaluation from the perspective of the player to move (you).
+    """
+    if _is_terminal(you, opp):
+        # Strongly prefer proven wins/losses
+        return 100000 * _final_score_diff(you, opp)
+
+    y_store = you[STORE]
+    o_store = opp[STORE]
+    y_h = you[:HOUSES]
+    o_h = opp[:HOUSES]
+
+    # Material-like terms
+    store_diff = y_store - o_store
+    house_diff = sum(y_h) - sum(o_h)
+
+    # "Tempo" / initiative: count potential extra turns
+    extra_turns_you = 0
+    extra_turns_opp = 0
+    for i in range(HOUSES):
+        if y_h[i] > 0:
+            dist = STORE - i
+            if y_h[i] % CYCLE == dist:
+                extra_turns_you += 1
+        if o_h[i] > 0:
+            dist = STORE - i
+            if o_h[i] % CYCLE == dist:
+                extra_turns_opp += 1
+
+    # Vulnerability / opportunity: empty houses with opposite stones (capture potential)
+    # (Crude but helps guide search ordering/eval.)
+    capture_targets_you = 0
+    capture_targets_opp = 0
+    for i in range(HOUSES):
+        if y_h[i] == 0 and o_h[5 - i] > 0:
+            capture_targets_you += o_h[5 - i]
+        if o_h[i] == 0 and y_h[5 - i] > 0:
+            capture_targets_opp += y_h[5 - i]
+
+    # Weighted sum
+    return (
+        40 * store_diff
+        + 3 * house_diff
+        + 8 * (extra_turns_you - extra_turns_opp)
+        + 2 * (capture_targets_you - capture_targets_opp)
+    )
+
+
+def _ordered_moves(you: List[int], opp: List[int]) -> List[int]:
+    """
+    Order moves to improve alpha-beta pruning: extra turns first, then captures, then others.
+    """
+    moves = [i for i in range(HOUSES) if you[i] > 0]
+
+    def key(m: int) -> Tuple[int, int, int]:
+        ny, no, extra = _apply_move(you, opp, m)
+        # immediate capture estimate: store gain from move relative to current
+        store_gain = ny[STORE] - you[STORE]
+        # extra turn is best; then higher store gain; then prefer moves with more seeds (often reach store/deny)
+        return (1 if extra else 0, store_gain, you[m])
+
+    moves.sort(key=key, reverse=True)
+    return moves
+
+
+def _negamax(
+    you: List[int],
+    opp: List[int],
+    depth: int,
+    alpha: int,
+    beta: int,
+    tt: Dict[Tuple[Tuple[int, ...], Tuple[int, ...], int], int],
+    deadline: float,
+) -> int:
+    if time.perf_counter() > deadline:
+        raise _Timeout
+
+    if depth <= 0 or _is_terminal(you, opp):
+        return _eval(you, opp)
+
+    key = (tuple(you), tuple(opp), depth)
+    if key in tt:
+        return tt[key]
+
+    best = -10**18
+    for m in _ordered_moves(you, opp):
+        ny, no, extra = _apply_move(you, opp, m)
+        if extra:
+            val = _negamax(ny, no, depth - 1, alpha, beta, tt, deadline)
+        else:
+            val = -_negamax(no, ny, depth - 1, -beta, -alpha, tt, deadline)
+
+        if val > best:
+            best = val
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    tt[key] = best
+    return best
+
+
+def policy(you: List[int], opponent: List[int]) -> int:
+    """
+    Required API: return a legal move i in [0..5] with you[i] > 0.
+    """
+    legal = [i for i in range(HOUSES) if you[i] > 0]
+    if not legal:
+        # Problem statement says this won't happen, but keep it safe.
+        return 0
+
+    start = time.perf_counter()
+    # Keep a small margin; arena runtimes vary.
+    deadline = start + 0.95
+
+    best_move = legal[0]
+    best_val = -10**18
+
+    tt: Dict[Tuple[Tuple[int, ...], Tuple[int, ...], int], int] = {}
+
+    # Iterative deepening
+    # Depth here is "moves" (plies), not "turns" (extra turns still consume depth).
+    max_depth = 18
+    for depth in range(1, max_depth + 1):
+        if time.perf_counter() > deadline:
+            break
+        current_best_move: Optional[int] = None
+        current_best_val = -10**18
+
+        try:
+            for m in _ordered_moves(you, opponent):
+                ny, no, extra = _apply_move(you, opponent, m)
+                if extra:
+                    val = _negamax(ny, no, depth - 1, -10**18, 10**18, tt, deadline)
+                else:
+                    val = -_negamax(no, ny, depth - 1, -10**18, 10**18, tt, deadline)
+
+                if val > current_best_val:
+                    current_best_val = val
+                    current_best_move = m
+
+        except _Timeout:
+            # Keep the best result from the last fully completed depth.
+            break
+
+        if current_best_move is not None:
+            best_move = current_best_move
+            best_val = current_best_val
+
+    # Ensure legality even under any unforeseen edge.
+    if you[best_move] <= 0:
+        for m in range(HOUSES):
+            if you[m] > 0:
+                return m
+        return legal[0]
+
+    return best_move
+</code>

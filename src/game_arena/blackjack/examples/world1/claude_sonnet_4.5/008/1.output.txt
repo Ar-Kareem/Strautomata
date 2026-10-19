@@ -1,0 +1,275 @@
+<thinking>
+Let me think through this problem step by step.
+
+1. **Game Mechanics:**
+   - We have a deck of 13 cards (one of each rank)
+   - Target T is between 10 and 30
+   - We need to get as close to T as possible without going over
+   - Opponent plays independently with their own deck
+
+2. **Key Observations:**
+   - Each card can only be drawn once (no replacement)
+   - We know exactly which cards are available
+   - Aces are worth 11 if hand value ≤ T, otherwise 1
+
+3. **Strategy Considerations:**
+   - We need to calculate our current hand value correctly (handling Aces)
+   - We need to decide whether to HIT or STAY
+   - We should consider:
+     - Current hand value
+     - Remaining cards in our deck
+     - Probability of busting if we hit
+     - Expected value of hitting vs staying
+
+4. **Hand Value Calculation:**
+   - For Aces: they're worth 11 if total ≤ T, else 1
+   - This is a bit tricky - we need to calculate the hand value considering all aces optimally
+   - Actually, re-reading: "A → 11 (when the hand value is <= T) or 1 (when the hand value is > T)"
+   - This suggests a greedy evaluation: use 11 for aces as long as it doesn't make us exceed T
+
+5. **Decision Strategy:**
+   - Simple threshold: HIT if current value is far from target, STAY if close
+   - More sophisticated: calculate expected value of hitting
+   - Consider what cards remain in the deck
+
+6. **Expected Value Approach:**
+   - Calculate current hand value
+   - Determine which cards are left in the deck
+   - For each remaining card, calculate the probability of busting
+   - Compare expected value of hitting vs staying
+
+Let me implement a strategy:
+
+```python
+def policy(hand: list[str], target: int) -> str:
+    # Define card values
+    def card_value(card, current_sum, target):
+        if card == "A":
+            return 11 if current_sum + 11 <= target else 1
+        elif card in ["J", "Q", "K"]:
+            return 10
+        else:
+            return int(card)
+    
+    # Calculate hand value
+    def hand_value(cards, target):
+        # Start with all non-ace cards
+        total = 0
+        aces = 0
+        for card in cards:
+            if card == "A":
+                aces += 1
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:
+                total += int(card)
+        
+        # Add aces optimally
+        for _ in range(aces):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+        
+        return total
+    
+    current_value = hand_value(hand, target)
+    
+    # If we've busted, we can't hit anyway (but this shouldn't happen)
+    if current_value > target:
+        return "STAY"
+    
+    # Determine remaining cards
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = [card for card in all_cards if card not in hand]
+    
+    # Calculate expected value of hitting
+    if not remaining:
+        return "STAY"
+    
+    # For each remaining card, see if we would bust
+    bust_count = 0
+    safe_values = []
+    
+    for card in remaining:
+        new_value = current_value + card_value(card, current_value, target)
+        if new_value > target:
+            bust_count += 1
+        else:
+            safe_values.append(new_value)
+    
+    bust_prob = bust_count / len(remaining)
+    
+    # Simple strategy: HIT if bust probability is low and we're far from target
+    # Use a threshold based on how close we are to target
+    
+    # If we're very close to target, STAY
+    if current_value >= target - 2:
+        return "STAY"
+    
+    # If bust probability is too high, STAY
+    if bust_prob > 0.5:
+        return "STAY"
+    
+    # Otherwise HIT
+    return "HIT"
+```
+
+Wait, I need to reconsider the Ace handling. Let me re-read the rules.
+
+"A → 11 (when the hand value is <= T) or 1 (when the hand value is > T)"
+
+This is ambiguous. Does it mean:
+- The ace is evaluated as 11 if using 11 keeps hand ≤ T, else 1?
+- Or something else?
+
+I think it means: when calculating hand value, use 11 for ace if it doesn't make you bust, otherwise use 1.
+
+Let me refine:
+
+```python
+def hand_value(cards, target):
+    total = 0
+    aces = 0
+    
+    for card in cards:
+        if card == "A":
+            aces += 1
+        elif card in ["J", "Q", "K"]:
+            total += 10
+        else:
+            total += int(card)
+    
+    # Add aces - use 11 when possible, 1 otherwise
+    for _ in range(aces):
+        if total + 11 <= target:
+            total += 11
+        else:
+            total += 1
+    
+    return total
+```
+
+This seems right. Now for the strategy, let me think more carefully about the optimal approach.
+
+The opponent is also playing optimally (presumably). Without knowing the opponent's strategy or hand, we need a general strategy.
+
+A reasonable heuristic:
+- If current value is close to target (say, within 3-4), STAY
+- If bust probability is high (> 50%), STAY
+- Otherwise, HIT
+
+But we can be smarter. Let's think about expected value vs the opponent.
+
+Actually, a simpler but effective strategy:
+- Calculate the "risk-adjusted target" - aim for a value that balances being close to T with not busting
+- Common wisdom in blackjack: dealer stands on 17
+- Here, we might stand when we reach a certain threshold relative to T
+
+Let me implement a refined version:
+
+</thinking>
+
+<code>
+def policy(hand: list[str], target: int) -> str:
+    """
+    Policy for simplified Blackjack-like game.
+    
+    Args:
+        hand: List of card strings currently held
+        target: Target score to approach without exceeding
+    
+    Returns:
+        "HIT" or "STAY"
+    """
+    
+    def hand_value(cards, target):
+        """Calculate the value of a hand, handling Aces optimally."""
+        total = 0
+        aces = 0
+        
+        for card in cards:
+            if card == "A":
+                aces += 1
+            elif card in ["J", "Q", "K"]:
+                total += 10
+            else:
+                total += int(card)
+        
+        # Add aces - use 11 when it doesn't cause bust, otherwise 1
+        for _ in range(aces):
+            if total + 11 <= target:
+                total += 11
+            else:
+                total += 1
+        
+        return total
+    
+    def card_base_value(card):
+        """Get the minimum value a card can contribute."""
+        if card == "A":
+            return 1  # Minimum value
+        elif card in ["J", "Q", "K"]:
+            return 10
+        else:
+            return int(card)
+    
+    # Calculate current hand value
+    current_value = hand_value(hand, target)
+    
+    # If already busted, must STAY (shouldn't happen in valid game)
+    if current_value > target:
+        return "STAY"
+    
+    # Determine remaining cards in deck
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    remaining = [card for card in all_cards if card not in hand]
+    
+    # If no cards left, must STAY
+    if not remaining:
+        return "STAY"
+    
+    # Calculate bust probability and expected outcomes
+    bust_count = 0
+    safe_count = 0
+    
+    for card in remaining:
+        # Calculate value this card would add
+        if card == "A":
+            card_val = 11 if current_value + 11 <= target else 1
+        elif card in ["J", "Q", "K"]:
+            card_val = 10
+        else:
+            card_val = int(card)
+        
+        new_value = current_value + card_val
+        
+        if new_value > target:
+            bust_count += 1
+        else:
+            safe_count += 1
+    
+    bust_probability = bust_count / len(remaining)
+    
+    # Strategy: Use a threshold that adapts to the target
+    # Generally, stand when close enough to target or when risk is too high
+    
+    # If we're very close to target (within 2), STAY
+    if current_value >= target - 2:
+        return "STAY"
+    
+    # If we have a decent score (>= 75% of target) and bust risk > 40%, STAY
+    if current_value >= target * 0.75 and bust_probability > 0.4:
+        return "STAY"
+    
+    # If we have a good score (>= 85% of target) and bust risk > 30%, STAY  
+    if current_value >= target * 0.85 and bust_probability > 0.3:
+        return "STAY"
+    
+    # If bust probability is very high (> 60%), STAY
+    if bust_probability > 0.6:
+        return "STAY"
+    
+    # Otherwise, HIT to try to get closer to target
+    return "HIT"
+</code>

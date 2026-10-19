@@ -1,0 +1,147 @@
+<thinking>
+Let me design a Battleship targeting policy that balances exploration and exploitation.
+
+Key strategies:
+1. **Parity/checkerboard pattern for search**: Since the smallest ship is size 2, we can use a checkerboard pattern initially to cover the board efficiently.
+2. **Hunt mode**: When we haven't hit anything, search systematically using parity.
+3. **Target mode**: When we hit a ship (find a `1`), we need to explore adjacent cells to find the ship's orientation and sink it.
+4. **Finish mode**: Once we know the orientation of a hit ship, continue firing along that line.
+
+The algorithm should:
+1. Check if there are any hits (`1`) on the board
+2. If there are isolated hits (hits without adjacent hits), prioritize targeting adjacent cells (up/down/left/right)
+3. If there are connected hits (2+ in a line), continue firing along that line
+4. Otherwise, use a checkerboard/parity pattern to search efficiently
+
+Let me implement this step by step:
+
+1. First, identify all hits and misses
+2. Classify hits as either:
+   - Isolated (no adjacent hits) - need to find orientation
+   - Part of a line (has adjacent hits) - need to extend the line
+3. Generate candidate targets based on the current state
+4. If no hits exist, use parity-based search
+
+For parity search, I'll alternate between (row+col)%2==0 and (row+col)%2==1 patterns, prioritizing the pattern that fits larger ships better.
+
+Let me also consider ship sizes: 5, 4, 3, 3, 2. The density-based approach where we calculate which unknown cells are most likely to contain ships could be useful, but might be too slow. Let's stick with a simpler heuristic approach.
+</thinking>
+
+<code>
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Targeting policy for Battleship.
+    Returns (row, col) to fire at next.
+    """
+    import random
+    
+    # Find all hits and their neighbors
+    hits = []
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 1:
+                hits.append((r, c))
+    
+    # If we have hits, prioritize targeting around them
+    if hits:
+        # Find hits that are part of a line (have adjacent hits)
+        lines = []
+        isolated_hits = []
+        
+        for r, c in hits:
+            adjacent_hits = []
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 1:
+                    adjacent_hits.append((nr, nc))
+            
+            if adjacent_hits:
+                lines.append((r, c, adjacent_hits))
+            else:
+                isolated_hits.append((r, c))
+        
+        # Priority 1: Extend known ship lines
+        if lines:
+            candidates = []
+            for r, c, adj in lines:
+                # Determine orientation
+                for ar, ac in adj:
+                    if ar == r:  # Horizontal line
+                        # Try extending left and right
+                        for dc in [-1, 1]:
+                            nc = c + dc
+                            while 0 <= nc < 10:
+                                if board[r][nc] == 0:
+                                    candidates.append((r, nc))
+                                    break
+                                elif board[r][nc] == -1:
+                                    break
+                                nc += dc
+                    else:  # Vertical line (ac == c)
+                        # Try extending up and down
+                        for dr in [-1, 1]:
+                            nr = r + dr
+                            while 0 <= nr < 10:
+                                if board[nr][c] == 0:
+                                    candidates.append((nr, c))
+                                    break
+                                elif board[nr][c] == -1:
+                                    break
+                                nr += dr
+            
+            if candidates:
+                # Remove duplicates and return first
+                candidates = list(set(candidates))
+                return candidates[0]
+        
+        # Priority 2: Target adjacent to isolated hits
+        candidates = []
+        for r, c in isolated_hits:
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 10 and 0 <= nc < 10 and board[nr][nc] == 0:
+                    candidates.append((nr, nc))
+        
+        if candidates:
+            # Remove duplicates
+            candidates = list(set(candidates))
+            return candidates[0]
+    
+    # Hunt mode: Use checkerboard pattern
+    # Prioritize cells where ships are more likely to fit
+    
+    # Try parity pattern (row + col) % 2 == 0 first
+    parity_0 = []
+    parity_1 = []
+    
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                if (r + c) % 2 == 0:
+                    parity_0.append((r, c))
+                else:
+                    parity_1.append((r, c))
+    
+    # Count how many unknowns we've checked
+    total_unknown = len(parity_0) + len(parity_1)
+    
+    # Use parity 0 first (typically better coverage)
+    if parity_0:
+        # Prefer center cells early on for better probability
+        if total_unknown > 50:
+            parity_0.sort(key=lambda pos: abs(pos[0] - 4.5) + abs(pos[1] - 4.5))
+        return parity_0[0]
+    elif parity_1:
+        if total_unknown > 50:
+            parity_1.sort(key=lambda pos: abs(pos[0] - 4.5) + abs(pos[1] - 4.5))
+        return parity_1[0]
+    
+    # Fallback: return any unknown cell
+    for r in range(10):
+        for c in range(10):
+            if board[r][c] == 0:
+                return (r, c)
+    
+    # Should never reach here in a valid game
+    return (0, 0)
+</code>

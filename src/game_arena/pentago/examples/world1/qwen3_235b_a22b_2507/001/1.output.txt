@@ -1,0 +1,317 @@
+The strategy is to implement a minimax-based decision-making approach with a depth limit to explore future states within the 1-second time constraint. Since Pentago is a highly strategic game with a moderate branching factor (36 placement options × 4 quadrants × 2 directions = up to 288 moves per state), we need to balance between look-ahead depth and speed.
+
+To achieve efficiency:
+- We use `numpy` for fast board manipulation.
+- We implement a fast `is_winner` function that checks for 5-in-a-row in all directions.
+- We implement a `simulate_move` function that applies placement + rotation.
+- We use a simple heuristic evaluation function: difference in "score" between you and opponent, where score includes:
+  - Number of 4-in-a-row segments (nearly winning)
+  - Number of 3-in-a-row segments
+  - Center control bonus
+- We cap the search depth at 2 (your move, opponent's move, your move) but use iterative deepening to ensure we use time wisely.
+- As a fallback, if time runs out or no deep move is found, pick the best immediate move (e.g., win now, block opponent win, otherwise use heuristic).
+
+Given the 1-second limit, we use a single-depth search with a fast evaluation as default, but attempt depth-2 if possible.
+
+Key design:
+1. Enumerate all legal moves.
+2. For each move:
+   a. Simulate it.
+   b. Check if I win — if yes, return immediately.
+3. Then check: is there a move that prevents opponent from winning immediately in the next turn? (But note: we don't control opponent's rotation)
+4. Since opponent can place *and* rotate, we must simulate their possible responses.
+
+But due to time and complexity, we limit search depth.
+
+Instead, we will:
+- Use heuristic scoring for the next state.
+- Depth-1: evaluate immediate benefit.
+- If no immediate win, try depth-2 minimax with alpha-beta pruning.
+- Order moves by heuristic value to improve pruning.
+
+We assume the opponent plays greedily (maximize their heuristic), not perfectly.
+
+We define:
+- `make_move(board_y, board_o, move)` → new_y, new_o, win_y, win_o
+- `get_legal_moves(board_y, board_o)` → list of strings
+- `evaluate(you, opp)` → float
+
+Heuristic:
+- +1000 for 5 in a row
+- +100 for 4 in a row (open or closed? treat as is)
+- +10 for 3 in a row
+- +1 for 2 in a row
+- Bonus for center (position weights)
+
+We will predefine center weights to prefer central control.
+
+Important: return a legal move always.
+
+Let’s code accordingly.
+
+<code>
+import numpy as np
+
+def _get_directions():
+    # All 4 directions: row delta, col delta
+    return [(0,1), (1,0), (1,1), (1,-1)]
+
+def _in_board(r, c):
+    return 0 <= r < 6 and 0 <= c < 6
+
+def _count_line(board, r, c, dr, dc, target_length=5):
+    """Count consecutive marbles starting at (r,c) in direction (dr,dc)"""
+    count = 0
+    for i in range(target_length + 2):
+        nr, nc = r + i*dr, c + i*dc
+        if not _in_board(nr, nc):
+            break
+        if board[nr, nc] == 1:
+            count += 1
+        else:
+            break
+    return count
+
+def _has_five_in_a_row(board):
+    """Check if given 6x6 board has 5 (or more) in a row"""
+    # Use sliding window over all possible segments of length 5
+    for rr in range(6):
+        for cc in range(6):
+            for dr, dc in [(0,1), (1,0), (1,1), (1,-1)]:
+                match = True
+                for i in range(5):
+                    r, c = rr + i*dr, cc + i*dc
+                    if not _in_board(r, c) or board[r,c] == 0:
+                        match = False
+                        break
+                if match:
+                    return True
+    return False
+
+def _evaluate(you, opponent):
+    """Evaluate board state for you vs opponent"""
+    score = 0
+
+    # 5 in a row
+    if _has_five_in_a_row(you):
+        score += 100000
+    if _has_five_in_a_row(opponent):
+        score -= 100000
+
+    # Count 4-in-a-row
+    for r in range(6):
+        for c in range(6):
+            for dr, dc in [(0,1), (1,0), (1,1), (1,-1)]:
+                # Check 4 in a row starting at (r,c)
+                ok = True
+                for i in range(4):
+                    nr, nc = r + i*dr, c + i*dc
+                    if not _in_board(nr, nc) or you[nr,nc] == 0:
+                        ok = False
+                        break
+                if ok:
+                    # Check if this is part of 5-in-a-row already? (avoid overcount)
+                    # Just count it
+                    score += 100
+
+                # Opponent 4-in-a-row
+                ok_o = True
+                for i in range(4):
+                    nr, nc = r + i*dr, c + i*dc
+                    if not _in_board(nr, nc) or opponent[nr,nc] == 0:
+                        ok_o = False
+                        break
+                if ok_o:
+                    score -= 100
+
+    # Count 3-in-a-row
+    for r in range(6):
+        for c in range(6):
+            for dr, dc in [(0,1), (1,0), (1,1), (1,-1)]:
+                ok = True
+                for i in range(3):
+                    nr, nc = r + i*dr, c + i*dc
+                    if not _in_board(nr, nc) or you[nr,nc] == 0:
+                        ok = False
+                        break
+                if ok:
+                    score += 10
+
+                ok_o = True
+                for i in range(3):
+                    nr, nc = r + i*dr, c + i*dc
+                    if not _in_board(nr, nc) or opponent[nr,nc] == 0:
+                        ok_o = False
+                        break
+                if ok_o:
+                    score -= 10
+
+    # Central control bonus (prefer center)
+    center_weights = np.array([
+        [1, 1, 2, 2, 1, 1],
+        [1, 2, 3, 3, 2, 1],
+        [2, 3, 4, 4, 3, 2],
+        [2, 3, 4, 4, 3, 2],
+        [1, 2, 3, 3, 2, 1],
+        [1, 1, 2, 2, 1, 1]
+    ])
+    score += np.sum(you * center_weights) * 1
+    score -= np.sum(opponent * center_weights) * 1
+
+    return score
+
+def _rotate_quad(board, quad, direction):
+    """Return a new board with the specified quadrant rotated"""
+    board_new = board.copy()
+    if quad == 0:
+        sub = board_new[0:3, 0:3]
+    elif quad == 1:
+        sub = board_new[0:3, 3:6]
+    elif quad == 2:
+        sub = board_new[3:6, 0:3]
+    else:  # quad == 3
+        sub = board_new[3:6, 3:6]
+
+    if direction == 'R':
+        sub[:] = np.rot90(sub, -1)  # clockwise
+    else:  # 'L'
+        sub[:] = np.rot90(sub, 1)   # anticlockwise
+
+    return board_new
+
+def _apply_move(you, opponent, row, col, quad, dir):
+    """Apply the move and return (new_you, new_opponent, win_you, win_opp)"""
+    # Placement: must be on empty cell
+    if you[row,col] == 1 or opponent[row,col] == 1:
+        # Shouldn't happen, but just in case
+        pass
+
+    new_you = you.copy()
+    new_you[row, col] = 1
+
+    # Rotate quad
+    new_you = _rotate_quad(new_you, quad, dir)
+    new_opponent = _rotate_quad(opponent, quad, dir)
+
+    win_you = _has_five_in_a_row(new_you)
+    win_opp = _has_five_in_a_row(new_opponent)
+
+    return new_you, new_opponent, win_you, win_opp
+
+def _get_legal_moves(you, opponent):
+    """Yield all legal moves as (r,c,quad,dir) tuples (0-indexed r,c)"""
+    board = you + opponent
+    for r in range(6):
+        for c in range(6):
+            if board[r,c] == 0:
+                for quad in range(4):
+                    for dr in ['L', 'R']:
+                        yield (r, c, quad, dr)
+
+def _minimax(you, opponent, depth, alpha, beta, maximizing):
+    if depth == 0:
+        return _evaluate(you, opponent), None
+
+    legal_moves = list(_get_legal_moves(you, opponent))
+    if not legal_moves:
+        return _evaluate(you, opponent), None
+
+    # Order moves by heuristic (for pruning)
+    move_evals = []
+    for (r, c, quad, dr) in legal_moves:
+        ny, no, win_y, win_o = _apply_move(you, opponent, r, c, quad, dr)
+        if maximizing:
+            score = _evaluate(ny, no)
+        else:
+            score = _evaluate(ny, no)  # same heuristic
+        move_evals.append((score, (r,c,quad,dr)))
+    # Sort descending if maximizing
+    move_evals.sort(key=lambda x: x[0], reverse=maximizing)
+
+    best_move = move_evals[0][1]
+
+    if maximizing:
+        max_eval = -np.inf
+        for _, (r, c, quad, dr) in move_evals:
+            ny, no, win_y, win_o = _apply_move(you, opponent, r, c, quad, dr)
+            if win_y:
+                eval_score = 100000 + depth * 10
+            elif win_o:
+                eval_score = -100000 + depth * 10
+            else:
+                eval_score, _ = _minimax(ny, no, depth-1, alpha, beta, False)
+            if eval_score > max_eval:
+                max_eval = eval_score
+                best_move = (r, c, quad, dr)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval, best_move
+    else:
+        min_eval = np.inf
+        for _, (r, c, quad, dr) in move_evals:
+            ny, no, win_y, win_o = _apply_move(you, opponent, r, c, quad, dr)
+            if win_o:
+                eval_score = -100000 - depth * 10
+            elif win_y:
+                eval_score = 100000 + depth * 10
+            else:
+                eval_score, _ = _minimax(ny, no, depth-1, alpha, beta, True)
+            if eval_score < min_eval:
+                min_eval = eval_score
+                best_move = (r, c, quad, dr)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval, best_move
+
+def policy(you, opponent) -> str:
+    you = np.array(you)
+    opponent = np.array(opponent)
+    board = you + opponent
+
+    # Convert to 0-indexed internally
+    legal_moves = list(_get_legal_moves(you, opponent))
+
+    # First, check if any move wins immediately
+    for (r, c, quad, dr) in legal_moves:
+        ny, no, win_y, win_o = _apply_move(you, opponent, r, c, quad, dr)
+        if win_y and not win_o:
+            return f"{r+1},{c+1},{quad},{dr}"
+
+    # If no immediate win, try depth-limited minimax
+    # Attempt depth=1 then depth=2
+    best_eval, best_move = -np.inf, None
+
+    # Try depth 2
+    try:
+        score, move = _minimax(you, opponent, depth=2, alpha=-np.inf, beta=np.inf, maximizing=True)
+        if move is not None:
+            best_move = move
+    except:
+        pass
+
+    # If no move from minimax, fall back to heuristic
+    if best_move is None:
+        best_eval = -np.inf
+        best_move_found = None
+        for (r, c, quad, dr) in legal_moves:
+            ny, no, win_y, win_o = _apply_move(you, opponent, r, c, quad, dr)
+            if win_y and not win_o:
+                return f"{r+1},{c+1},{quad},{dr}"
+            eval_score = _evaluate(ny, no)
+            if eval_score > best_eval:
+                best_eval = eval_score
+                best_move_found = (r, c, quad, dr)
+        if best_move_found is not None:
+            best_move = best_move_found
+
+    # Ensure we return a legal move
+    if best_move is None:
+        # Fallback: pick first legal move
+        r, c, quad, dr = legal_moves[0]
+        return f"{r+1},{c+1},{quad},{dr}"
+
+    r, c, quad, dr = best_move
+    return f"{r+1},{c+1},{quad},{dr}"
+</code>

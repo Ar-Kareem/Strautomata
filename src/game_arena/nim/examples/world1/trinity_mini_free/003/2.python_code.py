@@ -1,0 +1,39 @@
+
+def policy(piles: list[int]) -> str:
+    # Calculate the Nim-sum (XOR of all pile sizes)
+    nim_sum = 0
+    for pile in piles:
+        nim_sum ^= pile
+    
+    # If the Nim-sum is non-zero, find a winning move
+    if nim_sum != 0:
+        for i in range(len(piles)):
+            # Calculate the desired pile size to make Nim-sum zero
+            desired = nim_sum ^ piles[i]
+            # Check if reducing this pile achieves the desired state
+            if desired < piles[i]:
+                take = piles[i] - desired
+                return f"{i},{take}"
+        # Fallback: take all from the first non-zero pile
+        for i in range(len(piles)):
+            if piles[i] > 0:
+                return f"{i},{piles[i]}"
+        return "0,0"
+    
+    # If Nim-sum is zero (losing position), handle misère edge cases
+    # Check if all piles are of size 1
+    all_ones = all(pile == 1 for pile in piles)
+    if all_ones:
+        # In misère play with all ones, leave an odd number of piles
+        for i in range(len(piles)):
+            if piles[i] > 0:
+                # Take all but one from the first non-zero pile
+                take = piles[i] - 1
+                return f"{i},{take}"
+        return "0,0"
+    
+    # General losing position: take all from the first non-zero pile
+    for i in range(len(piles)):
+        if piles[i] > 0:
+            return f"{i},{piles[i]}"
+    return "0,0"

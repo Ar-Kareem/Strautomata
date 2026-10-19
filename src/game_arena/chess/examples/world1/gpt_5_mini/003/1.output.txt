@@ -1,0 +1,164 @@
+The strategy for this policy is:
+- Immediately play any mate-in-one move (contains '#').
+- Prioritize captures and promotions based on material value (Q>R>B/N>P), giving large weight to capturing high-value pieces and to promotions.
+- Favor checks, castling (king safety), and moves to central squares.
+- Break ties deterministically (lexicographic order) to ensure a legal, reproducible choice.
+- Handle captures precisely, including en-passant detection when the destination square is empty.
+
+<code>
+import re
+
+# Simple chess policy that scores legal moves heuristically.
+# Returns one move string from legal_moves.
+
+_piece_values = {
+    'P': 1,
+    'N': 3,
+    'B': 3,
+    'R': 5,
+    'Q': 9,
+    'K': 1000
+}
+
+_center_primary = {'d4', 'e4', 'd5', 'e5'}
+_center_secondary = {'c4', 'f4', 'c5', 'f5'}
+
+def _last_square(move: str):
+    # Find last occurrence of a square like 'e4' in the move string
+    # Ignore trailing + or # etc.
+    clean = move
+    # remove trailing check/mate symbols and annotations
+    clean = re.sub(r'[+#!?]+$', '', clean)
+    # Promotions like e8=Q : still find e8
+    squares = re.findall(r'([a-h][1-8])', clean)
+    if squares:
+        return squares[-1]
+    return None
+
+def _moving_piece_type(move: str):
+    # Castling
+    if move.startswith('O-O') or move.startswith('0-0'):
+        return 'K'
+    # Strip trailing +,# etc for inspection
+    clean = re.sub(r'[+#]+$', '', move)
+    # If starts with uppercase letter it's a piece
+    if len(clean) > 0 and clean[0] in 'KQRBN':
+        return clean[0]
+    # Otherwise it's a pawn move
+    return 'P'
+
+def _promotion_piece(move: str):
+    # Return promotion piece letter if present
+    m = re.search(r'=[QRBN]', move)
+    if m:
+        return m.group(0)[1]
+    return None
+
+def _is_capture(move: str):
+    return 'x' in move
+
+def _strip_annotations(move: str):
+    # Remove trailing +, #, etc.
+    return re.sub(r'[+#]+$', '', move)
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    import math
+
+    if not legal_moves:
+        # Should not happen per API, but return empty string to avoid error
+        return ''
+
+    our_color = 'w' if to_play == 'white' else 'b'
+    opp_color = 'b' if our_color == 'w' else 'w'
+
+    # Fast check: immediate mate moves
+    for mv in legal_moves:
+        if mv.strip().endswith('#'):
+            return mv
+
+    scored_moves = []
+
+    for mv in legal_moves:
+        score = 0.0
+        raw = mv
+        clean = _strip_annotations(raw)
+
+        # Prefers checks
+        if '+' in raw:
+            score += 50.0
+
+        # Prefers castle for king safety
+        if clean.startswith('O-O') or clean.startswith('0-0'):
+            score += 80.0
+
+        # Promotion
+        prom = _promotion_piece(raw)
+        if prom:
+            # Promotion is powerful: add promoted piece value (scaled)
+            score += _piece_values.get(prom, 9) * 100.0
+
+        dest = _last_square(raw)
+        moving = _moving_piece_type(raw)
+        moving_value = _piece_values.get(moving, 1)
+
+        # Capture handling: normal capture or en-passant
+        captured_value = 0
+        if _is_capture(raw):
+            # If dest square occupied by opponent, that's the captured piece
+            if dest and dest in pieces and pieces[dest][0] == opp_color:
+                cap_type = pieces[dest][1]
+                captured_value = _piece_values.get(cap_type, 1)
+            else:
+                # Possibly en-passant: if pawn capture and dest empty, captured pawn is behind dest
+                if moving == 'P' and dest:
+                    file = dest[0]
+                    rank = int(dest[1])
+                    if our_color == 'w':
+                        # captured pawn would be on same file, rank-1
+                        cap_sq = file + str(rank - 1)
+                    else:
+                        cap_sq = file + str(rank + 1)
+                    if cap_sq in pieces and pieces[cap_sq][0] == opp_color and pieces[cap_sq][1] == 'P':
+                        captured_value = _piece_values['P']
+                    else:
+                        # fallback: unknown capture, minimal credit
+                        captured_value = 1
+                else:
+                    # unknown capture target (shouldn't happen), give minimal credit
+                    captured_value = 1
+            score += captured_value * 100.0
+
+            # Simple exchange caution: discourage high-value piece capturing very low value
+            if captured_value < moving_value:
+                # penalty scaled by difference
+                score -= (moving_value - captured_value) * 20.0
+
+        # If not a capture, small bonus for developing knights/bishops and center occupation
+        if dest:
+            if dest in _center_primary:
+                score += 10.0
+            elif dest in _center_secondary:
+                score += 6.0
+
+            # Encourage pawn advancement to center ranks 4/5
+            if moving == 'P':
+                r = int(dest[1])
+                if (our_color == 'w' and r >= 4) or (our_color == 'b' and r <= 5):
+                    score += 2.0
+
+        # Prefer moves by queens and rooks somewhat when delivering checks or centralizing
+        if moving in ('Q', 'R', 'B', 'N'):
+            score += 0.5
+
+        # Slightly prefer captures of queens/rooks strongly already handled by captured_value*100
+        # Final small tie-breakers: shorter algebraic strings (more forcing) slightly better
+        score -= len(raw) * 0.01
+
+        # Keep track
+        scored_moves.append(( -score, raw))  # negative for min sort
+
+    # Sort by best score, break ties lexicographically
+    scored_moves.sort()
+    best_move = scored_moves[0][1]
+    return best_move
+</code>

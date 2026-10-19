@@ -1,0 +1,195 @@
+Here's a strategy for a simple but effective Go policy that balances offense and defense:
+
+Strategy:
+1. First prioritize capturing opponent stones that are in atari (only 1 liberty left)
+2. Otherwise, look for moves that expand our largest territory while reducing opponent's potential territory
+3. Use a simple "influence map" approach to evaluate board positions
+4. For openings/middlegame, prefer moves that balance side and center control
+5. Fall back to random legal moves if no strategic moves are found (to ensure we never timeout or get disqualified)
+
+The policy includes basic board analysis functions and maintains some game state in the memory to track captured stones.
+
+<code>
+import numpy as np
+import random
+from collections import defaultdict
+
+def policy(me, opponent, memory):
+    board_size = 19
+    stones = set(me)  # Convert to set for faster lookups
+    opp_stones = set(opponent)
+    
+    # Initialize memory if empty
+    if not memory:
+        memory['last_move'] = None
+        memory['capture_counts'] = {'me': 0, 'opponent': 0}
+        memory['move_count'] = 0
+    
+    # Build board representation
+    board = np.zeros((board_size + 2, board_size + 2), dtype=int)  # 1-19 indices with padding
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = -1
+    
+    # First check for captures (priority)
+    def count_liberties(group, board):
+        liberties = set()
+        for r, c in group:
+            for dr, dc in [(0,1),(1,0),(0,-1),(-1,0)]:
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == 0:
+                    liberties.add((nr, nc))
+        return len(liberties)
+    
+    # Find opponent groups with exactly 1 liberty (can capture)
+    capture_moves = []
+    visited = set()
+    for r, c in opponent:
+        if (r, c) not in visited:
+            group = set()
+            stack = [(r, c)]
+            while stack:
+                cr, cc = stack.pop()
+                if (cr, cc) in visited:
+                    continue
+                visited.add((cr, cc))
+                group.add((cr, cc))
+                for dr, dc in [(0,1),(1,0),(0,-1),(-1,0)]:
+                    nr, nc = cr+dr, cc+dc
+                    if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == -1 and (nr, nc) not in visited:
+                        stack.append((nr, nc))
+            
+            liberties = count_liberties(group, board)
+            if liberties == 0:
+                continue  # Already captured (shouldn't happen)
+            if liberties == 1:
+                # Find the liberty and add as a capture move
+                for cr, cc in group:
+                    for dr, dc in [(0,1),(1,0),(0,-1),(-1,0)]:
+                        nr, nc = cr+dr, cc+dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == 0:
+                            capture_moves.append((nr, nc))
+    
+    if capture_moves:
+        # Choose the capture move with most stones captured (to maximize score)
+        def stones_captured(move):
+            r, c = move
+            # Make a move and see how many opponent stones are removed
+            temp_board = board.copy()
+            temp_board[r, c] = 1
+            removed = 0
+            for dr, dc in [(0,1),(1,0),(0,-1),(-1,0)]:
+                nr, nc = r+dr, c+dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19 and temp_board[nr, nc] == -1:
+                    # Check if this group has liberties
+                    grp, libs = get_group_and_liberties(nr, nc, temp_board)
+                    if libs == 0:
+                        removed += len(grp)
+            return removed
+        
+        best_capture = max(capture_moves, key=stones_captured)
+        memory['last_move'] = best_capture
+        memory['move_count'] += 1
+        return best_capture, memory
+    
+    # If no captures, try to find a good move based on influence
+    def get_group_and_liberties(r, c, b):
+        group = set()
+        liberties = set()
+        stack = [(r, c)]
+        visited = set()
+        while stack:
+            cr, cc = stack.pop()
+            if (cr, cc) in visited:
+                continue
+            visited.add((cr, cc))
+            group.add((cr, cc))
+            for dr, dc in [(0,1),(1,0),(0,-1),(-1,0)]:
+                nr, nc = cr+dr, cc+dc
+                if 1 <= nr <= 19 and 1 <= nc <= 19:
+                    if b[nr, nc] == 0:
+                        liberties.add((nr, nc))
+                    elif b[nr, nc] == b[r, c] and (nr, nc) not in visited:
+                        stack.append((nr, nc))
+        return group, liberties
+    
+    # Calculate influence map
+    influence = np.zeros((board_size + 2, board_size + 2))
+    for r in range(1, board_size + 1):
+        for c in range(1, board_size + 1):
+            if board[r, c] == 1:  # My stone
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        nr, nc = r + dr, c + dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19:
+                            influence[nr, nc] += 1 / (abs(dr) + abs(dc) + 1)
+            elif board[r, c] == -1:  # Opponent stone
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        nr, nc = r + dr, c + dc
+                        if 1 <= nr <= 19 and 1 <= nc <= 19:
+                            influence[nr, nc] -= 1 / (abs(dr) + abs(dc) + 1)
+    
+    # Find empty intersections near current stones
+    candidate_moves = []
+    for r, c in me:
+        for dr, dc in [(0,1),(1,0),(0,-1),(-1,0)]:
+            nr, nc = r+dr, c+dc
+            if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == 0:
+                candidate_moves.append((nr, nc))
+    
+    if not candidate_moves:
+        # Fallback to random empty spot (shouldn't happen on a 19x19 board with few stones)
+        empty_spots = []
+        for r in range(1, board_size + 1):
+            for c in range(1, board_size + 1):
+                if board[r, c] == 0:
+                    empty_spots.append((r, c))
+        if not empty_spots:
+            return (0, 0), memory
+        move = random.choice(empty_spots)
+        memory['last_move'] = move
+        memory['move_count'] += 1
+        return move, memory
+    
+    # Choose move with highest influence while avoiding self-atari
+    def is_legal(r, c, player_stones, opp_stones):
+        # Check if the move is legal (basic check, not full rules)
+        if (r, c) in player_stones or (r, c) in opp_stones:
+            return False
+        return True
+    
+    def self_atari(r, c):
+        # Check if the move is in self-atari (only 1 liberty after placing)
+        temp_board = board.copy()
+        temp_board[r, c] = 1
+        group, liberties = get_group_and_liberties(r, c, temp_board)
+        return len(liberties) == 1
+    
+    # Filter candidate moves and choose based on influence
+    good_moves = []
+    for r, c in candidate_moves:
+        if is_legal(r, c, stones, opp_stones) and not self_atari(r, c):
+            good_moves.append((r, c))
+    
+    if not good_moves:
+        # Fallback to random legal move
+        empty_spots = []
+        for r in range(1, board_size + 1):
+            for c in range(1, board_size + 1):
+                if board[r, c] == 0 and (r, c) not in me and (r, c) not in opponent:
+                    empty_spots.append((r, c))
+        if not empty_spots:
+            return (0, 0), memory
+        move = random.choice(empty_spots)
+        memory['last_move'] = move
+        memory['move_count'] += 1
+        return move, memory
+    
+    # Choose move with highest influence
+    best_move = max(good_moves, key=lambda m: influence[m[0], m[1]])
+    memory['last_move'] = best_move
+    memory['move_count'] += 1
+    return best_move, memory
+</code>

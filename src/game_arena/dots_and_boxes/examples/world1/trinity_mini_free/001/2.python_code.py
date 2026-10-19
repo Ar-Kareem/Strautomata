@@ -1,0 +1,95 @@
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    def compute_captures(row, col, direction):
+        captures = 0
+        if direction == 'H':
+            boxes = []
+            if row == 0:
+                boxes.append((0, col))
+            elif row == 4:
+                boxes.append((3, col))
+            else:
+                boxes.append((row - 1, col))
+                boxes.append((row, col))
+            for box_row, box_col in boxes:
+                edges = [
+                    ('H', box_row, box_col),
+                    ('H', box_row + 1, box_col),
+                    ('V', box_row, box_col),
+                    ('V', box_row, box_col + 1)
+                ]
+                count = 0
+                for edge_type, e_row, e_col in edges:
+                    if edge_type == 'H':
+                        if horizontal[e_row][e_col] == 1:
+                            count += 1
+                    else:
+                        if vertical[e_row][e_col] == 1:
+                            count += 1
+                if count == 3:
+                    captures += 1
+        else:
+            boxes = []
+            if col == 0:
+                boxes.append((row, 0))
+            elif col == 4:
+                boxes.append((row, 3))
+            else:
+                boxes.append((row, col - 1))
+                boxes.append((row, col))
+            for box_row, box_col in boxes:
+                edges = [
+                    ('H', box_row, box_col),
+                    ('H', box_row + 1, box_col),
+                    ('V', box_row, box_col),
+                    ('V', box_row, box_col + 1)
+                ]
+                count = 0
+                for edge_type, e_row, e_col in edges:
+                    if edge_type == 'H':
+                        if horizontal[e_row][e_col] == 1:
+                            count += 1
+                    else:
+                        if vertical[e_row][e_col] == 1:
+                            count += 1
+                if count == 3:
+                    captures += 1
+        return captures
+
+    best_captures = -1
+    best_move = None
+
+    for row in range(5):
+        for col in range(5):
+            if horizontal[row][col] == 0:
+                captures = compute_captures(row, col, 'H')
+                if captures > best_captures:
+                    best_captures = captures
+                    best_move = (row, col, 'H')
+
+    for row in range(5):
+        for col in range(5):
+            if vertical[row][col] == 0:
+                captures = compute_captures(row, col, 'V')
+                if captures > best_captures:
+                    best_captures = captures
+                    best_move = (row, col, 'V')
+
+    if best_move is None:
+        for row in range(5):
+            for col in range(5):
+                if horizontal[row][col] == 0:
+                    best_move = (row, col, 'H')
+                    break
+            if best_move is not None:
+                break
+        if best_move is None:
+            for row in range(5):
+                for col in range(5):
+                    if vertical[row][col] == 0:
+                        best_move = (row, col, 'V')
+                        break
+                if best_move is not None:
+                    break
+
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

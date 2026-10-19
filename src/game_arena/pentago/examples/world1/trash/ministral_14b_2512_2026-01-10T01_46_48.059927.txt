@@ -1,0 +1,218 @@
+### Thinking Process
+
+The goal is to implement a move-selection policy for Pentago that always returns a legal move. Pentago is a complex game combining placement and rotation, so the policy needs to consider both aspects. Here's the approach:
+
+1. **Legal Move Generation**:
+   - First, generate all possible placement moves (empty cells).
+   - For each placement, generate all possible rotation moves (quadrant 0-3, direction L/R).
+   - Ensure the move is legal (placement is empty, rotation is valid).
+
+2. **Move Evaluation**:
+   - Since this is a competitive AI, we need a heuristic to evaluate moves. A simple but effective heuristic is to prioritize moves that:
+     - Create an immediate win (5-in-a-row).
+     - Block the opponent from winning on their next move.
+     - Improve the board position for future moves (e.g., creating potential lines).
+   - If no winning or blocking moves are found, choose a move that maximizes the number of potential lines (2-in-a-rows, 3-in-a-rows, etc.).
+
+3. **Implementation Details**:
+   - Use the given `you` and `opponent` boards to simulate the move and check for wins.
+   - For each candidate move, simulate the placement and rotation, then check if the resulting board gives a win.
+   - If no immediate win is found, check if the opponent can win on their next move and block it.
+   - If no blocking move is found, choose a move that maximizes the number of potential lines (heuristic).
+
+4. **Edge Cases**:
+   - Handle cases where the board is full or no immediate win/block is possible.
+   - Ensure the move is always legal (placement is empty, rotation is valid).
+
+### Python Implementation
+
+Here's the Python code implementing the above strategy:
+
+```python
+import numpy as np
+
+def policy(you, opponent) -> str:
+    # Convert inputs to numpy arrays for easier manipulation
+    you_board = np.array(you)
+    opponent_board = np.array(opponent)
+
+    # Generate all possible moves
+    moves = []
+    for row in range(6):
+        for col in range(6):
+            if you_board[row][col] == 0 and opponent_board[row][col] == 0:
+                for quad in range(4):
+                    for direction in ['L', 'R']:
+                        moves.append((row, col, quad, direction))
+
+    # Evaluate each move
+    best_move = None
+    best_score = -float('inf')
+
+    for move in moves:
+        row, col, quad, direction = move
+        # Simulate the move
+        new_you = you_board.copy()
+        new_opponent = opponent_board.copy()
+
+        # Place the marble
+        new_you[row][col] = 1
+
+        # Rotate the quadrant
+        if direction == 'L':
+            new_you, new_opponent = rotate_quadrant(new_you, new_opponent, quad, 'L')
+        else:
+            new_you, new_opponent = rotate_quadrant(new_you, new_opponent, quad, 'R')
+
+        # Check if this move wins
+        if check_win(new_you):
+            return f"{row+1},{col+1},{quad},{direction}"
+
+        # Check if opponent can win after this move (blocking)
+        opponent_wins = False
+        for opp_row in range(6):
+            for opp_col in range(6):
+                if new_opponent[opp_row][opp_col] == 0 and new_you[opp_row][opp_col] == 0:
+                    for opp_quad in range(4):
+                        for opp_dir in ['L', 'R']:
+                            temp_you = new_you.copy()
+                            temp_opponent = new_opponent.copy()
+                            temp_opponent[opp_row][opp_col] = 1
+                            temp_you, temp_opponent = rotate_quadrant(temp_you, temp_opponent, opp_quad, opp_dir)
+                            if check_win(temp_opponent):
+                                opponent_wins = True
+                                break
+                        if opponent_wins:
+                            break
+                    if opponent_wins:
+                        break
+            if opponent_wins:
+                break
+
+        if opponent_wins:
+            # This move allows opponent to win, so it's bad unless no other move blocks
+            pass
+        else:
+            # Evaluate the move based on potential lines
+            score = evaluate_move(new_you, new_opponent)
+            if score > best_score:
+                best_score = score
+                best_move = move
+
+    # If no winning move found, return the best move (or first move if no evaluation)
+    if best_move is None:
+        # Fallback: return the first legal move (should not happen per problem statement)
+        return f"{moves[0][0]+1},{moves[0][1]+1},{moves[0][2]},{moves[0][3]}"
+    else:
+        return f"{best_move[0]+1},{best_move[1]+1},{best_move[2]},{best_move[3]}"
+
+def rotate_quadrant(you, opponent, quad, direction):
+    # Define the quadrant boundaries
+    if quad == 0:
+        rows = slice(0, 3)
+        cols = slice(0, 3)
+    elif quad == 1:
+        rows = slice(0, 3)
+        cols = slice(3, 6)
+    elif quad == 2:
+        rows = slice(3, 6)
+        cols = slice(0, 3)
+    else:  # quad == 3
+        rows = slice(3, 6)
+        cols = slice(3, 6)
+
+    # Extract the quadrant
+    quad_you = you[rows, cols]
+    quad_opponent = opponent[rows, cols]
+
+    # Rotate the quadrant
+    if direction == 'L':
+        rotated_you = np.rot90(quad_you, k=1)
+        rotated_opponent = np.rot90(quad_opponent, k=1)
+    else:  # direction == 'R'
+        rotated_you = np.rot90(quad_you, k=-1)
+        rotated_opponent = np.rot90(quad_opponent, k=-1)
+
+    # Place the rotated quadrant back
+    you[rows, cols] = rotated_you
+    opponent[rows, cols] = rotated_opponent
+
+    return you, opponent
+
+def check_win(board):
+    # Check horizontal lines
+    for row in range(6):
+        for col in range(2):
+            if board[row][col] == board[row][col+1] == board[row][col+2] == board[row][col+3] == board[row][col+4] == 1:
+                return True
+
+    # Check vertical lines
+    for row in range(2):
+        for col in range(6):
+            if board[row][col] == board[row+1][col] == board[row+2][col] == board[row+3][col] == board[row+4][col] == 1:
+                return True
+
+    # Check diagonal lines (top-left to bottom-right)
+    for row in range(2):
+        for col in range(2):
+            if board[row][col] == board[row+1][col+1] == board[row+2][col+2] == board[row+3][col+3] == board[row+4][col+4] == 1:
+                return True
+
+    # Check diagonal lines (top-right to bottom-left)
+    for row in range(2):
+        for col in range(4, 6):
+            if board[row][col] == board[row+1][col-1] == board[row+2][col-2] == board[row+3][col-3] == board[row+4][col-4] == 1:
+                return True
+
+    return False
+
+def evaluate_move(you, opponent):
+    # Simple heuristic: count potential lines (2-in-a-rows, 3-in-a-rows, etc.)
+    score = 0
+
+    # Check horizontal lines
+    for row in range(6):
+        for col in range(2):
+            count = 0
+            for c in range(col, col+5):
+                if you[row][c] == 1:
+                    count += 1
+            score += count * count  # Higher score for longer sequences
+
+    # Check vertical lines
+    for row in range(2):
+        for col in range(6):
+            count = 0
+            for r in range(row, row+5):
+                if you[r][col] == 1:
+                    count += 1
+            score += count * count
+
+    # Check diagonal lines (top-left to bottom-right)
+    for row in range(2):
+        for col in range(2):
+            count = 0
+            for i in range(5):
+                if you[row+i][col+i] == 1:
+                    count += 1
+            score += count * count
+
+    # Check diagonal lines (top-right to bottom-left)
+    for row in range(2):
+        for col in range(4, 6):
+            count = 0
+            for i in range(5):
+                if you[row+i][col-i] == 1:
+                    count += 1
+            score += count * count
+
+    return score
+```
+
+### Explanation
+1. **Legal Move Generation**: The code first generates all possible legal moves by iterating over empty cells and all possible rotations (quadrant and direction).
+2. **Move Evaluation**: For each move, it simulates the placement and rotation, then checks if the move results in a win. If not, it checks if the opponent can win on their next move and blocks it if possible.
+3. **Heuristic Evaluation**: If no immediate win or block is found, the move is evaluated based on the number of potential lines (2-in-a-rows, 3-in-a-rows, etc.) to maximize future opportunities.
+4. **Fallback**: If no winning or blocking move is found, the code defaults to the first legal move (though the problem guarantees at least one legal move exists).
+
+This approach ensures the AI always returns a legal move while prioritizing winning and blocking strategies.

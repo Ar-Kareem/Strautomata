@@ -1,0 +1,199 @@
+The strategy for this policy is a heuristic-based approach that evaluates moves based on several key Go concepts:
+
+1. **Capture Detection**: Prioritizes moves that capture opponent stones, with bonus points proportional to the number of stones captured.
+
+2. **Self-Atari Avoidance**: Heavily penalizes moves that put your own stones in atari (only one liberty), while rewarding moves that secure more liberties.
+
+3. **Atari Threats**: Rewards moves that put opponent groups in atari, especially larger groups.
+
+4. **Positional Play**: Prefers moves toward the center of the board during the opening, while applying penalties for edge/corner play.
+
+5. **Connection Strategy**: Rewards connecting to existing friendly stones for stronger shapes.
+
+6. **Opening Strategy**: Uses star points (hoshi) in the opening phase, responding to opponent's proximity.
+
+7. **Ko Rule**: Properly handles the Ko rule to prevent illegal recaptures.
+
+8. **Randomization**: Adds small random noise to break ties and add variety to play.
+
+The policy first checks for opening book moves, then evaluates all legal moves using the scoring system, and returns the highest-scoring move with updated memory containing the previous board state for Ko detection.
+
+<code>
+import numpy as np
+from collections import deque
+import random
+
+BOARD_SIZE = 19
+STAR_POINTS = [(4, 4), (4, 10), (4, 16), (10, 4), (10, 10), (10, 16), (16, 4), (16, 10), (16, 16)]
+
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    board = np.zeros((BOARD_SIZE + 2, BOARD_SIZE + 2), dtype=int)
+    for r, c in me:
+        board[r, c] = 1
+    for r, c in opponent:
+        board[r, c] = -1
+    
+    prev_board = memory.get('prev_board')
+    total_stones = len(me) + len(opponent)
+    
+    # Opening: play star points near opponent
+    if total_stones < 6:
+        for sp in STAR_POINTS:
+            if board[sp[0], sp[1]] == 0 and is_legal(board, sp[0], sp[1], 1, -1, prev_board):
+                if any(abs(r - sp[0]) + abs(c - sp[1]) <= 4 for r, c in opponent):
+                    return (sp, {'prev_board': board.copy()})
+    
+    # Collect legal moves
+    legal_moves = [(r, c) for r in range(1, BOARD_SIZE + 1) 
+                   for c in range(1, BOARD_SIZE + 1)
+                   if board[r, c] == 0 and is_legal(board, r, c, 1, -1, prev_board)]
+    
+    if not legal_moves:
+        return ((0, 0), memory)
+    
+    # Find best move
+    best_move = max(legal_moves, key=lambda m: evaluate_move(board, m, 1, -1) + random.random() * 0.15)
+    
+    memory['prev_board'] = board.copy()
+    return (best_move, memory)
+
+
+def is_legal(board, r, c, player, opponent, prev_board):
+    board[r, c] = player
+    
+    captured = set()
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = r + dr, c + dc
+        if board[nr, nc] == opponent:
+            group, liberties = get_group_info(board, nr, nc)
+            if liberties == 0:
+                captured.update(group)
+    
+    for cr, cc in captured:
+        board[cr, cc] = 0
+    
+    _, my_liberties = get_group_info(board, r, c)
+    
+    for cr, cc in captured:
+        board[cr, cc] = opponent
+    board[r, c] = 0
+    
+    if my_liberties == 0 and not captured:
+        return False
+    
+    if prev_board is not None and len(captured) == 1:
+        board[r, c] = player
+        for cr, cc in captured:
+            board[cr, cc] = 0
+        ko_violation = np.array_equal(board, prev_board)
+        board[r, c] = 0
+        for cr, cc in captured:
+            board[cr, cc] = opponent
+        if ko_violation:
+            return False
+    
+    return True
+
+
+def get_group_info(board, r, c):
+    color = board[r, c]
+    if color == 0:
+        return set(), 0
+    
+    group = set()
+    liberties = set()
+    queue = deque([(r, c)])
+    
+    while queue:
+        cr, cc = queue.popleft()
+        if (cr, cc) in group:
+            continue
+        group.add((cr, cc))
+        
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = cr + dr, cc + dc
+            if board[nr, nc] == 0:
+                liberties.add((nr, nc))
+            elif board[nr, nc] == color and (nr, nc) not in group:
+                queue.append((nr, nc))
+    
+    return group, len(liberties)
+
+
+def evaluate_move(board, move, player, opponent):
+    r, c = move
+    score = 0
+    
+    board[r, c] = player
+    
+    # Capture bonus
+    captured_groups = []
+    captured_count = 0
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = r + dr, c + dc
+        if board[nr, nc] == opponent:
+            group, liberties = get_group_info(board, nr, nc)
+            if liberties == 0:
+                if not any(g & group for g in captured_groups):
+                    captured_groups.append(group)
+                    captured_count += len(group)
+    
+    score += captured_count * 120
+    
+    # Remove captured for liberty calculation
+    for group in captured_groups:
+        for gr, gc in group:
+            board[gr, gc] = 0
+    
+    # Self liberty evaluation
+    _, my_liberties = get_group_info(board, r, c)
+    if my_liberties == 1:
+        score -= 100
+    elif my_liberties == 2:
+        score -= 40
+    else:
+        score += min(my_liberties, 6) * 4
+    
+    # Atari bonus
+    atari_bonus = 0
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nr, nc = r + dr, c + dc
+        if board[nr, nc] == opponent:
+            group, liberties = get_group_info(board, nr, nc)
+            if liberties == 1:
+                atari_bonus = max(atari_bonus, 60 + len(group) * 2)
+            elif liberties == 2:
+                atari_bonus = max(atari_bonus, 20)
+    score += atari_bonus
+    
+    # Restore captured
+    for group in captured_groups:
+        for gr, gc in group:
+            board[gr, gc] = opponent
+    
+    # Positional scoring
+    dist_from_center = abs(r - 10) + abs(c - 10)
+    if dist_from_center <= 9:
+        score += (10 - dist_from_center) * 0.5
+    
+    # Edge penalties
+    if r <= 2 or r >= 18 or c <= 2 or c >= 18:
+        score -= 3
+    if r == 1 or r == 19 or c == 1 or c == 19:
+        score -= 7
+    
+    # Connection bonuses
+    for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        if board[r + dr, c + dc] == player:
+            score += 5
+    
+    for dr, dc in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+        nr, nc = r + dr, c + dc
+        if 1 <= nr <= 19 and 1 <= nc <= 19 and board[nr, nc] == player:
+            score += 2.5
+    
+    board[r, c] = 0
+    
+    return score
+</code>

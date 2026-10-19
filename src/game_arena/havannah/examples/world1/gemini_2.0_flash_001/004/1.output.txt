@@ -1,0 +1,185 @@
+The strategy for this policy is:
+
+1. **Immediate Win Check:** Check if placing a stone in any valid location results in an immediate win (ring, bridge, or fork). If so, play that move. Determining exact win conditions with a 1-second limit is complex. We'll focus on approximate win conditions.
+
+2. **Immediate Loss Prevention:** Check if the opponent can win on their next turn. If so, block that move.
+
+3. **Corner/Edge Preference:** Prioritize placing stones near corners and edges, as these are crucial for forming bridges and forks.
+
+4. **Center Preference:** Prioritize placing stones near the center, enabling easier ring and fork formation.
+
+5. **Connectivity:** Place stones adjacent to existing friendly stones to build connected components.
+
+6. **Random Valid Move:** If no other strategy applies, choose a random valid move to ensure a legal play.
+
+The ring condition is particularly tough within the time limit. Bridges and forks are easier to detect approximately using flood fill/connected component analysis and Manhattan distance calculations.  We will use a simplified approach to approximate winning conditions.
+<code>
+import random
+import numpy as np
+
+def get_neighbors(row, col, board_size):
+    neighbors = []
+    if row > 0:
+        neighbors.append((row - 1, col))
+        if col < board_size - 1:
+            neighbors.append((row - 1, col + 1))
+
+    if row < board_size - 1:
+        neighbors.append((row + 1, col))
+        if col > 0:
+            neighbors.append((row + 1, col - 1))
+
+    if col > 0:
+        neighbors.append((row, col - 1))
+    if col < board_size - 1:
+        neighbors.append((row, col + 1))
+    return neighbors
+
+def check_bridge(me, board_size):
+    corners = [(0, 0), (0, board_size - 1), (board_size - 1, 0), (board_size - 1, board_size - 1), (board_size // 2, 0), (board_size // 2, board_size -1)]
+
+    for i in range(len(corners)):
+        for j in range(i + 1, len(corners)):
+            start_node = corners[i]
+            end_node = corners[j]
+
+            visited = set()
+            queue = [start_node]
+
+            while queue:
+                curr = queue.pop(0)
+                if curr == end_node:
+                    return True
+
+                if curr in visited:
+                    continue
+                visited.add(curr)
+
+                if curr in me:
+                    neighbors = get_neighbors(curr[0], curr[1], board_size)
+                    for neighbor in neighbors:
+                        if neighbor in me and neighbor not in visited:
+                            queue.append(neighbor)
+    return False
+
+def check_fork(me, board_size):
+    edges = []
+    for i in range(1, board_size - 1):
+          edges.append((0, i))
+          edges.append((board_size - 1, i))
+          edges.append((i, 0))
+          edges.append((i, board_size - 1))
+
+    count = 0
+    visited_edges = set()
+
+    for edge in edges:
+      visited = set()
+      queue = [edge]
+      while queue:
+          curr = queue.pop(0)
+
+          if curr in visited:
+              continue
+          visited.add(curr)
+
+          if curr in me:
+              count += 1
+              visited_edges.add(edge)
+              break
+          
+          neighbors = get_neighbors(curr[0], curr[1], board_size)
+          for neighbor in neighbors:
+              if neighbor in me and neighbor not in visited:
+                  queue.append(neighbor)
+
+    return len(visited_edges) >= 3
+
+def check_win(me, board_size):
+      return check_bridge(me, board_size) or check_fork(me, board_size)
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], valid_mask) -> tuple[int, int]:
+    board_size = valid_mask.shape[0]
+
+    # 1. Immediate Win Check
+    for row in range(board_size):
+        for col in range(board_size):
+            if valid_mask[row, col] and (row, col) not in me and (row, col) not in opp:
+                temp_me = me + [(row, col)]
+                if check_win(temp_me, board_size):
+                    return (row, col)
+    # 2. Immediate Loss Prevention
+    for row in range(board_size):
+        for col in range(board_size):
+            if valid_mask[row, col] and (row, col) not in me and (row, col) not in opp:
+                temp_opp = opp + [(row, col)]
+                if check_win(temp_opp, board_size):
+                    return (row, col)
+
+    # 3. Corner/Edge Preference
+    corners = [(0, 0), (0, board_size - 1), (board_size - 1, 0), (board_size - 1, board_size - 1)]
+    edges = []
+    for i in range(1, board_size - 1):
+        edges.append((0, i))
+        edges.append((board_size - 1, i))
+        edges.append((i, 0))
+        edges.append((i, board_size - 1))
+
+    for corner in corners:
+        if valid_mask[corner[0], corner[1]] and corner not in me and corner not in opp:
+            return corner
+
+    for edge in edges:
+        if valid_mask[edge[0], edge[1]] and edge not in me and edge not in opp:
+            return edge
+    # 4 and 5. Connectivity and Center Preference.
+    center_row = board_size // 2
+    center_col = board_size // 2
+
+    # Combine connectivity and center closeness.
+    best_move = None
+    best_score = -1
+
+    for row in range(board_size):
+        for col in range(board_size):
+            if valid_mask[row, col] and (row, col) not in me and (row, col) not in opp:
+                score = 0
+
+                # Connectivity: check neighbors
+                neighbors = get_neighbors(row, col, board_size)
+                for neighbor in neighbors:
+                    if neighbor in me:
+                        score += 1
+
+                # Center closeness (Manhattan distance)
+                score -= abs(row - center_row) + abs(col - center_col)
+
+                if score > best_score:
+                    best_score = score
+                    best_move = (row, col)
+
+    if best_move:
+        return best_move
+
+    # 6. Random Valid Move
+    valid_moves = []
+    for row in range(board_size):
+        for col in range(board_size):
+            if valid_mask[row, col] and (row, col) not in me and (row, col) not in opp:
+                valid_moves.append((row, col))
+    if valid_moves:
+        return random.choice(valid_moves)
+
+    # Should not reach here, but just in case, return (0,0) if possible
+    if valid_mask[0, 0]:
+        return (0, 0)
+    
+    # Last resort: Find the first valid position
+    for row in range(board_size):
+      for col in range(board_size):
+        if valid_mask[row, col]:
+          return (row, col)
+
+
+    return (0, 0)  # Should never happen, but return a default to guarantee a valid move.
+</code>

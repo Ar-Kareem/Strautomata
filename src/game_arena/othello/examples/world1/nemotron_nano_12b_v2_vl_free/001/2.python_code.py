@@ -1,0 +1,104 @@
+
+import numpy as np
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    dirs = [(-1, -1), (-1, 0), (-1, 1),
+            (0, -1), (0, 1),
+            (1, -1), (1, 0), (1, 1)]
+    
+    # Find all legal moves and calculate their flips count and position score
+    possible_moves = []
+    for r in range(8):
+        for c in range(8):
+            if you[r, c] == 0 and opponent[r, c] == 0:
+                has_flip = False
+                for dx, dy in dirs:
+                    # Check if placing a stone here can flip in direction (dx, dy)
+                    x, y = r + dx, c + dy
+                    if not (0 <= x < 8 and 0 <= y < 8):
+                        continue
+                    if opponent[x][y] == 0:
+                        continue
+                    # Now check if there's a you's board in this direction
+                    current_x, current_y = x + dx, y + dy
+                    while True:
+                        if 0 <= current_x < 8 and 0 <= current_y < 8:
+                            if you[current_x][current_y] == 1:
+                                has_flip = True
+                                break
+                            elif opponent[current_x][current_y] != 1:
+                                break
+                        else:
+                            break
+                        current_x += dx
+                        current_y += dy
+                    if has_flip:
+                        break
+                if has_flip:
+                    legal_moves.append((r, c))
+    
+    if not legal_moves:
+        return "pass"
+    
+    # Now evaluate each legal move's score
+    def calculate_position_score(r, c):
+        # Position values: 1000 for corners, 500 for edges (non-corner), 150 for other edge/center
+        pos_value = 0
+        if (r == 0 or r == 7) and (c == 0 or c == 7):
+            pos_value = 1000
+        elif (r == 0 or r == 7 or c == 0 or c == 7):
+            pos_value = 500
+        else:
+            # Mid-edge cells (not sure how important) maybe 100
+            pos_value = 100
+        return pos_value
+    
+    # Precompute position scores where possible
+    move_scores = []
+    for r, c in legal_moves:
+        # Calculate flips count
+        flips = 0
+        for dx, dy in dirs:
+            x, y = r + dx, c + dy
+            if x < 0 or x >= 8 or y < 0 or y >= 8:
+                continue
+            if opponent[x][y] != 1:
+                continue
+            # Check direction
+            current_x, current_y = x, y
+            found_you = False
+            while True:
+                current_x += dx
+                current_y += dy
+                if current_x < 0 or current_x >=8 or current_y <0 or current_y >=8:
+                    break
+                if you[current_x][current_y] == 1:
+                    found_you = True
+                    break
+                elif opponent[current_x][current_y] != 1:
+                    break
+            if found_you:
+                flips += (current_x - x) // dx if dx !=0 else (current_y - y) // dy +1
+        # Position score
+        pos_score = calculate_position_score(r, c)
+        # Combine into a weighted score, prioritize flips slightly higher than position
+        # Using weights: flips * 2 + pos_score
+        score = flips * 2 + pos_score
+        move_scores.append( (score, r, c) )
+    
+    # Select the move with the highest score
+    # Use numpy argmax to find the first occurrence of the maximum score
+    scores_arr = np.array([s[0] for s in move_scores])
+    if scores_arr.size == 0:
+        return "pass"
+    best_index = np.argmax(scores_arr)
+    best_move = legal_moves[best_index]
+    
+    # Convert to algebraic notation
+    coordinates = best_move
+    col = coordinates[1]
+    row_display = 8 - coordinates[0]
+    move_str = chr(ord('a') + col) + str(row_display)
+    
+    return move_str
+

@@ -1,0 +1,157 @@
+The strategy for this policy is to play **perfect Tic-Tac-Toe** using a fast **minimax search with alpha-beta pruning and memoization**. It first checks for (1) an immediate winning move, then (2) an immediate blocking move, and otherwise searches the full game tree to choose the optimal move. For deterministic tie-breaking and strong practical play, it prefers **center**, then **corners**, then **edges**.
+
+<code>
+"""
+Perfect-play Tic Tac Toe policy (3x3).
+
+Board encoding:
+- 0  : empty
+- 1  : our mark
+- -1 : opponent mark
+
+Returns:
+(row, col) of an empty cell.
+"""
+
+from __future__ import annotations
+from typing import List, Tuple, Optional, Dict
+
+# Preferred move ordering for tie-breaks and faster pruning:
+# center, corners, edges
+PREFERRED_MOVES: Tuple[Tuple[int, int], ...] = (
+    (1, 1),
+    (0, 0), (0, 2), (2, 0), (2, 2),
+    (0, 1), (1, 0), (1, 2), (2, 1),
+)
+
+WIN_LINES: Tuple[Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]], ...] = (
+    ((0, 0), (0, 1), (0, 2)),
+    ((1, 0), (1, 1), (1, 2)),
+    ((2, 0), (2, 1), (2, 2)),
+    ((0, 0), (1, 0), (2, 0)),
+    ((0, 1), (1, 1), (2, 1)),
+    ((0, 2), (1, 2), (2, 2)),
+    ((0, 0), (1, 1), (2, 2)),
+    ((0, 2), (1, 1), (2, 0)),
+)
+
+
+def _winner(board: List[List[int]]) -> int:
+    """Return 1 if we (player 1) have won, -1 if opponent has won, else 0."""
+    for line in WIN_LINES:
+        s = board[line[0][0]][line[0][1]] + board[line[1][0]][line[1][1]] + board[line[2][0]][line[2][1]]
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def _board_key(board: List[List[int]]) -> Tuple[int, ...]:
+    """Hashable board key."""
+    return (
+        board[0][0], board[0][1], board[0][2],
+        board[1][0], board[1][1], board[1][2],
+        board[2][0], board[2][1], board[2][2],
+    )
+
+
+def _empty_moves(board: List[List[int]]) -> List[Tuple[int, int]]:
+    """List empty moves in preferred order."""
+    moves: List[Tuple[int, int]] = []
+    for r, c in PREFERRED_MOVES:
+        if board[r][c] == 0:
+            moves.append((r, c))
+    return moves
+
+
+def policy(board: List[List[int]]) -> Tuple[int, int]:
+    # Collect legal moves (must always return an empty cell if one exists)
+    empties = _empty_moves(board)
+    if not empties:
+        # Environment should not call policy on a full board; fallback avoids crash.
+        # (No legal move exists in this case.)
+        return (0, 0)
+
+    # 1) Immediate win
+    for r, c in empties:
+        board[r][c] = 1
+        if _winner(board) == 1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # 2) Immediate block (prevent opponent win)
+    for r, c in empties:
+        board[r][c] = -1
+        if _winner(board) == -1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # 3) Minimax with alpha-beta pruning + memoization
+    memo: Dict[Tuple[Tuple[int, ...], int], int] = {}
+
+    def minimax(player: int, alpha: int, beta: int, depth: int) -> int:
+        """
+        Returns a score from player-1 perspective:
+          + (positive) good for player 1 (us),
+          - (negative) good for player -1 (opponent).
+        """
+        w = _winner(board)
+        if w == 1:
+            return 10 - depth
+        if w == -1:
+            return depth - 10
+
+        moves = _empty_moves(board)
+        if not moves:
+            return 0  # draw
+
+        key = (_board_key(board), player)
+        if key in memo:
+            return memo[key]
+
+        if player == 1:
+            best = -10_000
+            for r, c in moves:
+                board[r][c] = 1
+                score = minimax(-1, alpha, beta, depth + 1)
+                board[r][c] = 0
+                if score > best:
+                    best = score
+                if best > alpha:
+                    alpha = best
+                if alpha >= beta:
+                    break
+        else:
+            best = 10_000
+            for r, c in moves:
+                board[r][c] = -1
+                score = minimax(1, alpha, beta, depth + 1)
+                board[r][c] = 0
+                if score < best:
+                    best = score
+                if best < beta:
+                    beta = best
+                if alpha >= beta:
+                    break
+
+        memo[key] = best
+        return best
+
+    best_move = empties[0]
+    best_score = -10_000
+
+    for r, c in empties:
+        board[r][c] = 1
+        score = minimax(-1, -10_000, 10_000, 1)
+        board[r][c] = 0
+
+        # Prefer higher score; tie-break by preferred order (already in empties)
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+
+    return best_move
+</code>

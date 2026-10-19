@@ -1,0 +1,612 @@
+
+import random
+from collections import defaultdict
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    """
+    Chess move selection policy using positional evaluation.
+    
+    Args:
+        pieces: Dictionary mapping squares to piece codes (e.g., 'e1': 'wK')
+        to_play: 'white' or 'black'
+        memory: Dictionary for storing state between calls
+        
+    Returns:
+        Tuple of (best_move, updated_memory)
+    """
+    
+    # Parse board state
+    board = parse_board(pieces)
+    color = 'white' if to_play == 'white' else 'black'
+    opponent = 'black' if color == 'white' else 'white'
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(board, color)
+    
+    if not legal_moves:
+        # No legal moves - return any move to avoid disqualification
+        return ('e2e4', memory)
+    
+    # Check for immediate checkmate
+    for move in legal_moves:
+        new_board = make_move(board, move, color)
+        if is_checkmate(new_board, opponent):
+            return (move, memory)
+    
+    # Evaluate all moves
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        new_board = make_move(board, move, color)
+        score = evaluate_position(new_board, color)
+        
+        # Add small random factor to avoid repetitive play
+        score += random.uniform(-0.5, 0.5)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)
+
+
+def parse_board(pieces: dict) -> dict:
+    """Convert pieces dict to internal board representation."""
+    board = {}
+    for square, piece in pieces.items():
+        board[square] = piece
+    return board
+
+
+def generate_legal_moves(board: dict, color: str) -> list:
+    """Generate all legal moves for the current player."""
+    legal_moves = []
+    king_square = find_king(board, color)
+    
+    # Find all pseudo-legal moves
+    for square, piece in board.items():
+        if piece[0] != color[0]:  # Not our piece
+            continue
+            
+        piece_type = piece[1]
+        moves = generate_moves_for_piece(board, square, piece_type, color)
+        
+        for move in moves:
+            # Check if move is legal (doesn't leave king in check)
+            new_board = make_move(board, move, color)
+            if not is_in_check(new_board, color):
+                legal_moves.append(move)
+    
+    return legal_moves
+
+
+def find_king(board: dict, color: str) -> str:
+    """Find the king's square."""
+    king_code = color[0] + 'K'
+    for square, piece in board.items():
+        if piece == king_code:
+            return square
+    return None
+
+
+def generate_moves_for_piece(board: dict, from_square: str, piece_type: str, color: str) -> list:
+    """Generate pseudo-legal moves for a piece."""
+    moves = []
+    file = from_square[0]
+    rank = from_square[1]
+    x = ord(file) - ord('a')
+    y = int(rank) - 1
+    
+    if piece_type == 'P':
+        moves = generate_pawn_moves(board, from_square, color)
+    elif piece_type == 'R':
+        moves = generate_rook_moves(board, x, y, color)
+    elif piece_type == 'N':
+        moves = generate_knight_moves(board, x, y, color)
+    elif piece_type == 'B':
+        moves = generate_bishop_moves(board, x, y, color)
+    elif piece_type == 'Q':
+        moves = generate_queen_moves(board, x, y, color)
+    elif piece_type == 'K':
+        moves = generate_king_moves(board, from_square, color)
+    
+    return moves
+
+
+def generate_pawn_moves(board: dict, from_square: str, color: str) -> list:
+    """Generate pawn moves."""
+    moves = []
+    file = from_square[0]
+    rank = int(from_square[1])
+    direction = 1 if color == 'white' else -1
+    start_rank = 2 if color == 'white' else 7
+    
+    # Forward move
+    new_rank = rank + direction
+    new_square = file + str(new_rank)
+    if new_square not in board:
+        # Check for promotion
+        if new_rank in [1, 8]:
+            for promo in ['q', 'r', 'b', 'n']:
+                moves.append(from_square + new_square + promo)
+        else:
+            moves.append(from_square + new_square)
+        
+        # Double move from start
+        if rank == start_rank:
+            double_rank = rank + 2 * direction
+            double_square = file + str(double_rank)
+            if double_square not in board:
+                moves.append(from_square + double_square)
+    
+    # Captures
+    for df in [-1, 1]:
+        new_file = chr(ord(file) + df)
+        if 'a' <= new_file <= 'h':
+            capture_square = new_file + str(new_rank)
+            if capture_square in board:
+                target = board[capture_square]
+                if target[0] != color[0]:
+                    # Check for promotion
+                    if new_rank in [1, 8]:
+                        for promo in ['q', 'r', 'b', 'n']:
+                            moves.append(from_square + capture_square + promo)
+                    else:
+                        moves.append(from_square + capture_square)
+    
+    return moves
+
+
+def generate_sliding_moves(board: dict, x: int, y: int, color: str, directions: list) -> list:
+    """Generate sliding piece moves (rook, bishop, queen)."""
+    moves = []
+    for dx, dy in directions:
+        nx, ny = x + dx, y + dy
+        while 0 <= nx <= 7 and 0 <= ny <= 7:
+            square = chr(ord('a') + nx) + str(ny + 1)
+            if square not in board:
+                moves.append(chr(ord('a') + x) + str(y + 1) + square)
+            else:
+                if board[square][0] != color[0]:
+                    moves.append(chr(ord('a') + x) + str(y + 1) + square)
+                break
+            nx += dx
+            ny += dy
+    return moves
+
+
+def generate_rook_moves(board: dict, x: int, y: int, color: str) -> list:
+    """Generate rook moves."""
+    return generate_sliding_moves(board, x, y, color, [(1,0), (-1,0), (0,1), (0,-1)])
+
+
+def generate_bishop_moves(board: dict, x: int, y: int, color: str) -> list:
+    """Generate bishop moves."""
+    return generate_sliding_moves(board, x, y, color, [(1,1), (1,-1), (-1,1), (-1,-1)])
+
+
+def generate_queen_moves(board: dict, x: int, y: int, color: str) -> list:
+    """Generate queen moves."""
+    return generate_sliding_moves(board, x, y, color, 
+                                   [(1,0), (-1,0), (0,1), (0,-1), 
+                                    (1,1), (1,-1), (-1,1), (-1,-1)])
+
+
+def generate_knight_moves(board: dict, x: int, y: int, color: str) -> list:
+    """Generate knight moves."""
+    moves = []
+    knight_offsets = [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)]
+    
+    for dx, dy in knight_offsets:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx <= 7 and 0 <= ny <= 7:
+            square = chr(ord('a') + nx) + str(ny + 1)
+            if square not in board or board[square][0] != color[0]:
+                moves.append(chr(ord('a') + x) + str(y + 1) + square)
+    
+    return moves
+
+
+def generate_king_moves(board: dict, from_square: str, color: str) -> list:
+    """Generate king moves."""
+    moves = []
+    file = from_square[0]
+    rank = int(from_square[1])
+    x = ord(file) - ord('a')
+    y = rank - 1
+    
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if 0 <= nx <= 7 and 0 <= ny <= 7:
+                square = chr(ord('a') + nx) + str(ny + 1)
+                if square not in board or board[square][0] != color[0]:
+                    moves.append(from_square + square)
+    
+    # Castling
+    if not is_in_check(board, color):
+        if color == 'white':
+            if from_square == 'e1':
+                # Kingside
+                if 'h1' in board and board['h1'] == 'wR' and 'f1' not in board and 'g1' not in board:
+                    if not is_square_attacked(board, 'f1', 'black') and not is_square_attacked(board, 'g1', 'black'):
+                        moves.append('e1g1')
+                # Queenside
+                if 'a1' in board and board['a1'] == 'wR' and 'd1' not in board and 'c1' not in board and 'b1' not in board:
+                    if not is_square_attacked(board, 'd1', 'black') and not is_square_attacked(board, 'c1', 'black'):
+                        moves.append('e1c1')
+        else:
+            if from_square == 'e8':
+                # Kingside
+                if 'h8' in board and board['h8'] == 'bR' and 'f8' not in board and 'g8' not in board:
+                    if not is_square_attacked(board, 'f8', 'white') and not is_square_attacked(board, 'g8', 'white'):
+                        moves.append('e8g8')
+                # Queenside
+                if 'a8' in board and board['a8'] == 'bR' and 'd8' not in board and 'c8' not in board and 'b8' not in board:
+                    if not is_square_attacked(board, 'd8', 'white') and not is_square_attacked(board, 'c8', 'white'):
+                        moves.append('e8c8')
+    
+    return moves
+
+
+def make_move(board: dict, move: str, color: str) -> dict:
+    """Make a move and return the new board."""
+    new_board = board.copy()
+    from_square = move[:2]
+    to_square = move[2:4]
+    
+    # Handle promotion
+    piece = board[from_square]
+    if len(move) == 5:
+        piece = color[0] + move[4].upper()
+    
+    # Remove captured piece
+    if to_square in new_board:
+        del new_board[to_square]
+    
+    # Move piece
+    del new_board[from_square]
+    new_board[to_square] = piece
+    
+    # Handle castling - move rook
+    if piece[1] == 'K' and abs(ord(from_square[0]) - ord(to_square[0])) == 2:
+        if to_square == 'g1':
+            new_board['f1'] = new_board['h1']
+            del new_board['h1']
+        elif to_square == 'c1':
+            new_board['d1'] = new_board['a1']
+            del new_board['a1']
+        elif to_square == 'g8':
+            new_board['f8'] = new_board['h8']
+            del new_board['h8']
+        elif to_square == 'c8':
+            new_board['d8'] = new_board['a8']
+            del new_board['a8']
+    
+    return new_board
+
+
+def is_in_check(board: dict, color: str) -> bool:
+    """Check if the king of the given color is in check."""
+    king_square = find_king(board, color)
+    if not king_square:
+        return False
+    
+    opponent = 'black' if color == 'white' else 'white'
+    return is_square_attacked(board, king_square, opponent)
+
+
+def is_square_attacked(board: dict, square: str, attacker_color: str) -> bool:
+    """Check if a square is attacked by the given color."""
+    x = ord(square[0]) - ord('a')
+    y = int(square[1]) - 1
+    
+    # Check pawn attacks
+    pawn_dir = -1 if attacker_color == 'white' else 1
+    for df in [-1, 1]:
+        nx, ny = x + df, y + pawn_dir
+        if 0 <= nx <= 7 and 0 <= ny <= 7:
+            check_square = chr(ord('a') + nx) + str(ny + 1)
+            if check_square in board:
+                piece = board[check_square]
+                if piece == attacker_color[0] + 'P':
+                    return True
+    
+    # Check knight attacks
+    knight_offsets = [(2,1), (2,-1), (-2,1), (-2,-1), (1,2), (1,-2), (-1,2), (-1,-2)]
+    for dx, dy in knight_offsets:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx <= 7 and 0 <= ny <= 7:
+            check_square = chr(ord('a') + nx) + str(ny + 1)
+            if check_square in board:
+                piece = board[check_square]
+                if piece == attacker_color[0] + 'N':
+                    return True
+    
+    # Check king attacks
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if 0 <= nx <= 7 and 0 <= ny <= 7:
+                check_square = chr(ord('a') + nx) + str(ny + 1)
+                if check_square in board:
+                    piece = board[check_square]
+                    if piece == attacker_color[0] + 'K':
+                        return True
+    
+    # Check rook/queen attacks (straight lines)
+    rook_dirs = [(1,0), (-1,0), (0,1), (0,-1)]
+    for dx, dy in rook_dirs:
+        nx, ny = x + dx, y + dy
+        while 0 <= nx <= 7 and 0 <= ny <= 7:
+            check_square = chr(ord('a') + nx) + str(ny + 1)
+            if check_square in board:
+                piece = board[check_square]
+                if piece == attacker_color[0] + 'R' or piece == attacker_color[0] + 'Q':
+                    return True
+                break
+            nx += dx
+            ny += dy
+    
+    # Check bishop/queen attacks (diagonals)
+    bishop_dirs = [(1,1), (1,-1), (-1,1), (-1,-1)]
+    for dx, dy in bishop_dirs:
+        nx, ny = x + dx, y + dy
+        while 0 <= nx <= 7 and 0 <= ny <= 7:
+            check_square = chr(ord('a') + nx) + str(ny + 1)
+            if check_square in board:
+                piece = board[check_square]
+                if piece == attacker_color[0] + 'B' or piece == attacker_color[0] + 'Q':
+                    return True
+                break
+            nx += dx
+            ny += dy
+    
+    return False
+
+
+def is_checkmate(board: dict, color: str) -> bool:
+    """Check if the position is checkmate."""
+    if not is_in_check(board, color):
+        return False
+    
+    # Check if any legal moves exist
+    legal_moves = generate_legal_moves(board, color)
+    return len(legal_moves) == 0
+
+
+def evaluate_position(board: dict, color: str) -> float:
+    """Evaluate the position from the perspective of the given color."""
+    score = 0
+    
+    # Material evaluation
+    material_score = 0
+    for square, piece in board.items():
+        value = get_piece_value(piece[1])
+        if piece[0] == color[0]:
+            material_score += value
+        else:
+            material_score -= value
+    score += material_score * 100
+    
+    # Positional evaluation
+    for square, piece in board.items():
+        pos_score = get_positional_value(piece, square)
+        if piece[0] == color[0]:
+            score += pos_score
+        else:
+            score -= pos_score
+    
+    # King safety
+    king_square = find_king(board, color)
+    if king_square:
+        score += evaluate_king_safety(board, king_square, color) * 10
+    
+    opponent = 'black' if color == 'white' else 'white'
+    opponent_king = find_king(board, opponent)
+    if opponent_king:
+        score -= evaluate_king_safety(board, opponent_king, opponent) * 10
+    
+    # Center control
+    center_score = evaluate_center_control(board, color)
+    score += center_score
+    
+    return score
+
+
+def get_piece_value(piece_type: str) -> int:
+    """Get the material value of a piece."""
+    values = {
+        'P': 1,
+        'N': 3,
+        'B': 3,
+        'R': 5,
+        'Q': 9,
+        'K': 0
+    }
+    return values.get(piece_type, 0)
+
+
+# Piece-square tables for positional evaluation
+PAWN_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    0,  0,  0, 20, 20,  0,  0,  0,
+    5, -5,-10,  0,  0,-10, -5,  5,
+    5, 10, 10,-20,-20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+]
+
+KNIGHT_TABLE = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50
+]
+
+BISHOP_TABLE = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20
+]
+
+ROOK_TABLE = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+]
+
+QUEEN_TABLE = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+]
+
+KING_MIDDLE_TABLE = [
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+    20, 20,  0,  0,  0,  0, 20, 20,
+    20, 30, 10,  0,  0, 10, 30, 20
+]
+
+KING_END_TABLE = [
+    -50,-40,-30,-20,-20,-30,-40,-50,
+    -30,-20,-10,  0,  0,-10,-20,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-30,  0,  0,  0,  0,-30,-30,
+    -50,-30,-30,-30,-30,-30,-30,-50
+]
+
+
+def get_positional_value(piece: str, square: str) -> float:
+    """Get the positional value for a piece on a given square."""
+    piece_type = piece[1]
+    color = piece[0]
+    
+    x = ord(square[0]) - ord('a')
+    y = int(square[1]) - 1
+    
+    # Flip table for black
+    if color == 'b':
+        y = 7 - y
+    
+    index = y * 8 + x
+    
+    tables = {
+        'P': PAWN_TABLE,
+        'N': KNIGHT_TABLE,
+        'B': BISHOP_TABLE,
+        'R': ROOK_TABLE,
+        'Q': QUEEN_TABLE,
+        'K': KING_MIDDLE_TABLE
+    }
+    
+    return tables.get(piece_type, [0] * 64)[index]
+
+
+def evaluate_king_safety(board: dict, king_square: str, color: str) -> float:
+    """Evaluate king safety."""
+    # Simple evaluation: check if king has pawn protection
+    file = king_square[0]
+    rank = int(king_square[1])
+    safety_score = 0
+    
+    # Check for pawn shield
+    pawn_direction = -1 if color == 'white' else 1
+    for df in [-1, 0, 1]:
+        check_file = chr(ord(file) + df)
+        if 'a' <= check_file <= 'h':
+            pawn_rank = rank + pawn_direction
+            pawn_square = check_file + str(pawn_rank)
+            if pawn_square in board and board[pawn_square] == color[0] + 'P':
+                safety_score += 10
+    
+    # Check for open lines toward king
+    king_x = ord(file) - ord('a')
+    king_y = rank - 1
+    
+    # Count attackers
+    attackers = 0
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = king_x + dx, king_y + dy
+            if 0 <= nx <= 7 and 0 <= ny <= 7:
+                square = chr(ord('a') + nx) + str(ny + 1)
+                if square in board:
+                    piece = board[square]
+                    if piece[0] != color[0] and piece[1] in ['R', 'Q', 'B', 'N']:
+                        attackers += 5
+    
+    safety_score -= attackers
+    
+    return safety_score
+
+
+def evaluate_center_control(board: dict, color: str) -> float:
+    """Evaluate control of the center squares."""
+    center_squares = ['d4', 'e4', 'd5', 'e5']
+    control_score = 0
+    
+    opponent = 'black' if color == 'white' else 'white'
+    
+    for square in center_squares:
+        if square in board:
+            piece = board[square]
+            if piece[0] == color[0]:
+                control_score += 5
+            else:
+                control_score -= 5
+        
+        # Also score pieces that attack the center
+        for attack_color, direction in [(color, 1), (opponent, -1)]:
+            for dx, dy in [(1,0), (-1,0), (0,1), (0,-1), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                file_idx = ord(square[0]) - ord('a')
+                rank_idx = int(square[1]) - 1
+                
+                nx, ny = file_idx + dx, rank_idx + dy
+                if 0 <= nx <= 7 and 0 <= ny <= 7:
+                    attack_square = chr(ord('a') + nx) + str(ny + 1)
+                    if attack_square in board:
+                        piece = board[attack_square]
+                        if piece[0] == attack_color[0]:
+                            if attack_color == color:
+                                control_score += 1
+                            else:
+                                control_score -= 1
+    
+    return control_score

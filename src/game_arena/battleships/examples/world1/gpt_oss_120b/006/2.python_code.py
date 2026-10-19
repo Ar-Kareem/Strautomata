@@ -1,0 +1,112 @@
+
+import random
+from collections import deque
+from copy import deepcopy
+import numpy as np
+
+def _find_hit_clusters(board):
+    """Return a list of clusters, each cluster is a set of (r,c) hit cells."""
+    visited = np.zeros_like(board, dtype=bool)
+    clusters = []
+    rows, cols = board.shape
+    for r in range(rows):
+        for c in range(cols):
+            if board[r, c] != 1 or visited[r, c]:
+                continue
+            # BFS to collect the whole cluster
+            q = deque([(r, c)])
+            cluster = set()
+            visited[r, c] = True
+            while q:
+                cr, cc = q.popleft()
+                cluster.add((cr, cc))
+                for dr, dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+                    nr, nc = cr+dr, cc+dc
+                    if 0 <= nr < rows and 0 <= nc < cols \
+                       and not visited[nr, nc] and board[nr, nc] == 1:
+                        visited[nr, nc] = True
+                        q.append((nr, nc))
+            clusters.append(cluster)
+    return clusters
+
+def _is_sunk(cluster, board):
+    """Determine if a hit cluster is certainly sunk."""
+    # If any neighbour of any cell in the cluster is unknown, the ship could still extend.
+    rows, cols = board.shape
+    for r, c in cluster:
+        for dr, dc in [(1,0),(-1,0),(0,1),(0,-1)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                if (nr, nc) not in cluster and board[nr, nc] == 0:
+                    return False
+    return True
+
+def _remaining_ship_lengths(board):
+    """Return a list with the lengths of ships that have not been sunk yet."""
+    all_lengths = [5, 4, 3, 3, 2]          # the fleet composition
+    clusters = _find_hit_clusters(board)
+    # Count sunk ships and remove their lengths
+    remaining = deepcopy(all_lengths)
+    for cl in clusters:
+        if not _is_sunk(cl, board):
+            continue          # still afloat
+        cl_len = len(cl)
+        # remove ONE occurrence of this length if present
+        if cl_len in remaining:
+            remaining.remove(cl_len)
+    return remaining
+
+def _heat_map(board, ship_lengths):
+    """Create a probability heat map based on all legal placements."""
+    rows, cols = board.shape
+    heat = np.zeros_like(board, dtype=int)
+
+    for L in ship_lengths:
+        # horizontal placements
+        for r in range(rows):
+            for c in range(cols - L + 1):
+                segment = [(r, c + i) for i in range(L)]
+                # placement invalid if any cell is a known miss
+                if any(board[rr, cc] == -1 for rr, cc in segment):
+                    continue
+                for rr, cc in segment:
+                    heat[rr, cc] += 1
+
+        # vertical placements
+        for r in range(rows - L + 1):
+            for c in range(cols):
+                segment = [(r + i, c) for i in range(L)]
+                if any(board[rr, cc] == -1 for rr, cc in segment):
+                    continue
+                for rr, cc in segment:
+                    heat[rr, cc] += 1
+    return heat
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Return the next shot (row, col) for a 10x10 Battleship board.
+    The board contains:
+        0  -> unknown
+       -1  -> miss
+        1  -> hit
+    """
+    # Convert to numpy for fast indexing
+    np_board = np.array(board, dtype=int)
+
+    # 1. Determine which ships are still alive
+    remaining_lengths = _remaining_ship_lengths(np_board)
+
+    # 2. Build the heat map for all legal placements of those ships
+    heat = _heat_map(np_board, remaining_lengths)
+
+    # 3. Mask out cells already tried
+    mask_unknown = (np_board == 0)
+    heat_unknown = np.where(mask_unknown, heat, -1)
+
+    # 4. Choose the cell(s) with maximal score
+    max_score = heat_unknown.max()
+    candidates = list(zip(*np.where(heat_unknown == max_score)))
+
+    # Random tie‑break for robustness
+    chosen = random.choice(candidates)
+    return chosen  # (row, col)

@@ -1,0 +1,111 @@
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    """
+    Return the best move for the current Tic Tac Toe position.
+    1 represents our move, -1 represents the opponent's move, 0 is empty.
+    """
+    # Find all empty spots
+    empty_spots = [(i, j) for i in range(3) for j in range(3) if board[i][j] == 0]
+    
+    # If no empty spots (game over), return a default (shouldn't happen in normal gameplay)
+    if not empty_spots:
+        return (0, 0)
+    
+    # If only one empty spot, take it
+    if len(empty_spots) == 1:
+        return empty_spots[0]
+    
+    # Check if we can win in the next move
+    for (row, col) in empty_spots:
+        board[row][col] = 1
+        if check_winner(board) == 1:
+            board[row][col] = 0
+            return (row, col)
+        board[row][col] = 0
+    
+    # Check if opponent can win in their next move (block them)
+    for (row, col) in empty_spots:
+        board[row][col] = -1
+        if check_winner(board) == -1:
+            board[row][col] = 0
+            return (row, col)
+        board[row][col] = 0
+    
+    # Use minimax with alpha-beta pruning to find the best move
+    best_score = float('-inf')
+    best_move = empty_spots[0]
+    
+    for (row, col) in empty_spots:
+        board[row][col] = 1
+        score = minimax(board, 0, False, float('-inf'), float('inf'))
+        board[row][col] = 0
+        if score > best_score:
+            best_score = score
+            best_move = (row, col)
+    
+    return best_move
+
+
+def check_winner(board):
+    """Check if there's a winner. Returns 1, -1, 0 (draw), or None (game ongoing)."""
+    # Check rows
+    for row in board:
+        if row[0] == row[1] == row[2] != 0:
+            return row[0]
+    
+    # Check columns
+    for col in range(3):
+        if board[0][col] == board[1][col] == board[2][col] != 0:
+            return board[0][col]
+    
+    # Check diagonals
+    if board[0][0] == board[1][1] == board[2][2] != 0:
+        return board[0][0]
+    if board[0][2] == board[1][1] == board[2][0] != 0:
+        return board[0][2]
+    
+    # Check for draw (no empty spots)
+    for row in board:
+        if 0 in row:
+            return None  # Game still going
+    
+    return 0  # Draw
+
+
+def minimax(board, depth, is_maximizing, alpha, beta):
+    """Minimax algorithm with alpha-beta pruning."""
+    result = check_winner(board)
+    if result is not None:
+        if result == 1:
+            return 10 - depth  # Win sooner is better
+        elif result == -1:
+            return depth - 10  # Lose later is better
+        else:
+            return 0  # Draw
+    
+    if is_maximizing:
+        best_score = float('-inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = 1
+                    score = minimax(board, depth + 1, False, alpha, beta)
+                    board[i][j] = 0
+                    best_score = max(score, best_score)
+                    alpha = max(alpha, score)
+                    if beta <= alpha:
+                        break
+        return best_score
+    else:
+        best_score = float('inf')
+        for i in range(3):
+            for j in range(3):
+                if board[i][j] == 0:
+                    board[i][j] = -1
+                    score = minimax(board, depth + 1, True, alpha, beta)
+                    board[i][j] = 0
+                    best_score = min(score, best_score)
+                    beta = min(beta, score)
+                    if beta <= alpha:
+                        break
+        return best_score

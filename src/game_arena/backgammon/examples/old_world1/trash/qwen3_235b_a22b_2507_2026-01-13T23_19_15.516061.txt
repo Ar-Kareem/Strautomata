@@ -1,0 +1,422 @@
+The logic for this policy is to implement a greedy yet strategic approach that prioritizes key Backgammon principles:
+
+1. **Forced Moves First**: If checkers are on the bar, we must re-enter. We prioritize the only legal re-entry points.
+2. **Move Efficiently**: Prefer moving checkers from deeper (higher index for opponent, but interpreted correctly by engine) points forward to minimize the number of future moves needed.
+3. **Avoid Leaving Blots**: We avoid moves that leave a single checker on a point if it can be hit by the opponent on their turn.
+4. **Prioritize Bearing Off** when all checkers are in the home board.
+5. **Use Higher Die First (H) when advantageous**, especially to escape from the opponent’s home board or to bear off efficiently.
+6. **If only one die can be played, ensure we play the higher die** when possible, following game rules.
+7. **Otherwise, make progress toward home board and bear-off**, while trying to maintain prime structure or escape potential primes.
+
+We use a helper function to decode legal moves from the state, but since the engine handles legality, our job is to pick the best among possible legal actions. However, we must guarantee a legal move string. We simulate checking possible actions in order of preference.
+
+We do not rely on external libraries beyond basic Python and `numpy` for efficiency.
+
+We structure the policy as follows:
+- Handle `my_bar` > 0: try to re-enter using either die.
+- Otherwise, generate all legal from-points using the dice.
+- Score potential actions based on:
+   - Bearing off successfully
+   - Reducing total pips (distance to bear off)
+   - Avoiding creating blots
+   - Hitting opponent blots (if safe)
+- Return the best-ranked move with proper H/L ordering.
+
+We ensure correctness in move ordering: if one die move is legal and the other isn't, we must use the higher die.
+
+We fall back to 'H:P,P' only if truly no moves are possible.
+
+Note: Since we don't see full legal actions from engine API, we simulate basic logic using board state.
+
+<code>
+import numpy as np
+
+def policy(state: dict) -> str:
+    my_pts = np.array(state['my_pts'])
+    opp_pts = np.array(state['opp_pts'])
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = sorted(state['dice'], reverse=True)
+    if len(dice) == 0:
+        return "H:P,P"
+    elif len(dice) == 1:
+        d1, d2 = dice[0], 0
+        high_die, low_die = dice[0], 0
+    else:
+        d1, d2 = dice
+        high_die, low_die = max(d1, d2), min(d1, d2)
+
+    # Determine movement direction: not needed directly since engine handles destination
+    # But we assume: moving toward lower indices (for us) is forward, per standard orientation.
+
+    # Home board for us: last 6 points. Since engine uses absolute indexing,
+    # our home board is likely points 18-23 (if opponent home is 0-5) or vice versa.
+    # But we can infer: since we move toward bearing off, and bearing off requires all checkers in home board.
+    # In standard numbering, player 0 (us) has home board at 18-23, opponent at 0-5.
+    # Confirm: we bear off from 18-23? When bearing off, we move from higher to even higher? No.
+    # Actually: in standard, each player moves toward their home board.
+    # Given absolute indices 0-23, and assuming we are the player moving from higher to lower indices?
+    # However, in OpenSpiel's implementation, we don't need to know direction: the engine validates moves.
+
+    # Instead: we rely on the fact that legal moves are determined by engine.
+    # But we must generate only valid FROM actions.
+
+    # We need to determine: what are the legal moves?
+
+    # Rule 1: if on bar, must use die to re-enter from bar.
+    if my_bar > 0:
+        # We must re-enter. The destination is 24 - die_roll (if opponent home is 0-5) or die_roll - 1?
+        # Actually: in standard, if opponent home is 0-5, our re-entry point is 24 - die, i.e., point 18 when die=6.
+        # Assuming that point i is hit if 24-1-die is occupied by >=2 opp? No: we can land if opp has 0 or 1 there.
+        # So: for each die, point = 24 - die (if we are moving from 23 down to 0).
+        # But we use absolute index: so die d lets us enter at point 24 - d? Actually 24-d is index 23-d+1?
+
+        # Standard: if you roll a 6, you re-enter to point 18 (index 18) if opponent doesn't block.
+        # So: re-entry point for die d is 24 - d? But 24-d is not in 0-23.
+        # Actually: points 0-23. Our home is 18-23. Opp home is 0-5.
+        # We re-enter to point 24-d: but 24-6=18, 24-1=23. So yes: 24 - d, but that gives 18..23.
+        # So re-entry point = 24 - die, but since indices are 0-23, we use (24 - die) % 24? But 24-d is 18 to 23 for d=6..1 -> valid.
+
+        # So for die d, we can re-enter to point = 24 - d (and then we use that as destination), but for action FROM, it's 'B' (Bar).
+        # So legal FROM1 could be 'B' if corresponding destination is not blocked.
+
+        # Opp can block if they have >=2 checkers on point (24 - die).
+        moves = []
+        # Try high die first
+        dest_high = 24 - high_die
+        if dest_high < 24 and (opp_pts[dest_high] <= 1):
+            # Can use high die to re-enter
+            # Then try to use low die from some point?
+            if low_die == 0:  # only one die
+                return f"H:B,P"
+            # After re-entering, can we use low die?
+            # Now we simulate: we have one less on bar, and one checker on dest_high
+            my_pts_temp = my_pts.copy()
+            my_pts_temp[dest_high] += 1
+            moves_low = []
+            for src in range(24):
+                if my_pts_temp[src] == 0:
+                    continue
+                dest = src - low_die  # assuming we move forward toward lower indices?
+                if dest < 0:
+                    # bear off possible?
+                    if all(my_pts_temp[i] == 0 for i in range(18)):  # home board is 18-23?
+                        # can bear off
+                        moves_low.append(src)
+                elif 0 <= dest < 24:
+                    if opp_pts[dest] <= 1:  # can move
+                        moves_low.append(src)
+            if moves_low:
+                # pick best source for low die
+                src_low = max(moves_low)  # prefer to move back checker
+                return f"H:B,A{src_low}"
+            else:
+                # can only play high die
+                return f"H:B,P"
+        # High die not playable?
+        if low_die > 0:  # if two dice
+            dest_low = 24 - low_die
+            if dest_low < 24 and (opp_pts[dest_low] <= 1):
+                return f"L:B,P"  # use lower die to re-enter, cannot play high die
+        # no re-entry possible
+        return "H:P,P"
+
+    # No checkers on bar
+    # Check if we can bear off
+    home_board = range(18, 24)  # points 18 to 23
+    if all(my_pts[i] == 0 for i in range(18)):  # all in home
+        # Can bear off
+        moves = []
+        for d in dice:
+            # Check direct bear off
+            if my_pts[d-1] > 0:  # point d-1 has checker (6 -> point 5? not in our home)
+                # Wait, our home is 18-23. To bear off from point p (in 18..23) with die d, we need p == 24-d? or if die >= dist?
+                # Standard: if die equals or exceeds the distance, you can bear off.
+                # Distance for point p is (24 - p)? But for point 23: distance 1; point 18: distance 6.
+                # So for die d, you can bear off from any point p where 24-p <= d, or if no checker on points > d, you can bear off from point d.
+                # Rule: if you have a checker on point p, and die d >= 24-p, then you can bear off.
+                # Also, if no checker on points higher than d, you can bear off from point d (i.e., 24-d is the point index?).
+                # Actually: point 23 is 1 away, point 22 is 2 away, ..., point 18 is 6 away.
+                # So point p has distance = 24 - p.
+                # You can bear off from p if d >= 24-p.
+                # Or, if you have no checker on points with distance > d (i.e., points p where 24-p > d, i.e., p < 24-d), then you can bear off from point 24-d.
+                max_point_with_checker = max([i for i in home_board if my_pts[i] > 0] + [-1])
+                dist_max = 24 - max_point_with_checker if max_point_with_checker >= 0 else 0
+                for p in home_board:
+                    if my_pts[p] > 0:
+                        dist = 24 - p
+                        if d >= dist:
+                            moves.append(('off', p))
+                        else:
+                            # check alternate rule: if no checker on points > d (i.e., points with distance > d => p < 24-d)
+                            # p < 24-d means p < 24-d
+                            if all(my_pts[i] == 0 for i in range(24-d+1, 24)):
+                                # then can bear off from point 24-d
+                                p_bear_off = 24 - d
+                                if p_bear_off >= 18 and my_pts[p_bear_off] > 0:
+                                    moves.append(('off', p_bear_off))
+        # Collect all possible from-points for each die
+        # We'll consider combinations
+        # But simpler: try to play high die first
+        # If we can bear off with high die from a deep point, do it
+        # Else, bear off from highest point possible
+        can_play_high = False
+        src_high = None
+        # Prefer bearing off from farthest point
+        # Try: use high_die to bear off from a checker that is deep
+        for p in range(23, 17, -1):
+            if my_pts[p] == 0:
+                continue
+            dist = 24 - p
+            if high_die >= dist:
+                src_high = p
+                can_play_high = True
+                break
+            else:
+                # alternate rule
+                if all(my_pts[i] == 0 for i in range(24-high_die+1, 24)):
+                    p_bear = 24 - high_die
+                    if p_bear >= 18 and my_pts[p_bear] > 0:
+                        src_high = p_bear
+                        can_play_high = True
+                        break
+        if can_play_high:
+            # Then try low_die
+            can_play_low = False
+            src_low = None
+            for p in range(23, 17, -1):
+                if p == src_high and my_pts[p] == 1:
+                    continue  # already used one checker
+                if my_pts[p] == 0:
+                    continue
+                dist = 24 - p
+                if low_die >= dist:
+                    src_low = p
+                    can_play_low = True
+                    break
+                else:
+                    if all(my_pts[i] == 0 for i in range(24-low_die+1, 24)):
+                        p_bear = 24 - low_die
+                        if p_bear >= 18 and my_pts[p_bear] > 0:
+                            src_low = p_bear
+                            can_play_low = True
+                            break
+            if can_play_low:
+                return f"H:A{src_high},A{src_low}"
+            else:
+                return f"H:A{src_high},P"
+        # cannot play high die?
+        if low_die > 0:
+            for p in range(23, 17, -1):
+                if my_pts[p] == 0:
+                    continue
+                dist = 24 - p
+                if low_die >= dist:
+                    return f"L:A{p},P"
+                else:
+                    if all(my_pts[i] == 0 for i in range(24-low_die+1, 24)):
+                        p_bear = 24 - low_die
+                        if p_bear >= 18 and my_pts[p_bear] > 0:
+                            return f"L:A{p_bear},P"
+        # cannot bear off with either die?
+        return "H:P,P"
+
+    # Not bearing off, no bar
+    # Generate all possible moves
+    # We try to simulate valid moves: from point p, with die d, to p-d
+    # We assume we move toward lower indices: from 23 to 0.
+    # So destination = p - d must be >=0, and opp[dest] <=1.
+    # Or if p-d <0, but not in home board → cannot bear off → invalid.
+    # But we already checked bearing off: not all checkers in home → cannot bear off.
+
+    # So only moves: p-d >=0 and opp[p-d] <=1.
+
+    # We want to maximize progress (move high p down) and avoid leaving blots.
+    # Also, hitting opp blot is good.
+
+    # We consider the two dice: we must play both if possible, else higher die.
+
+    # Find all sources for high die
+    sources_high = []
+    for p in range(23, -1, -1):
+        if my_pts[p] == 0:
+            continue
+        dest = p - high_die
+        if dest < 0:
+            continue  # cannot bear off yet
+        if dest < 24 and opp_pts[dest] <= 1:
+            sources_high.append(p)
+
+    # Sources for low die
+    sources_low = []
+    for p in range(23, -1, -1):
+        if my_pts[p] == 0:
+            continue
+        dest = p - low_die
+        if dest < 0:
+            continue
+        if dest < 24 and opp_pts[dest] <= 1:
+            sources_low.append(p)
+
+    # If neither die can be played, pass.
+    if not sources_high and not sources_low:
+        return "H:P,P"
+
+    # If only low die can be played but high die cannot? But rule: must play higher if possible.
+    if not sources_high and sources_low:
+        # But we cannot play low if high is playable? But high is not.
+        # So we can play low die.
+        # But the move must be H:P,P if high can't be played? No: we can play one die, but must play high if possible.
+        # Here high is not possible, so we can play low.
+        # But the order: we must encode which die we use first? But if only one move, we can use L or H?
+        # But the action format requires to specify die order. Since we play only one move, we can return e.g. L:S,P or H:P,S?
+        # But the rule: we must play the higher die if possible. Since it's not, we can play the lower die.
+        # We can return either H:P,S or L:S,P? But the engine expects the die order.
+        # However, since only one move, we can choose L:S,P — meaning first move uses lower die (which we have), second (higher) is not played.
+        # But to be safe, we should use the format that matches the die played.
+        # We play the lower die -> first move uses lower die -> L.
+        # So L:source,P.
+        # Pick best source for low die: prefer high p.
+        src = max(sources_low)
+        return f"L:A{src},P"
+
+    # If sources_high is non-empty but sources_low is empty, we play high die only (with H, and P for second)
+    if sources_high and not sources_low:
+        src = max(sources_high)  # choose back checker
+        return f"H:A{src},P"
+
+    # Both dice can be played — we must play both.
+    # Now, we need to decide order: H or L.
+    # Try H: first play high die from some source, then low die from some source (possibly same)
+    # Or L: first low, then high.
+
+    # We'll evaluate moves by a heuristic score.
+    # Score components:
+    - pip_count_reduction (higher is better)
+    - hitting an opponent blot (if after move, we land on a point with one opponent, we hit: good)
+    - avoid leaving a blot in our move that can be hit
+    - move back checkers first
+
+    best_score = -100000
+    best_action = "H:P,P"
+
+    # We'll try both orders: H and L
+    # But also need to consider: after first move, the board changes.
+
+    for order in ['H', 'L']:
+        if order == 'H':
+            die1, die2 = high_die, low_die
+            sources1, sources2 = sources_high, sources_low
+        else:
+            die1, die2 = low_die, high_die
+            sources1, sources2 = sources_low, sources_high
+
+        for s1 in sources1:
+            # First move: from s1 with die1
+            dest1 = s1 - die1
+            if dest1 < 0 or dest1 >= 24:
+                continue
+            # Simulate after first move:
+            my_pts1 = my_pts.copy()
+            opp_pts1 = opp_pts.copy()
+            my_pts1[s1] -= 1
+            if dest1 >= 0 and dest1 < 24:
+                if opp_pts1[dest1] == 1:
+                    # We hit a blot: send opponent to bar
+                    opp_pts1[dest1] = 0
+                    # Note: actual bar count not used here, but state changes
+                my_pts1[dest1] += 1
+
+            # Now, for second die, find legal sources
+            sources2_legal = []
+            for s2 in range(23, -1, -1):
+                if my_pts1[s2] == 0:
+                    continue
+                dest2 = s2 - die2
+                if dest2 < 0 or dest2 >= 24:
+                    continue
+                if opp_pts1[dest2] <= 1:
+                    # But if s2 == s1 and we only had one checker, we already moved it
+                    # my_pts1 already updated, so it's fine
+                    sources2_legal.append(s2)
+
+            if not sources2_legal:
+                continue
+
+            # For simplicity, pick best s2: highest point
+            s2 = max(sources2_legal)
+
+            # Now score this move
+            score = 0
+            # 1. Pip count reduction: more is better
+            # Each move reduces pip count by die value
+            pip_reduction = die1 + die2
+            if die1 == high_die and die2 == low_die:
+                # order H: we play high then low
+                pass
+            elif die1 == low_die and die2 == high_die:
+                # order L
+                pip_reduction = low_die + high_die  # same
+
+            score += pip_reduction * 10
+
+            # 2. Did we hit in first move?
+            if dest1 >= 0 and dest1 < 24 and opp_pts[dest1] == 1:
+                score += 100
+
+            # 3. Did we hit in second move?
+            dest2_final = s2 - die2
+            if dest2_final >= 0 and dest2_final < 24 and opp_pts1[dest2_final] == 1:
+                score += 100
+
+            # 4. Avoid leaving blots that can be hit
+            # After the full move, count how many of our blots (single checker) are on points that opponent can hit
+            my_pts2 = my_pts1.copy()
+            my_pts2[s2] -= 1
+            if dest2_final >= 0 and dest2_final < 24:
+                if my_pts2[dest2_final] == 1 and opp_pts1[dest2_final] == 0:
+                    # We place a blot at dest2_final -> opponent might hit
+                    # Check if opponent can hit it: with any die 1..6?
+                    for d in range(1,7):
+                        src_opp = dest2_final + d  # opponent moves from src_opp to dest2_final, assuming they move in +d direction
+                        if src_opp < 24 and opp_pts[src_opp] > 0:
+                            score -= 5
+                elif my_pts2[dest2_final] == 0 and opp_pts1[dest2_final] == 0:
+                    # we land and move one checker there: after move, it's one checker
+                    score -= 5
+            # Similarly for first move dest1, unless it's also second move dest
+            if dest1 != dest2_final and dest1 >=0 and dest1 <24:
+                if my_pts1[dest1] == 1:  # and didn't move from there in second move
+                    for d in range(1,7):
+                        src_opp = dest1 + d
+                        if src_opp < 24 and opp_pts[src_opp] > 0:
+                            score -= 5
+
+            # 5. Prefer moving back checkers (high index)
+            # We already bias by using max(sources), but we can add
+            score += s1 * 2
+            score += s2 * 2
+
+            if score > best_score:
+                best_score = score
+                if order == 'H':
+                    best_action = f"H:A{s1},A{s2}"
+                else:
+                    best_action = f"L:A{s1},A{s2}"
+
+    if best_score > -100000:
+        return best_action
+
+    # Fallback: must be that we can only play one die? But we already handled?
+    # Try: only play high die
+    if sources_high:
+        s = max(sources_high)
+        return f"H:A{s},P"
+    elif sources_low:
+        s = max(sources_low)
+        return f"L:A{s},P"
+    else:
+        return "H:P,P"
+</code>

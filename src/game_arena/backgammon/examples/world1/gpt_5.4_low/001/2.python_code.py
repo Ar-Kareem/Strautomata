@@ -1,0 +1,313 @@
+
+from copy import deepcopy
+
+def policy(state: dict) -> str:
+    # ---------- Helpers ----------
+    def clone_state(s):
+        return {
+            'my_pts': s['my_pts'][:],
+            'opp_pts': s['opp_pts'][:],
+            'my_bar': s['my_bar'],
+            'opp_bar': s['opp_bar'],
+            'my_off': s['my_off'],
+            'opp_off': s['opp_off'],
+            'dice': s.get('dice', [])[:],
+        }
+
+    def all_in_home(s):
+        if s['my_bar'] > 0:
+            return False
+        for i in range(6, 24):
+            if s['my_pts'][i] > 0:
+                return False
+        return True
+
+    def can_bear_off_from(s, src, die):
+        # src must be in 0..5 and all checkers in home.
+        if src < 0 or src > 5:
+            return False
+        if not all_in_home(s):
+            return False
+        need = src + 1
+        if die == need:
+            return True
+        if die > need:
+            # Oversized bear off allowed only if no checker on higher points.
+            for j in range(src + 1, 6):
+                if s['my_pts'][j] > 0:
+                    return False
+            return True
+        return False
+
+    def apply_single_move(s, src_token, die):
+        """
+        Return new state after legal move, or None if illegal.
+        src_token: 'B' or integer point index
+        """
+        ns = clone_state(s)
+
+        # Must enter from bar first.
+        if ns['my_bar'] > 0 and src_token != 'B':
+            return None
+
+        if src_token == 'B':
+            if ns['my_bar'] <= 0:
+                return None
+            dest = 24 - die  # die 1->23, die 6->18
+            if dest < 0 or dest > 23:
+                return None
+            if ns['opp_pts'][dest] >= 2:
+                return None
+            ns['my_bar'] -= 1
+            if ns['opp_pts'][dest] == 1:
+                ns['opp_pts'][dest] = 0
+                ns['opp_bar'] += 1
+            ns['my_pts'][dest] += 1
+            return ns
+
+        # Normal board move
+        src = src_token
+        if not (0 <= src <= 23):
+            return None
+        if ns['my_pts'][src] <= 0:
+            return None
+
+        dest = src - die
+        if dest >= 0:
+            if ns['opp_pts'][dest] >= 2:
+                return None
+            ns['my_pts'][src] -= 1
+            if ns['opp_pts'][dest] == 1:
+                ns['opp_pts'][dest] = 0
+                ns['opp_bar'] += 1
+            ns['my_pts'][dest] += 1
+            return ns
+        else:
+            # Bearing off
+            if not can_bear_off_from(ns, src, die):
+                return None
+            ns['my_pts'][src] -= 1
+            ns['my_off'] += 1
+            return ns
+
+    def legal_sources_for_die(s, die):
+        out = []
+        if s['my_bar'] > 0:
+            ns = apply_single_move(s, 'B', die)
+            if ns is not None:
+                out.append(('B', ns))
+            return out
+
+        for src in range(24):
+            if s['my_pts'][src] <= 0:
+                continue
+            ns = apply_single_move(s, src, die)
+            if ns is not None:
+                out.append((src, ns))
+        return out
+
+    def src_to_token(src):
+        if src == 'B':
+            return 'B'
+        if src == 'P':
+            return 'P'
+        return f"A{src}"
+
+    def pip_count_my(s):
+        # My checkers move from 23 -> 0 -> off, so distance is i+1
+        total = 25 * s['my_bar']
+        for i, n in enumerate(s['my_pts']):
+            total += (i + 1) * n
+        return total
+
+    def pip_count_opp(s):
+        # Opponent moves from 0 -> 23 -> off, so distance is 24-i
+        total = 25 * s['opp_bar']
+        for i, n in enumerate(s['opp_pts']):
+            total += (24 - i) * n
+        return total
+
+    def exposed_blot_penalty(s):
+        # Penalize our blots that can be directly hit by opposing single die.
+        pen = 0.0
+        for j in range(24):
+            if s['my_pts'][j] != 1:
+                continue
+            threats = 0
+
+            # Opponent moves from low to high, so to hit point j they come from j-k.
+            for k in range(1, 7):
+                src = j - k
+                if 0 <= src <= 23 and s['opp_pts'][src] > 0:
+                    threats += min(2, s['opp_pts'][src])
+
+            # Opponent from bar enters to die-1 in 0..5, so blots in home board are hittable from bar.
+            if 0 <= j <= 5 and s['opp_bar'] > 0:
+                threats += 2
+
+            # Blots deeper in outer board are usually more dangerous than advanced anchors.
+            zone_mult = 1.0
+            if j >= 18:
+                zone_mult = 0.6  # advanced anchor/blot less bad
+            elif 6 <= j <= 17:
+                zone_mult = 1.2
+
+            pen += zone_mult * threats
+        return pen
+
+    def made_points_value(s):
+        val = 0.0
+        for i, n in enumerate(s['my_pts']):
+            if n >= 2:
+                val += 1.0
+                if 0 <= i <= 5:
+                    val += 1.5  # home board points stronger
+                elif 18 <= i <= 23:
+                    val += 0.7  # advanced anchors useful
+                else:
+                    val += 0.4
+                if n >= 3:
+                    val += 0.2
+        return val
+
+    def blot_count(s):
+        return sum(1 for n in s['my_pts'] if n == 1)
+
+    def prime_structure_value(s):
+        # Reward consecutive made points.
+        val = 0.0
+        run = 0
+        for i in range(24):
+            if s['my_pts'][i] >= 2:
+                run += 1
+            else:
+                if run >= 2:
+                    val += run * run * 0.6
+                run = 0
+        if run >= 2:
+            val += run * run * 0.6
+        return val
+
+    def eval_state(s, prev_state):
+        score = 0.0
+
+        # Big strategic terms
+        score += 120.0 * (s['my_off'] - prev_state['my_off'])
+        score += 38.0 * (s['opp_bar'] - prev_state['opp_bar'])
+        score += 18.0 * (prev_state['my_bar'] - s['my_bar'])
+
+        # Race
+        score += 0.55 * (pip_count_opp(s) - pip_count_my(s))
+
+        # Structure
+        score += 8.0 * made_points_value(s)
+        score += 5.0 * prime_structure_value(s)
+
+        # Safety
+        score -= 9.0 * blot_count(s)
+        score -= 6.5 * exposed_blot_penalty(s)
+
+        # Slight bonus for keeping checkers spread less awkwardly in home during bearoff phase
+        if all_in_home(s):
+            for i in range(6):
+                score -= 0.15 * i * s['my_pts'][i]
+
+        return score
+
+    # ---------- Move generation ----------
+    dice = state.get('dice', [])
+    if not dice:
+        return "H:P,P"
+
+    # Single-die case
+    if len(dice) == 1:
+        d = dice[0]
+        moves = legal_sources_for_die(state, d)
+        if not moves:
+            return "H:P,P"
+
+        best_src = None
+        best_score = None
+        for src, ns in moves:
+            sc = eval_state(ns, state)
+            if best_score is None or sc > best_score:
+                best_score = sc
+                best_src = src
+        return f"H:{src_to_token(best_src)},P"
+
+    # Two-dice case
+    d1, d2 = dice[0], dice[1]
+    hi, lo = (d1, d2) if d1 >= d2 else (d2, d1)
+
+    orders = []
+    if hi == lo:
+        orders = [('H', [hi, lo])]
+    else:
+        orders = [('H', [hi, lo]), ('L', [lo, hi])]
+
+    candidates = []
+
+    for order_char, dice_order in orders:
+        first_moves = legal_sources_for_die(state, dice_order[0])
+
+        if not first_moves:
+            # No move with first die in this order
+            continue
+
+        for src1, s1 in first_moves:
+            second_moves = legal_sources_for_die(s1, dice_order[1])
+            if second_moves:
+                for src2, s2 in second_moves:
+                    candidates.append({
+                        'order': order_char,
+                        'srcs': [src1, src2],
+                        'used': 2,
+                        'first_die': dice_order[0],
+                        'state': s2,
+                    })
+            else:
+                candidates.append({
+                    'order': order_char,
+                    'srcs': [src1],
+                    'used': 1,
+                    'first_die': dice_order[0],
+                    'state': s1,
+                })
+
+    if not candidates:
+        return "H:P,P"
+
+    # Must use both dice if possible
+    max_used = max(c['used'] for c in candidates)
+    candidates = [c for c in candidates if c['used'] == max_used]
+
+    # If only one die can be played, must use higher die when possible
+    if max_used == 1 and hi != lo:
+        higher_only = [c for c in candidates if c['first_die'] == hi]
+        if higher_only:
+            candidates = higher_only
+
+    # Score candidates
+    best = None
+    best_score = None
+    for c in candidates:
+        sc = eval_state(c['state'], state)
+
+        # Small tie-breakers:
+        # prefer using higher die first if equal score, and lexicographically stable output
+        sc += 0.01 if c['order'] == 'H' else 0.0
+
+        if best_score is None or sc > best_score:
+            best_score = sc
+            best = c
+        elif sc == best_score:
+            # Stable deterministic tie-break
+            cur_str = f"{c['order']}:{src_to_token(c['srcs'][0])},{src_to_token(c['srcs'][1] if c['used'] > 1 else 'P')}"
+            best_str = f"{best['order']}:{src_to_token(best['srcs'][0])},{src_to_token(best['srcs'][1] if best['used'] > 1 else 'P')}"
+            if cur_str < best_str:
+                best = c
+
+    if best['used'] == 2:
+        return f"{best['order']}:{src_to_token(best['srcs'][0])},{src_to_token(best['srcs'][1])}"
+    else:
+        return f"{best['order']}:{src_to_token(best['srcs'][0])},P"

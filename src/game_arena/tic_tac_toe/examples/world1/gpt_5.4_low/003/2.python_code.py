@@ -1,0 +1,134 @@
+
+from functools import lru_cache
+
+WIN_LINES = (
+    ((0, 0), (0, 1), (0, 2)),
+    ((1, 0), (1, 1), (1, 2)),
+    ((2, 0), (2, 1), (2, 2)),
+    ((0, 0), (1, 0), (2, 0)),
+    ((0, 1), (1, 1), (2, 1)),
+    ((0, 2), (1, 2), (2, 2)),
+    ((0, 0), (1, 1), (2, 2)),
+    ((0, 2), (1, 1), (2, 0)),
+)
+
+PREFERENCE = {
+    (1, 1): 3,  # center
+    (0, 0): 2, (0, 2): 2, (2, 0): 2, (2, 2): 2,  # corners
+    (0, 1): 1, (1, 0): 1, (1, 2): 1, (2, 1): 1,  # edges
+}
+
+
+def _winner(board):
+    for line in WIN_LINES:
+        s = sum(board[r][c] for r, c in line)
+        if s == 3:
+            return 1
+        if s == -3:
+            return -1
+    return 0
+
+
+def _legal_moves(board):
+    moves = []
+    for r in range(3):
+        for c in range(3):
+            if board[r][c] == 0:
+                moves.append((r, c))
+    return moves
+
+
+def _board_to_tuple(board):
+    return tuple(tuple(row) for row in board)
+
+
+@lru_cache(maxsize=None)
+def _minimax(board_t, turn):
+    """
+    Returns score from the perspective of player 1 (us):
+      1  = forced win
+      0  = forced draw
+     -1  = forced loss
+    `turn` is whose turn it is to move: 1 or -1.
+    """
+    board = [list(row) for row in board_t]
+    w = _winner(board)
+    if w != 0:
+        return w
+
+    moves = _legal_moves(board)
+    if not moves:
+        return 0
+
+    if turn == 1:
+        best = -2
+        for r, c in moves:
+            board[r][c] = 1
+            score = _minimax(_board_to_tuple(board), -1)
+            board[r][c] = 0
+            if score > best:
+                best = score
+            if best == 1:
+                break
+        return best
+    else:
+        best = 2
+        for r, c in moves:
+            board[r][c] = -1
+            score = _minimax(_board_to_tuple(board), 1)
+            board[r][c] = 0
+            if score < best:
+                best = score
+            if best == -1:
+                break
+        return best
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Collect legal moves first; if none exist, return a valid in-range fallback.
+    moves = _legal_moves(board)
+    if not moves:
+        return (0, 0)
+
+    # 1) Immediate winning move.
+    for r, c in moves:
+        board[r][c] = 1
+        if _winner(board) == 1:
+            board[r][c] = 0
+            return (r, c)
+        board[r][c] = 0
+
+    # 2) Immediate block if opponent could win next move.
+    opp_wins = []
+    for r, c in moves:
+        board[r][c] = -1
+        if _winner(board) == -1:
+            opp_wins.append((r, c))
+        board[r][c] = 0
+    if opp_wins:
+        opp_wins.sort(key=lambda mv: (-PREFERENCE.get(mv, 0), mv[0], mv[1]))
+        return opp_wins[0]
+
+    # 3) Full minimax on remaining moves.
+    best_move = moves[0]
+    best_key = (-3, -1, -1, -1)  # (score, pref, -row, -col) style comparison helper
+
+    for r, c in moves:
+        board[r][c] = 1
+        score = _minimax(_board_to_tuple(board), -1)
+        board[r][c] = 0
+
+        pref = PREFERENCE.get((r, c), 0)
+        # Higher score better; then stronger positional preference; then deterministic order.
+        key = (score, pref, -r, -c)
+        if key > best_key:
+            best_key = key
+            best_move = (r, c)
+
+    # Safety: ensure move is legal.
+    r, c = best_move
+    if 0 <= r < 3 and 0 <= c < 3 and board[r][c] == 0:
+        return best_move
+
+    # Final fallback: first legal move.
+    return moves[0]

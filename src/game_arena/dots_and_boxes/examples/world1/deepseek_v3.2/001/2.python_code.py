@@ -1,0 +1,116 @@
+
+import numpy as np
+import random
+
+def policy(horizontal, vertical, capture):
+    # Helper to check if a move completes a box
+    def completes_box(r, c, dir):
+        if dir == 'H':
+            # horizontal edge at (r,c) connects two boxes above/below?
+            # actually: horizontal edge at (r,c) is between row r and r-1 vertically? Let's map:
+            # In 4x4 boxes, horizontal edges are 5x4? Wait given arrays 5x5:
+            # horizontal[row,col]: row in 0..4, col in 0..4 but only horizontal edges exist at col 0..3? Let's think physically:
+            # But given the 5x5 arrays, I'll treat as:
+            # horizontal[r,c] : horizontal edge from dot (r,c) to (r,c+1)
+            # vertical[r,c] : vertical edge from dot (r,c) to (r+1,c)
+            # For box (i,j) top-left dot (i,j), its four edges:
+            # top: horizontal[i,j], bottom: horizontal[i+1,j], left: vertical[i,j], right: vertical[i,j+1]
+            # We'll check if filling this edge completes any adjacent box.
+            boxes = []
+            # Above the edge
+            if r > 0:
+                # box (r-1, c) bottom edge is this horizontal[r,c]
+                top = horizontal[r-1, c] != 0
+                bottom = True  # the new edge
+                left = vertical[r-1, c] != 0
+                right = vertical[r-1, c+1] != 0
+                if top and bottom and left and right:
+                    boxes.append((r-1, c))
+            # Below the edge
+            if r < 4:
+                # box (r, c) top edge is this horizontal[r,c]
+                top = True
+                bottom = horizontal[r+1, c] != 0
+                left = vertical[r, c] != 0
+                right = vertical[r, c+1] != 0
+                if top and bottom and left and right:
+                    boxes.append((r, c))
+            return boxes
+        else:  # dir == 'V'
+            # vertical edge at (r,c) is between dot (r,c) and (r+1,c)
+            # Left box: (r, c-1) right edge
+            boxes = []
+            if c > 0:
+                top = horizontal[r, c-1] != 0
+                bottom = horizontal[r+1, c-1] != 0
+                left = vertical[r, c-1] != 0
+                right = True
+                if top and bottom and left and right:
+                    boxes.append((r, c-1))
+            # Right box: (r, c) left edge
+            if c < 4:
+                top = horizontal[r, c] != 0
+                bottom = horizontal[r+1, c] != 0
+                left = True
+                right = vertical[r, c+1] != 0
+                if top and bottom and left and right:
+                    boxes.append((r, c))
+            return boxes
+
+    # List all legal moves
+    legal_moves = []
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                legal_moves.append((r, c, 'H'))
+        for c in range(5):
+            if r < 4 and vertical[r, c] == 0:
+                legal_moves.append((r, c, 'V'))
+
+    # Find capturing moves
+    capturing_moves = []
+    for (r, c, dir) in legal_moves:
+        boxes = completes_box(r, c, dir)
+        if boxes:
+            capturing_moves.append((r, c, dir))
+    if capturing_moves:
+        # If multiple captures, choose one arbitrarily (first)
+        r, c, dir = capturing_moves[0]
+        return f"{r},{c},{dir}"
+
+    # No capture available: choose move that minimizes opponent's immediate captures next turn
+    def opponent_captures_after(r, c, dir):
+        # Simulate making this move
+        h2 = horizontal.copy()
+        v2 = vertical.copy()
+        if dir == 'H':
+            h2[r, c] = 1
+        else:
+            v2[r, c] = 1
+        # Check opponent's possible captures next turn
+        opp_captures = 0
+        for (rr, cc, ddir) in legal_moves:
+            if (rr, cc, ddir) == (r, c, dir):
+                continue
+            if (ddir == 'H' and h2[rr, cc] != 0) or (ddir == 'V' and v2[rr, cc] != 0):
+                continue
+            boxes = completes_box(rr, cc, ddir)
+            if boxes:
+                opp_captures += len(boxes)
+        return opp_captures
+
+    best_move = None
+    best_score = float('inf')
+    for (r, c, dir) in legal_moves:
+        score = opponent_captures_after(r, c, dir)
+        if score < best_score:
+            best_score = score
+            best_move = (r, c, dir)
+
+    if best_move is None:
+        # fallback random
+        r, c, dir = random.choice(legal_moves)
+    else:
+        r, c, dir = best_move
+
+    return f"{r},{c},{dir}"

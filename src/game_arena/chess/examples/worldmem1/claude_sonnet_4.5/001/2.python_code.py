@@ -1,0 +1,215 @@
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str], memory: dict) -> tuple[str, dict]:
+    import random
+    
+    # Piece values
+    PIECE_VALUES = {
+        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+    }
+    
+    # Piece-square tables (simplified)
+    PAWN_TABLE = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        50, 50, 50, 50, 50, 50, 50, 50,
+        10, 10, 20, 30, 30, 20, 10, 10,
+        5,  5, 10, 25, 25, 10,  5,  5,
+        0,  0,  0, 20, 20,  0,  0,  0,
+        5, -5,-10,  0,  0,-10, -5,  5,
+        5, 10, 10,-20,-20, 10, 10,  5,
+        0,  0,  0,  0,  0,  0,  0,  0
+    ]
+    
+    KNIGHT_TABLE = [
+        -50,-40,-30,-30,-30,-30,-40,-50,
+        -40,-20,  0,  0,  0,  0,-20,-40,
+        -30,  0, 10, 15, 15, 10,  0,-30,
+        -30,  5, 15, 20, 20, 15,  5,-30,
+        -30,  0, 15, 20, 20, 15,  0,-30,
+        -30,  5, 10, 15, 15, 10,  5,-30,
+        -40,-20,  0,  5,  5,  0,-20,-40,
+        -50,-40,-30,-30,-30,-30,-40,-50
+    ]
+    
+    BISHOP_TABLE = [
+        -20,-10,-10,-10,-10,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5, 10, 10,  5,  0,-10,
+        -10,  5,  5, 10, 10,  5,  5,-10,
+        -10,  0, 10, 10, 10, 10,  0,-10,
+        -10, 10, 10, 10, 10, 10, 10,-10,
+        -10,  5,  0,  0,  0,  0,  5,-10,
+        -20,-10,-10,-10,-10,-10,-10,-20
+    ]
+    
+    ROOK_TABLE = [
+        0,  0,  0,  0,  0,  0,  0,  0,
+        5, 10, 10, 10, 10, 10, 10,  5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        -5,  0,  0,  0,  0,  0,  0, -5,
+        0,  0,  0,  5,  5,  0,  0,  0
+    ]
+    
+    QUEEN_TABLE = [
+        -20,-10,-10, -5, -5,-10,-10,-20,
+        -10,  0,  0,  0,  0,  0,  0,-10,
+        -10,  0,  5,  5,  5,  5,  0,-10,
+        -5,  0,  5,  5,  5,  5,  0, -5,
+        0,  0,  5,  5,  5,  5,  0, -5,
+        -10,  5,  5,  5,  5,  5,  0,-10,
+        -10,  0,  5,  0,  0,  0,  0,-10,
+        -20,-10,-10, -5, -5,-10,-10,-20
+    ]
+    
+    KING_TABLE = [
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -30,-40,-40,-50,-50,-40,-40,-30,
+        -20,-30,-30,-40,-40,-30,-30,-20,
+        -10,-20,-20,-20,-20,-20,-20,-10,
+        20, 20,  0,  0,  0,  0, 20, 20,
+        20, 30, 10,  0,  0, 10, 30, 20
+    ]
+    
+    PIECE_TABLES = {
+        'P': PAWN_TABLE, 'N': KNIGHT_TABLE, 'B': BISHOP_TABLE,
+        'R': ROOK_TABLE, 'Q': QUEEN_TABLE, 'K': KING_TABLE
+    }
+    
+    def square_to_index(square):
+        file = ord(square[0]) - ord('a')
+        rank = int(square[1]) - 1
+        return rank * 8 + file
+    
+    def evaluate_position(board, color):
+        score = 0
+        our_color = 'w' if color == 'white' else 'b'
+        opp_color = 'b' if color == 'white' else 'w'
+        
+        for square, piece in board.items():
+            piece_color = piece[0]
+            piece_type = piece[1]
+            
+            material_value = PIECE_VALUES[piece_type]
+            idx = square_to_index(square)
+            
+            # Flip index for black pieces
+            if piece_color == 'b':
+                idx = 63 - idx
+            
+            positional_value = PIECE_TABLES[piece_type][idx]
+            total_value = material_value + positional_value
+            
+            if piece_color == our_color:
+                score += total_value
+            else:
+                score -= total_value
+        
+        return score
+    
+    def parse_move(move_str):
+        # Extract basic move information
+        return move_str
+    
+    def apply_move(board, move_str, color):
+        # Create a copy of the board
+        new_board = board.copy()
+        
+        # Handle castling
+        if move_str == 'O-O':
+            if color == 'white':
+                new_board['g1'] = new_board.pop('e1', 'wK')
+                new_board['f1'] = new_board.pop('h1', 'wR')
+            else:
+                new_board['g8'] = new_board.pop('e8', 'bK')
+                new_board['f8'] = new_board.pop('h8', 'bR')
+            return new_board
+        elif move_str == 'O-O-O':
+            if color == 'white':
+                new_board['c1'] = new_board.pop('e1', 'wK')
+                new_board['d1'] = new_board.pop('a1', 'wR')
+            else:
+                new_board['c8'] = new_board.pop('e8', 'bK')
+                new_board['d8'] = new_board.pop('a8', 'bR')
+            return new_board
+        
+        # Parse the move
+        move = move_str.replace('+', '').replace('#', '').replace('x', '')
+        promotion = None
+        if '=' in move:
+            move, promotion = move.split('=')
+        
+        # Determine the destination square (last 2 characters)
+        to_square = move[-2:]
+        
+        # Find the piece that's moving
+        our_color = 'w' if color == 'white' else 'b'
+        
+        if move[0].isupper() and move[0] != 'O':
+            piece_type = move[0]
+            from_hint = move[1:-2] if len(move) > 3 else ''
+        else:
+            piece_type = 'P'
+            from_hint = move[0] if len(move) > 2 else ''
+        
+        # Find the source square
+        from_square = None
+        for square, piece in new_board.items():
+            if piece[0] == our_color and piece[1] == piece_type:
+                if from_hint:
+                    if from_hint in square:
+                        from_square = square
+                        break
+                else:
+                    # For simple moves, find the piece
+                    from_square = square
+                    break
+        
+        # If we couldn't find it, try harder
+        if from_square is None:
+            for square, piece in new_board.items():
+                if piece[0] == our_color and piece[1] == piece_type:
+                    from_square = square
+                    break
+        
+        if from_square:
+            piece = new_board.pop(from_square)
+            if promotion:
+                piece = our_color + promotion
+            new_board[to_square] = piece
+        
+        return new_board
+    
+    # Prioritize checkmate
+    for move in legal_moves:
+        if '#' in move:
+            return (move, memory)
+    
+    # Evaluate all moves
+    best_move = legal_moves[0]
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        new_board = apply_move(pieces, move, to_play)
+        score = evaluate_position(new_board, to_play)
+        
+        # Bonus for checks
+        if '+' in move:
+            score += 50
+        
+        # Bonus for captures
+        if 'x' in move:
+            score += 30
+        
+        # Bonus for promotions
+        if '=Q' in move:
+            score += 800
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return (best_move, memory)

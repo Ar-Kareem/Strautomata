@@ -1,0 +1,262 @@
+
+import numpy as np
+from collections import deque
+
+def policy(me, opponent, memory):
+    BOARD_SIZE = 19
+    board = np.zeros((BOARD_SIZE + 2, BOARD_SIZE + 2), dtype=np.int8)
+    # Border
+    board[0, :] = -1
+    board[BOARD_SIZE + 1, :] = -1
+    board[:, 0] = -1
+    board[:, BOARD_SIZE + 1] = -1
+    
+    ME = 1
+    OPP = 2
+    EMPTY = 0
+    BORDER = -1
+    
+    for r, c in me:
+        board[r, c] = ME
+    for r, c in opponent:
+        board[r, c] = OPP
+    
+    prev_boards = memory.get('prev_boards', [])
+    
+    def neighbors(r, c):
+        return [(r-1, c), (r+1, c), (r, c-1), (r, c+1)]
+    
+    def get_group_and_liberties(board, r, c):
+        color = board[r, c]
+        if color == EMPTY or color == BORDER:
+            return set(), set()
+        group = set()
+        liberties = set()
+        queue = deque([(r, c)])
+        group.add((r, c))
+        while queue:
+            cr, cc = queue.popleft()
+            for nr, nc in neighbors(cr, cc):
+                if (nr, nc) in group:
+                    continue
+                val = board[nr, nc]
+                if val == EMPTY:
+                    liberties.add((nr, nc))
+                elif val == color:
+                    group.add((nr, nc))
+                    queue.append((nr, nc))
+        return group, liberties
+    
+    def count_liberties_after_move(board, r, c, color):
+        # Simulate placing stone
+        b = board.copy()
+        b[r, c] = color
+        opp_color = OPP if color == ME else ME
+        # Remove captured opponent groups
+        for nr, nc in neighbors(r, c):
+            if b[nr, nc] == opp_color:
+                g, libs = get_group_and_liberties(b, nr, nc)
+                if len(libs) == 0:
+                    for gr, gc in g:
+                        b[gr, gc] = EMPTY
+        # Count liberties of the placed stone's group
+        _, libs = get_group_and_liberties(b, r, c)
+        return len(libs), b
+    
+    def is_legal(board, r, c, color):
+        if board[r, c] != EMPTY:
+            return False
+        libs, new_board = count_liberties_after_move(board, r, c, color)
+        if libs == 0:
+            return False  # suicide
+        # Ko check
+        board_hash = new_board[1:BOARD_SIZE+1, 1:BOARD_SIZE+1].tobytes()
+        if board_hash in prev_boards:
+            return False
+        return True
+    
+    def simulate_move(board, r, c, color):
+        b = board.copy()
+        b[r, c] = color
+        opp_color = OPP if color == ME else ME
+        captured = 0
+        for nr, nc in neighbors(r, c):
+            if b[nr, nc] == opp_color:
+                g, libs = get_group_and_liberties(b, nr, nc)
+                if len(libs) == 0:
+                    captured += len(g)
+                    for gr, gc in g:
+                        b[gr, gc] = EMPTY
+        return b, captured
+    
+    # Find all empty points
+    empty_points = []
+    for r in range(1, BOARD_SIZE + 1):
+        for c in range(1, BOARD_SIZE + 1):
+            if board[r, c] == EMPTY:
+                empty_points.append((r, c))
+    
+    # Find opponent groups with 1 liberty (capture moves)
+    capture_moves = set()
+    visited_opp = set()
+    for r, c in opponent:
+        if (r, c) in visited_opp:
+            continue
+        g, libs = get_group_and_liberties(board, r, c)
+        visited_opp.update(g)
+        if len(libs) == 1:
+            lib = list(libs)[0]
+            capture_moves.add(lib)
+    
+    # Find own groups with 1 liberty (save moves)
+    save_moves = set()
+    visited_me = set()
+    for r, c in me:
+        if (r, c) in visited_me:
+            continue
+        g, libs = get_group_and_liberties(board, r, c)
+        visited_me.update(g)
+        if len(libs) == 1:
+            lib = list(libs)[0]
+            save_moves.add(lib)
+    
+    def is_eye(board, r, c, color):
+        # All 4 neighbors are same color or border
+        for nr, nc in neighbors(r, c):
+            if board[nr, nc] != color and board[nr, nc] != BORDER:
+                return False
+        # Check diagonals: at most 1 can be opponent
+        diags = [(r-1, c-1), (r-1, c+1), (r+1, c-1), (r+1, c+1)]
+        opp_count = 0
+        border_count = 0
+        opp_color = OPP if color == ME else ME
+        for dr, dc in diags:
+            if board[dr, dc] == opp_color:
+                opp_count += 1
+            elif board[dr, dc] == BORDER:
+                border_count += 1
+        if border_count > 0:
+            return opp_count == 0
+        return opp_count <= 1
+    
+    # Score all legal moves
+    move_scores = []
+    
+    total_stones = len(me) + len(opponent)
+    
+    # Star points for opening
+    star_points = set()
+    for r in [4, 10, 16]:
+        for c in [4, 10, 16]:
+            star_points.add((r, c))
+    
+    # Corners and sides priority in opening
+    corner_points = [(4, 4), (4, 16), (16, 4), (16, 16)]
+    side_stars = [(4, 10), (10, 4), (10, 16), (16, 10)]
+    
+    for r, c in empty_points:
+        if not is_legal(board, r, c, ME):
+            continue
+        
+        # Don't fill own eyes
+        if is_eye(board, r, c, ME):
+            continue
+        
+        score = 0.0
+        
+        new_board, captured = simulate_move(board, r, c, ME)
+        _, my_libs = get_group_and_liberties(new_board, r, c)
+        my_lib_count = len(my_libs)
+        
+        # Capture bonus
+        if (r, c) in capture_moves:
+            score += 50 + captured * 10
+        
+        # Save bonus
+        if (r, c) in save_moves:
+            if my_lib_count >= 2:
+                score += 40
+        
+        # Avoid self-atari
+        if my_lib_count <= 1:
+            score -= 100
+        elif my_lib_count == 2:
+            score -= 5
+        
+        # Liberty score
+        score += my_lib_count * 2
+        
+        # Proximity to existing stones
+        min_dist_me = 100
+        for mr, mc in me:
+            d = abs(r - mr) + abs(c - mc)
+            min_dist_me = min(min_dist_me, d)
+        min_dist_opp = 100
+        for opr, opc in opponent:
+            d = abs(r - opr) + abs(c - opc)
+            min_dist_opp = min(min_dist_opp, d)
+        
+        if total_stones < 20:
+            # Opening: prefer star points and corners
+            if (r, c) in corner_points:
+                score += 25
+            elif (r, c) in side_stars:
+                score += 20
+            elif (r, c) in star_points:
+                score += 15
+            # Prefer 3rd and 4th lines
+            for coord in [r, c]:
+                if coord in [3, 4, 16, 17]:
+                    score += 5
+                elif coord in [1, 2, 18, 19]:
+                    score -= 5
+            if len(me) > 0:
+                if min_dist_me < 3:
+                    score -= 5
+                elif min_dist_me <= 6:
+                    score += 5
+        else:
+            # Middle/end game
+            if len(me) > 0 and min_dist_me <= 3:
+                score += 8
+            if len(opponent) > 0 and min_dist_opp <= 3:
+                score += 5
+            # Edge penalty in middle game
+            for coord in [r, c]:
+                if coord in [1, 19]:
+                    score -= 3
+        
+        # Reduce pressure on opponent groups with 2 liberties (threatening)
+        for nr, nc in neighbors(r, c):
+            if board[nr, nc] == OPP:
+                g, libs = get_group_and_liberties(board, nr, nc)
+                if len(libs) == 2:
+                    score += 15
+                elif len(libs) == 3:
+                    score += 5
+        
+        # Connectedness: prefer moves adjacent to own stones
+        adj_me = sum(1 for nr, nc in neighbors(r, c) if board[nr, nc] == ME)
+        score += adj_me * 3
+        
+        # Small random to break ties
+        score += np.random.random() * 0.5
+        
+        move_scores.append(((r, c), score))
+    
+    # Sort by score descending
+    move_scores.sort(key=lambda x: -x[1])
+    
+    if move_scores:
+        best_move = move_scores[0][0]
+        # Record board state
+        new_b, _ = simulate_move(board, best_move[0], best_move[1], ME)
+        board_hash = new_b[1:BOARD_SIZE+1, 1:BOARD_SIZE+1].tobytes()
+        prev_boards.append(board_hash)
+        if len(prev_boards) > 10:
+            prev_boards = prev_boards[-10:]
+        memory['prev_boards'] = prev_boards
+        return (best_move, memory)
+    else:
+        # Pass
+        return ((0, 0), memory)

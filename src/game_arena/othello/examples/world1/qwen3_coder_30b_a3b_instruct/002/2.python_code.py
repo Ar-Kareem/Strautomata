@@ -1,0 +1,190 @@
+
+import numpy as np
+from collections import deque
+
+def get_valid_moves(board, player, opponent):
+    """Get all valid moves for the current player"""
+    moves = []
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),           (0, 1),
+                  (1, -1),  (1, 0),  (1, 1)]
+    
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == 0:  # Empty cell
+                # Check if this move flips any opponent disc
+                for dr, dc in directions:
+                    nr, nc = r + dr, c + dc
+                    flipped = []
+                    
+                    # Look for opponent discs in this direction
+                    while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr][nc] == 1:
+                        flipped.append((nr, nc))
+                        nr += dr
+                        nc += dc
+                    
+                    # If we found at least one opponent disc and then our disc
+                    if flipped and 0 <= nr < 8 and 0 <= nc < 8 and player[nr][nc] == 1:
+                        moves.append((r, c))
+                        break  # No need to check other directions once we found a valid move
+    return moves
+
+def make_move(board, player, opponent, r, c):
+    """Make a move and return new board state"""
+    new_board = board.copy()
+    new_player = player.copy()
+    new_opponent = opponent.copy()
+    
+    # Place our disc
+    new_player[r][c] = 1
+    new_board[r][c] = 1
+    
+    # Flip opponent discs
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),           (0, 1),
+                  (1, -1),  (1, 0),  (1, 1)]
+    
+    for dr, dc in directions:
+        nr, nc = r + dr, c + dc
+        flipped = []
+        
+        # Look for opponent discs in this direction
+        while 0 <= nr < 8 and 0 <= nc < 8 and opponent[nr][nc] == 1:
+            flipped.append((nr, nc))
+            nr += dr
+            nc += dc
+        
+        # If we found at least one opponent disc and then our disc
+        if flipped and 0 <= nr < 8 and 0 <= nc < 8 and player[nr][nc] == 1:
+            # Flip the discs
+            for fr, fc in flipped:
+                new_opponent[fr][fc] = 0
+                new_player[fr][fc] = 1
+                new_board[fr][fc] = 1
+    
+    return new_board, new_player, new_opponent
+
+def evaluate_position(player, opponent, board):
+    """Evaluate the board position using multiple heuristics"""
+    # Simple heuristics used for evaluation:
+    # 1. Disc difference 
+    # 2. Mobility (number of legal moves)
+    # 3. Corner control
+    # 4. Positional weights
+    
+    # Weight matrix for positional evaluation
+    positional_weights = np.array([
+        [100, -20,  10,   5,   5,  10, -20, 100],
+        [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+        [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+        [  5,  -2,   1,   0,   0,   1,  -2,   5],
+        [  5,  -2,   1,   0,   0,   1,  -2,   5],
+        [ 10,  -2,   1,   1,   1,   1,  -2,  10],
+        [-20, -50,  -2,  -2,  -2,  -2, -50, -20],
+        [100, -20,  10,   5,   5,  10, -20, 100]
+    ])
+    
+    # Calculate the score
+    score = 0
+    score += np.sum(positional_weights * player) - np.sum(positional_weights * opponent)
+    
+    # Corner control
+    corners = [(0,0), (0,7), (7,0), (7,7)]
+    corner_value = 0
+    for r, c in corners:
+        if player[r][c] == 1:
+            corner_value += 100
+        elif opponent[r][c] == 1:
+            corner_value -= 100
+    
+    score += corner_value
+    
+    # Mobility
+    moves_player = len(get_valid_moves(board, player, opponent))
+    moves_opponent = len(get_valid_moves(board, opponent, player))
+    mobility_diff = moves_player - moves_opponent
+    score += mobility_diff * 5
+    
+    # Disc difference
+    disc_diff = np.sum(player) - np.sum(opponent)
+    score += disc_diff * 10
+    
+    return score
+
+def minimax(board, player, opponent, depth, alpha, beta, maximizing_player):
+    """Minimax algorithm with alpha-beta pruning"""
+    if depth == 0:
+        return evaluate_position(player, opponent, board)
+    
+    valid_moves = get_valid_moves(board, player, opponent)
+    
+    if not valid_moves:
+        # If no valid moves, the game might be over or we need to pass
+        # For simplicity, assume the next player will pass and we evaluate
+        # Get next player (opponent plays next)
+        next_valid_moves = get_valid_moves(board, opponent, player)
+        if not next_valid_moves and np.sum(board) < 64:
+            # Game continues but both players can't move
+            return evaluate_position(player, opponent, board)
+        return evaluate_position(player, opponent, board)
+    
+    if maximizing_player:
+        max_eval = float('-inf')
+        for r, c in valid_moves:
+            new_board, new_player, new_opponent = make_move(board, player, opponent, r, c)
+            eval_score = minimax(new_board, new_opponent, new_player, depth - 1, alpha, beta, False)
+            max_eval = max(max_eval, eval_score)
+            alpha = max(alpha, eval_score)
+            if beta <= alpha:
+                break
+        return max_eval
+    else:
+        min_eval = float('inf')
+        for r, c in valid_moves:
+            new_board, new_player, new_opponent = make_move(board, player, opponent, r, c)
+            eval_score = minimax(new_board, new_opponent, new_player, depth - 1, alpha, beta, True)
+            min_eval = min(min_eval, eval_score)
+            beta = min(beta, eval_score)
+            if beta <= alpha:
+                break
+        return min_eval
+
+def policy(you: np.ndarray, opponent: np.ndarray) -> str:
+    """Main policy function to determine the next move"""
+    # Convert to consistent board representation
+    board = you + opponent  # 1 for occupied, 0 for empty
+    
+    # Find valid moves for current player
+    valid_moves = get_valid_moves(board, you, opponent)
+    
+    # If no valid moves, return pass
+    if not valid_moves:
+        return "pass"
+    
+    # Use minimax with alpha-beta pruning to find the best move
+    best_move = None
+    best_score = float('-inf')
+    
+    # Try different depths to balance speed and quality
+    search_depth = 4  # Shallower search for performance
+    
+    for r, c in valid_moves:
+        new_board, new_player, new_opponent = make_move(board, you, opponent, r, c)
+        score = minimax(new_board, new_opponent, new_player, search_depth - 1, float('-inf'), float('inf'), False)
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r, c)
+    
+    # Convert coordinates back to algebraic notation
+    if best_move:
+        row, col = best_move
+        file = chr(ord('a') + col)
+        rank = str(8 - row)
+        return file + rank
+    else:
+        # Fallback - return first valid move
+        r, c = valid_moves[0]
+        file = chr(ord('a') + c)
+        rank = str(8 - r)
+        return file + rank

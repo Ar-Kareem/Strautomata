@@ -1,0 +1,131 @@
+The strategy for this policy is based on a shortest-path heuristic using a Dijkstra-like algorithm (0-1 BFS) to determine the "distance" to victory for both players. In Hex, the distance is defined as the minimum number of empty cells a player needs to occupy to connect their edges. This metric accounts for existing stones (cost 0) and empty cells (cost 1).
+
+The policy evaluates every legal move by simulating the placement of the stone and calculating the new distances for both the agent and the opponent. The scoring function prioritizes moves that minimize the agent's distance to winning while maximizing the opponent's distance. This implicitly handles offensive play (bridging gaps to connect sides) and defensive play (blocking the opponent's shortest path). Immediate wins are prioritized instantly.
+
+<code>
+import collections
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[int, int]:
+    BOARD_SIZE = 11
+    
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Identify all empty cells
+    empty_cells = []
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if (r, c) not in me_set and (r, c) not in opp_set:
+                empty_cells.append((r, c))
+
+    # Standard opening: play center if board is empty
+    if not me_set and not opp_set:
+        return (BOARD_SIZE // 2, BOARD_SIZE // 2)
+
+    # Helper to get valid neighbors based on Hex grid geometry
+    # Neighbors of (r, c) are all 8-grid neighbors excluding (r-1, c-1) and (r+1, c+1)
+    def get_neighbors(r, c):
+        neighbors = []
+        deltas = [(-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0)]
+        for dr, dc in deltas:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                neighbors.append((nr, nc))
+        return neighbors
+
+    # 0-1 BFS to find shortest path distance (virtual connections)
+    # Returns the minimum number of empty cells needed to connect the two edges.
+    # my_stones: set of player's stones
+    # opp_stones: set of opponent's stones (blocks)
+    # p_color: 'b' for Black (Top-Bottom), 'w' for White (Left-Right)
+    def calculate_distance(my_stones, opp_stones, p_color):
+        dq = collections.deque()
+        dist = [[float('inf')] * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        
+        # Initialize sources from the starting edge
+        if p_color == 'b':
+            # Black connects Top (row 0) to Bottom (row 10)
+            for c in range(BOARD_SIZE):
+                if (0, c) in opp_stones:
+                    continue
+                cost = 0 if (0, c) in my_stones else 1
+                dist[0][c] = cost
+                if cost == 0:
+                    dq.appendleft((0, c))
+                else:
+                    dq.append((0, c))
+        else:
+            # White connects Left (col 0) to Right (col 10)
+            for r in range(BOARD_SIZE):
+                if (r, 0) in opp_stones:
+                    continue
+                cost = 0 if (r, 0) in my_stones else 1
+                dist[r][0] = cost
+                if cost == 0:
+                    dq.appendleft((r, 0))
+                else:
+                    dq.append((r, 0))
+                    
+        while dq:
+            r, c = dq.popleft()
+            current_dist = dist[r][c]
+            
+            for nr, nc in get_neighbors(r, c):
+                if (nr, nc) in opp_stones:
+                    continue
+                
+                # Cost to move into neighbor: 0 if already owned, 1 if empty
+                weight = 0 if (nr, nc) in my_stones else 1
+                new_dist = current_dist + weight
+                
+                if new_dist < dist[nr][nc]:
+                    dist[nr][nc] = new_dist
+                    if weight == 0:
+                        dq.appendleft((nr, nc))
+                    else:
+                        dq.append((nr, nc))
+        
+        # Find minimum distance to the target edge
+        min_dist = float('inf')
+        if p_color == 'b':
+            for c in range(BOARD_SIZE):
+                min_dist = min(min_dist, dist[BOARD_SIZE - 1][c])
+        else:
+            for r in range(BOARD_SIZE):
+                min_dist = min(min_dist, dist[r][BOARD_SIZE - 1])
+                
+        return min_dist
+
+    best_move = None
+    best_score = -float('inf')
+    
+    opp_color = 'w' if color == 'b' else 'b'
+    
+    # Evaluate each possible move
+    for r_move, c_move in empty_cells:
+        # Create simulated sets
+        new_me = me_set | {(r_move, c_move)}
+        new_opp = opp_set
+        
+        # 1. Check for immediate win (distance 0 means fully connected)
+        my_dist = calculate_distance(new_me, new_opp, color)
+        if my_dist == 0:
+            return (r_move, c_move)
+            
+        # 2. Evaluate heuristic score
+        # Score = Opponent's difficulty - My difficulty
+        opp_dist = calculate_distance(new_opp, new_me, opp_color)
+        
+        score = opp_dist - my_dist
+        
+        # Tie-breaking: prefer moves closer to center for strategic flexibility
+        center = BOARD_SIZE // 2
+        dist_to_center = abs(r_move - center) + abs(c_move - center)
+        score -= dist_to_center * 0.001
+        
+        if score > best_score:
+            best_score = score
+            best_move = (r_move, c_move)
+            
+    return best_move
+</code>

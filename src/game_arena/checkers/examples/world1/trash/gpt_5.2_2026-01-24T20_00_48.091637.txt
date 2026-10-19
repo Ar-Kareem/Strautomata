@@ -1,0 +1,434 @@
+The strategy for this policy is to **always obey mandatory captures**, and otherwise choose moves using a **time-bounded iterative-deepening alpha–beta (negamax) search** with a **transposition table** and **move ordering** (captures first, promotions, centralization). The evaluation function emphasizes **material (men vs kings)**, **promotion progress**, **center control**, and **mobility**, and it treats having no legal moves as a loss.
+
+<code>
+import time
+from typing import List, Tuple, Optional, Dict, Any
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]  # ((fr,fc),(tr,tc))
+
+INF = 10**9
+
+# ----------------------------
+# Bitboard utilities
+# ----------------------------
+
+def _bit(r: int, c: int) -> int:
+    return 1 << (r * 8 + c)
+
+def _pop_lsb(bb: int) -> Tuple[int, int]:
+    lsb = bb & -bb
+    idx = lsb.bit_length() - 1
+    return idx, bb ^ lsb
+
+def _iter_bits(bb: int):
+    while bb:
+        idx, bb = _pop_lsb(bb)
+        yield idx
+
+def _idx_to_rc(idx: int) -> Tuple[int, int]:
+    return idx // 8, idx % 8
+
+def _rc_to_idx(r: int, c: int) -> int:
+    return r * 8 + c
+
+def _on_board(r: int, c: int) -> bool:
+    return 0 <= r < 8 and 0 <= c < 8
+
+def _is_dark(r: int, c: int) -> bool:
+    # Standard checkers: dark squares have (r+c) odd (with (0,0) light).
+    return ((r + c) & 1) == 1
+
+# ----------------------------
+# State representation
+# ----------------------------
+
+class State:
+    __slots__ = ("bm", "bk", "wm", "wk", "turn")
+    def __init__(self, bm: int, bk: int, wm: int, wk: int, turn: str):
+        self.bm = bm
+        self.bk = bk
+        self.wm = wm
+        self.wk = wk
+        self.turn = turn  # 'b' or 'w'
+
+def _other(color: str) -> str:
+    return 'w' if color == 'b' else 'b'
+
+def _occupied(st: State) -> int:
+    return st.bm | st.bk | st.wm | st.wk
+
+def _my_bb(st: State) -> Tuple[int, int]:
+    return (st.bm, st.bk) if st.turn == 'b' else (st.wm, st.wk)
+
+def _opp_bb(st: State) -> Tuple[int, int]:
+    return (st.wm, st.wk) if st.turn == 'b' else (st.bm, st.bk)
+
+# ----------------------------
+# Move generation (single-step moves and single jumps)
+# Mandatory capture enforced at the top level.
+# Assumption: men move/capture forward only (American/English draughts).
+# ----------------------------
+
+# Directions for steps (dr, dc)
+STEP_DIRS = {
+    'w': [(+1, -1), (+1, +1)],
+    'b': [(-1, -1), (-1, +1)]
+}
+KING_STEP_DIRS = [(-1, -1), (-1, +1), (+1, -1), (+1, +1)]
+
+def _gen_captures(st: State) -> List[Tuple[int, int, int, int]]:
+    occ = _occupied(st)
+    mym, myk = _my_bb(st)
+    oppm, oppk = _opp_bb(st)
+    opp = oppm | oppk
+    caps: List[Tuple[int, int, int, int]] = []
+
+    # Men: forward captures only
+    for idx in _iter_bits(mym):
+        r, c = _idx_to_rc(idx)
+        for dr, dc in STEP_DIRS[st.turn]:
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if not _on_board(r2, c2):
+                continue
+            if not _is_dark(r2, c2):
+                continue
+            mid = _bit(r1, c1) if _on_board(r1, c1) else 0
+            dst = _bit(r2, c2)
+            if (mid & opp) and not (dst & occ):
+                caps.append((r, c, r2, c2))
+
+    # Kings: all directions
+    for idx in _iter_bits(myk):
+        r, c = _idx_to_rc(idx)
+        for dr, dc in KING_STEP_DIRS:
+            r1, c1 = r + dr, c + dc
+            r2, c2 = r + 2 * dr, c + 2 * dc
+            if not _on_board(r2, c2):
+                continue
+            if not _is_dark(r2, c2):
+                continue
+            mid = _bit(r1, c1) if _on_board(r1, c1) else 0
+            dst = _bit(r2, c2)
+            if (mid & opp) and not (dst & occ):
+                caps.append((r, c, r2, c2))
+
+    return caps
+
+def _gen_quiet_moves(st: State) -> List[Tuple[int, int, int, int]]:
+    occ = _occupied(st)
+    mym, myk = _my_bb(st)
+    moves: List[Tuple[int, int, int, int]] = []
+
+    # Men forward steps
+    for idx in _iter_bits(mym):
+        r, c = _idx_to_rc(idx)
+        for dr, dc in STEP_DIRS[st.turn]:
+            r2, c2 = r + dr, c + dc
+            if not _on_board(r2, c2):
+                continue
+            if not _is_dark(r2, c2):
+                continue
+            dst = _bit(r2, c2)
+            if not (dst & occ):
+                moves.append((r, c, r2, c2))
+
+    # Kings steps
+    for idx in _iter_bits(myk):
+        r, c = _idx_to_rc(idx)
+        for dr, dc in KING_STEP_DIRS:
+            r2, c2 = r + dr, c + dc
+            if not _on_board(r2, c2):
+                continue
+            if not _is_dark(r2, c2):
+                continue
+            dst = _bit(r2, c2)
+            if not (dst & occ):
+                moves.append((r, c, r2, c2))
+
+    return moves
+
+def _legal_moves(st: State) -> List[Tuple[int, int, int, int]]:
+    caps = _gen_captures(st)
+    if caps:
+        return caps
+    return _gen_quiet_moves(st)
+
+# ----------------------------
+# Apply move
+# ----------------------------
+
+def _apply_move(st: State, mv: Tuple[int, int, int, int]) -> State:
+    fr, fc, tr, tc = mv
+    f = _bit(fr, fc)
+    t = _bit(tr, tc)
+    bm, bk, wm, wk = st.bm, st.bk, st.wm, st.wk
+
+    turn = st.turn
+    is_capture = abs(tr - fr) == 2
+
+    if turn == 'b':
+        # Determine if moving man or king
+        moving_king = bool(bk & f)
+        if moving_king:
+            bk ^= f
+        else:
+            bm ^= f
+
+        # Capture removal
+        if is_capture:
+            mr, mc = (fr + tr) // 2, (fc + tc) // 2
+            mid = _bit(mr, mc)
+            if wm & mid:
+                wm ^= mid
+            elif wk & mid:
+                wk ^= mid
+
+        # Place and possibly promote
+        if (not moving_king) and tr == 0:
+            bk |= t
+        else:
+            (bk if moving_king else bm) |= t
+
+    else:  # turn == 'w'
+        moving_king = bool(wk & f)
+        if moving_king:
+            wk ^= f
+        else:
+            wm ^= f
+
+        if is_capture:
+            mr, mc = (fr + tr) // 2, (fc + tc) // 2
+            mid = _bit(mr, mc)
+            if bm & mid:
+                bm ^= mid
+            elif bk & mid:
+                bk ^= mid
+
+        if (not moving_king) and tr == 7:
+            wk |= t
+        else:
+            (wk if moving_king else wm) |= t
+
+    return State(bm, bk, wm, wk, _other(turn))
+
+# ----------------------------
+# Evaluation
+# ----------------------------
+
+def _count_bits(x: int) -> int:
+    return x.bit_count()
+
+def _mobility(st: State) -> int:
+    # Mobility for side-to-move only (used in eval differences)
+    return len(_legal_moves(st))
+
+def _advance_score(men: int, color: str) -> int:
+    # Encourage men closer to promotion row
+    s = 0
+    for idx in _iter_bits(men):
+        r, c = _idx_to_rc(idx)
+        if color == 'w':
+            s += r  # higher row is closer to 7
+        else:
+            s += (7 - r)  # lower row is closer to 0
+    return s
+
+def _center_score(pieces: int) -> int:
+    # Prefer central squares (roughly columns 2-5, rows 2-5)
+    s = 0
+    for idx in _iter_bits(pieces):
+        r, c = _idx_to_rc(idx)
+        if 2 <= r <= 5 and 2 <= c <= 5:
+            s += 3
+        elif 1 <= r <= 6 and 1 <= c <= 6:
+            s += 1
+    return s
+
+def _eval(st: State) -> int:
+    # Evaluate from perspective of side to move (negamax-ready)
+    bm, bk, wm, wk = st.bm, st.bk, st.wm, st.wk
+
+    b_m = _count_bits(bm)
+    b_k = _count_bits(bk)
+    w_m = _count_bits(wm)
+    w_k = _count_bits(wk)
+
+    # Material
+    mat_b = 100 * b_m + 175 * b_k
+    mat_w = 100 * w_m + 175 * w_k
+
+    # Positional
+    adv_b = 6 * _advance_score(bm, 'b')
+    adv_w = 6 * _advance_score(wm, 'w')
+    cen_b = 4 * _center_score(bm | bk)
+    cen_w = 4 * _center_score(wm | wk)
+
+    # Mobility (light weight due to time)
+    # Compute in a turn-normalized way:
+    # We'll approximate opponent mobility by switching turn and counting.
+    my_turn = st.turn
+    my_mob = _mobility(st)
+    st2 = State(bm, bk, wm, wk, _other(my_turn))
+    opp_mob = _mobility(st2)
+
+    score_b = mat_b + adv_b + cen_b
+    score_w = mat_w + adv_w + cen_w
+    mob_term = 2 * (my_mob - opp_mob)
+
+    base = (score_b - score_w) if st.turn == 'b' else (score_w - score_b)
+    return base + mob_term
+
+# ----------------------------
+# Move ordering
+# ----------------------------
+
+def _order_moves(st: State, moves: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int, int, int]]:
+    def mv_score(mv):
+        fr, fc, tr, tc = mv
+        score = 0
+        # Captures first
+        if abs(tr - fr) == 2:
+            score += 10000
+        # Promotions
+        if st.turn == 'w' and tr == 7:
+            score += 2000
+        if st.turn == 'b' and tr == 0:
+            score += 2000
+        # Center preference
+        if 2 <= tr <= 5 and 2 <= tc <= 5:
+            score += 50
+        # Prefer advancing men
+        if st.turn == 'w':
+            score += tr * 2
+        else:
+            score += (7 - tr) * 2
+        return score
+    return sorted(moves, key=mv_score, reverse=True)
+
+# ----------------------------
+# Alpha-beta negamax with TT
+# ----------------------------
+
+class TTEntry:
+    __slots__ = ("depth", "value", "best")
+    def __init__(self, depth: int, value: int, best: Optional[Tuple[int, int, int, int]]):
+        self.depth = depth
+        self.value = value
+        self.best = best
+
+def _key(st: State) -> Tuple[int, int, int, int, str]:
+    return (st.bm, st.bk, st.wm, st.wk, st.turn)
+
+def _negamax(st: State, depth: int, alpha: int, beta: int,
+             tt: Dict[Tuple[int, int, int, int, str], TTEntry],
+             end_time: float) -> Tuple[int, Optional[Tuple[int, int, int, int]]]:
+    if time.perf_counter() >= end_time:
+        # Signal with static eval at cutoff
+        return _eval(st), None
+
+    k = _key(st)
+    ent = tt.get(k)
+    if ent is not None and ent.depth >= depth:
+        return ent.value, ent.best
+
+    moves = _legal_moves(st)
+    if not moves:
+        # No legal moves: losing for side to move
+        return -INF + (10 - depth), None
+
+    if depth == 0:
+        return _eval(st), None
+
+    moves = _order_moves(st, moves)
+
+    best_move = None
+    best_val = -INF
+
+    for mv in moves:
+        if time.perf_counter() >= end_time:
+            break
+        child = _apply_move(st, mv)
+        val, _ = _negamax(child, depth - 1, -beta, -alpha, tt, end_time)
+        val = -val
+        if val > best_val:
+            best_val = val
+            best_move = mv
+        if best_val > alpha:
+            alpha = best_val
+        if alpha >= beta:
+            break
+
+    tt[k] = TTEntry(depth, best_val, best_move)
+    return best_val, best_move
+
+# ----------------------------
+# Public API
+# ----------------------------
+
+def policy(my_men: List[Tuple[int, int]],
+           my_kings: List[Tuple[int, int]],
+           opp_men: List[Tuple[int, int]],
+           opp_kings: List[Tuple[int, int]],
+           color: str) -> Move:
+    # Build bitboards in absolute colors
+    bm = bk = wm = wk = 0
+
+    if color == 'b':
+        for r, c in my_men:
+            bm |= _bit(r, c)
+        for r, c in my_kings:
+            bk |= _bit(r, c)
+        for r, c in opp_men:
+            wm |= _bit(r, c)
+        for r, c in opp_kings:
+            wk |= _bit(r, c)
+    else:
+        for r, c in my_men:
+            wm |= _bit(r, c)
+        for r, c in my_kings:
+            wk |= _bit(r, c)
+        for r, c in opp_men:
+            bm |= _bit(r, c)
+        for r, c in opp_kings:
+            bk |= _bit(r, c)
+
+    st = State(bm, bk, wm, wk, color)
+
+    legal = _legal_moves(st)
+    if not legal:
+        # Should not happen in normal play; return something deterministic.
+        # (Arena should not request a move when none exist.)
+        # Attempt to return a "do nothing" move with an existing piece (still likely illegal).
+        # Kept as last resort to avoid crashing.
+        if color == 'b':
+            bb = bm | bk
+        else:
+            bb = wm | wk
+        if bb:
+            idx = next(_iter_bits(bb))
+            r, c = _idx_to_rc(idx)
+            return ((r, c), (r, c))
+        return ((0, 0), (0, 0))
+
+    # Time-bounded iterative deepening
+    start = time.perf_counter()
+    end_time = start + 0.95  # keep margin under 1s
+
+    tt: Dict[Tuple[int, int, int, int, str], TTEntry] = {}
+
+    best = legal[0]
+    best_val = -INF
+
+    # Depth schedule tuned for 1s. Usually reaches 6-8 depending on branching.
+    for depth in range(1, 11):
+        if time.perf_counter() >= end_time:
+            break
+        val, mv = _negamax(st, depth, -INF, INF, tt, end_time)
+        if mv is not None:
+            best = mv
+            best_val = val
+
+    fr, fc, tr, tc = best
+    return ((fr, fc), (tr, tc))
+</code>

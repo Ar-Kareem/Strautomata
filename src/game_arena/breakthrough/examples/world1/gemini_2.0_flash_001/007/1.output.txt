@@ -1,0 +1,130 @@
+The strategy for this policy is to prioritize winning moves, then captures, then advancing towards the opponent's home row, while also considering piece protection and board control. We will use a simple evaluation function to guide the move selection, favoring moves that bring us closer to the opponent's side and capture their pieces. The policy first checks for winning moves, then captures, then maximizes the distance traveled towards the opponent's side. Moves that leave pieces undefended are penalized.
+
+```python
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    A Breakthrough policy that prioritizes winning, capturing, and advancing.
+    """
+
+    board_size = 8
+
+    def get_legal_moves(pieces: list[tuple[int, int]], color: str, opponent: list[tuple[int, int]]) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+        """
+        Returns a list of legal moves for a given player.
+        """
+        moves = []
+        direction = 1 if color == 'w' else -1  # White moves up, black moves down
+
+        for row, col in pieces:
+            # Move forward
+            new_row = row + direction
+            if 0 <= new_row < board_size:
+                target = (new_row, col)
+                if target not in me and target not in opp:
+                    moves.append(((row, col), target))
+
+                # Capture diagonally
+                new_col_left = col - 1
+                if 0 <= new_col_left < board_size:
+                    target_left = (new_row, new_col_left)
+                    if target_left in opp:
+                        moves.append(((row, col), target_left))
+
+                new_col_right = col + 1
+                if 0 <= new_col_right < board_size:
+                    target_right = (new_row, new_col_right)
+                    if target_right in opp:
+                        moves.append(((row, col), target_right))
+        return moves
+
+    def is_winning_move(move: tuple[tuple[int, int], tuple[int, int]], color: str) -> bool:
+        """
+        Checks if a move results in a win.
+        """
+        _, (new_row, _) = move
+        if color == 'w' and new_row == board_size - 1:
+            return True
+        if color == 'b' and new_row == 0:
+            return True
+        return False
+
+    def evaluate_move(move: tuple[tuple[int, int], tuple[int, int]], me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str):
+        """
+        Evaluates a move based on several heuristics.
+        """
+        (from_row, from_col), (to_row, to_col) = move
+        score = 0
+
+        # Reward moving closer to the opponent's side
+        if color == 'w':
+            score += (to_row - from_row) * 2
+        else:
+            score += (from_row - to_row) * 2
+
+        # Reward captures
+        if (to_row, to_col) in opp:
+            score += 5
+
+        # Penalize moves that leave pieces undefended (very basic check) TODO: improve
+        new_me = [(to_row, to_col) if (r, c) == (from_row, from_col) else (r, c) for r, c in me]
+        
+        def is_attacked(pos, friendly, enemies):
+            r, c = pos
+            direction = 1 if color == 'b' else -1
+            
+            # Check if diagonally attacked
+            for dr in [-1, 1]:
+                if color == 'b':
+                    dr = -dr
+                
+                for dc in [-1, 1]:
+                    new_r, new_c = r + dr, c + dc
+                    if 0 <= new_r < board_size and 0 <= new_c < board_size:
+                        if (new_r, new_c) in enemies:
+                            
+                            move_diag_possible = True
+                            if move_diag_possible:
+                                return True
+            return False
+
+        # Calculate number of undefended pieces before move
+        undefended_before = sum([1 for piece in me if is_attacked(piece, me, opp)]) 
+        
+        # Create copy of enemy pieces and friendly pieces and check for undefended positions after move
+        
+        new_opp = [(r, c) for r, c in opp]
+        
+        new_undefended = sum([1 for piece in new_me if is_attacked(piece, new_me, new_opp)])
+        
+        score -= (new_undefended - undefended_before)  # Penalise going from defended to undefended
+
+        return score
+
+    legal_moves = get_legal_moves(me, color, opp)
+
+    # Check for winning moves
+    for move in legal_moves:
+        if is_winning_move(move, color):
+            return move
+
+    # Evaluate and choose the best move
+    best_move = None
+    best_score = float('-inf')
+
+    for move in legal_moves:
+        score = evaluate_move(move, me, opp, color)
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    if best_move is None:
+        # If no good move is found, return the first legal move. This should rarely happen.
+        if legal_moves:
+            return legal_moves[0]
+        else:
+            # If there are no legal moves, something has gone wrong. This should not happen since the game is not a draw.
+            print("No legal moves found!") # for debugging
+            return ((0,0), (0, 0)) # Returning the same square. Will be illegal.
+
+    return best_move
+```

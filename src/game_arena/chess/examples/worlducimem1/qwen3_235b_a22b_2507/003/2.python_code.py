@@ -1,0 +1,372 @@
+
+def policy(pieces: dict[str, str], to_play: str, memory: dict) -> tuple[str, dict]:
+    # Material values (in centipawns for easy scaling)
+    MATERIAL_VALUES = {
+        'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000
+    }
+
+    # Define opponent
+    color = 'w' if to_play == 'white' else 'b'
+    opponent_color = 'b' if color == 'w' else 'w'
+
+    # Get legal moves (provided)
+    legal_moves = memory.get('legal_moves', [])
+    if not legal_moves:
+        # In a real call, legal_moves would be passed via memory from outside
+        # Since it's not part of function args, we assume it's injected into memory
+        # If not, we return any move (but this should not happen)
+        # For safety, if missing, return first square move (should not occur in real setup)
+        legal_moves = list(find_all_legal_moves(pieces, to_play))  # fallback
+
+    # If no legal moves, return anything (shouldn't happen)
+    if not legal_moves:
+        return "a1a1", memory
+
+    best_move = None
+    best_score = -float('inf')
+
+    # Convert pieces to board for easier processing
+    board = {}
+    for sq, piece in pieces.items():
+        board[sq] = piece
+
+    for move in legal_moves:
+        # Simulate move
+        new_board = board.copy()
+        start, end = move[:2], move[2:4]
+        moving_piece = new_board.get(start)
+
+        # Handle pawn promotion
+        promotion = None
+        if len(move) > 4:
+            promotion = move[4]
+
+        # Remove piece from start
+        del new_board[start]
+        # Place piece at end (or promoted piece)
+        if promotion:
+            promoted_piece = color + promotion.upper()
+            new_board[end] = promoted_piece
+        else:
+            new_board[end] = moving_piece
+
+        # Remove captured piece if present
+        if end in board and start != end:  # capture or normal move
+            if end in new_board and end != start:  # capture
+                # But don't remove if it's us moving (i.e., we overwrite)
+                pass
+            # Actually, if end had a piece, it's captured
+            # So we already overwrote it, which is correct
+        # But if end had a piece of opponent, it's captured
+        captured_piece = None
+        if end in board and board[end][0] != color and start != end:
+            captured_piece = board[end]
+
+        # Check if this move is checkmate
+        if is_checkmate(new_board, opponent_color):
+            return move, memory  # Immediate return: highest priority
+
+        # Score move
+        score = 0
+
+        # Bonus for promotion to queen
+        if promotion:
+            if promotion == 'q':
+                score += 800  # Big bonus
+            elif promotion == 'n':
+                score += 300
+            elif promotion == 'r':
+                score += 400
+            elif promotion == 'b':
+                score += 300
+
+        # Add material gain
+        if captured_piece:
+            cap_piece_type = captured_piece[1]
+            score += MATERIAL_VALUES[cap_piece_type]
+
+        # Penalize moving king early unless castling or necessary
+        if moving_piece[1] == 'K':
+            if abs(ord(start[0]) - ord(end[0])) > 1:  # castling
+                score += 100  # castling bonus
+            else:
+                # King move without castling: small penalty unless late game
+                score -= 50
+
+        # Penalize undeveloped knight moving back
+        if moving_piece[1] == 'N':
+            row = int(end[1])
+            if (color == 'w' and row <= 2) or (color == 'b' and row >= 7):
+                score -= 30  # knight not advancing
+
+        # Prefer center control
+        center_squares = ['d4', 'd5', 'e4', 'e5']
+        if end in center_squares:
+            score += 20
+
+        # Discourage rook moving early unless attacking
+        if moving_piece[1] == 'R' and ((color == 'w' and int(start[1]) <= 2) or (color == 'b' and int(start[1]) >= 7)):
+            if captured_piece is None:
+                score -= 40  # rook out too early
+
+        # Encourage bishop/knight development
+        if moving_piece[1] in 'NB':
+            if ((color == 'w' and int(end[1]) > 2) or (color == 'b' and int(end[1]) < 7)):
+                score += 30  # minor piece developed
+
+        # Avoid moves that hang the piece immediately
+        # Simulate opponent response: does opponent have a move that captures the moved piece for free?
+        danger = False
+        for opp_move in generate_legal_moves(new_board, opponent_color):
+            opp_start, opp_end = opp_move[:2], opp_move[2:4]
+            if opp_end == end:  # opponent can capture the piece we just moved
+                # Is it a free capture? (i.e. we can't recapture or defend immediately)
+                # Simplified: if the capturing piece has lower or equal value, it's dangerous
+                capturing_piece = new_board[opp_start]
+                capt_type = capturing_piece[1]
+                moved_type = moving_piece[1]
+                if MATERIAL_VALUES[cap_piece_type] <= MATERIAL_VALUES[moved_type]:
+                    # Opponent gains material, so we are hanging
+                    danger = True
+                    break
+
+        if danger:
+            score -= MATERIAL_VALUES[moved_type]  # big penalty
+
+        # Update best move
+        if score > best_score:
+            best_score = score
+            best_move = move
+
+    # If no move selected, pick first (should not happen)
+    if best_move is None:
+        best_move = legal_moves[0]
+
+    return best_move, memory
+
+
+def is_checkmate(board: dict, color: str) -> bool:
+    # A player is in checkmate if they are in check and have no legal moves
+    if not is_in_check(board, color):
+        return False
+    # Check if any legal move gets them out of check
+    legal_moves = generate_legal_moves(board, color)
+    for move in legal_moves:
+        if not move_leads_to_check(board, color, move):
+            return False
+    return True
+
+
+def is_in_check(board: dict, color: str) -> bool:
+    # Find king
+    king_pos = None
+    for sq, piece in board.items():
+        if piece == color + 'K':
+            king_pos = sq
+            break
+    if not king_pos:
+        return True  # should not happen, but assume in check
+
+    # Can any opponent piece attack the king?
+    opponent_color = 'b' if color == 'w' else 'w'
+    for sq, piece in board.items():
+        if piece[0] == opponent_color:
+            if is_attacking(board, sq, king_pos, piece[1]):
+                return True
+    return False
+
+
+def is_attacking(board: dict, from_sq: str, to_sq: str, piece_type: str) -> bool:
+    # Check if a piece of type at from_sq attacks to_sq, assuming line of sight
+    fx, fy = ord(from_sq[0]) - ord('a'), int(from_sq[1]) - 1
+    tx, ty = ord(to_sq[0]) - ord('a'), int(to_sq[1]) - 1
+    dx, dy = tx - fx, ty - fy
+
+    if piece_type == 'P':
+        # Pawn attacks diagonally forward
+        if board[from_sq][0] == 'w':
+            return dy == 1 and abs(dx) == 1
+        else:
+            return dy == -1 and abs(dx) == 1
+    elif piece_type == 'N':
+        return (abs(dx) == 2 and abs(dy) == 1) or (abs(dx) == 1 and abs(dy) == 2)
+    elif piece_type == 'B':
+        if abs(dx) != abs(dy):
+            return False
+        return clear_path(board, from_sq, to_sq, True)
+    elif piece_type == 'R':
+        if dx != 0 and dy != 0:
+            return False
+        return clear_path(board, from_sq, to_sq, False)
+    elif piece_type == 'Q':
+        if dx == 0 or dy == 0 or abs(dx) == abs(dy):
+            return clear_path(board, from_sq, to_sq, True) or clear_path(board, from_sq, to_sq, False)
+        return False
+    elif piece_type == 'K':
+        return abs(dx) <= 1 and abs(dy) <= 1
+    return False
+
+
+def clear_path(board: dict, from_sq: str, to_sq: str, is_diag: bool) -> bool:
+    fx, fy = ord(from_sq[0]) - ord('a'), int(from_sq[1]) - 1
+    tx, ty = ord(to_sq[0]) - ord('a'), int(to_sq[1]) - 1
+    dx = 1 if tx > fx else -1 if tx < fx else 0
+    dy = 1 if ty > fy else -1 if ty < fy else 0
+
+    x, y = fx + dx, fy + dy
+    while x != tx or y != ty:
+        sq = chr(x + ord('a')) + str(y + 1)
+        if sq in board:
+            return False
+        x += dx
+        y += dy
+    return True
+
+
+def move_leads_to_check(board: dict, color: str, move: str) -> bool:
+    # Apply move to board
+    new_board = board.copy()
+    start, end = move[:2], move[2:4]
+    piece = new_board[start]
+    del new_board[start]
+    new_board[end] = piece
+
+    # Remove captured piece
+    for sq in list(new_board.keys()):
+        if sq != end and sq in board and board[sq][0] != color and sq == end:
+            del new_board[sq]
+
+    return is_in_check(new_board, color)
+
+
+def generate_legal_moves(board: dict, color: str) -> list:
+    moves = []
+    for sq, piece in board.items():
+        if piece[0] == color:
+            # Generate moves for this piece
+            for move in _generate_piece_moves(board, sq, piece[1]):
+                if not move_leads_to_check(board, color, move):
+                    moves.append(move)
+    return moves
+
+
+def _generate_piece_moves(board: dict, sq: str, ptype: str) -> list:
+    moves = []
+    x, y = ord(sq[0]) - ord('a'), int(sq[1]) - 1
+    color = board[sq][0]
+
+    if ptype == 'P':
+        # White pawn moves up, black down
+        dir = 1 if color == 'w' else -1
+        # Move forward
+        if y + dir >= 0 and y + dir <= 7:
+            target = chr(x + ord('a')) + str(y + dir + 1)
+            if target not in board:
+                moves.append(sq + target)
+                # Starting position: can move two
+                if (color == 'w' and y == 1) or (color == 'b' and y == 6):
+                    if y + 2 * dir <= 7 and y + 2 * dir >= 0:
+                        target2 = chr(x + ord('a')) + str(y + 2 * dir + 1)
+                        if target2 not in board:
+                            moves.append(sq + target2)
+            # Captures
+            for dx in [-1, 1]:
+                nx, ny = x + dx, y + dir
+                if 0 <= nx <= 7 and 0 <= ny <= 7:
+                    target = chr(nx + ord('a')) + str(ny + 1)
+                    if target in board and board[target][0] != color:
+                        # Promotion?
+                        if (color == 'w' and ny == 7) or (color == 'b' and ny == 0):
+                            for promo in 'qrbn':
+                                moves.append(sq + target + promo)
+                        else:
+                            moves.append(sq + target)
+            # Promotion on move forward
+            if (color == 'w' and y == 6) or (color == 'b' and y == 1):
+                target = chr(x + ord('a')) + str(y + dir + 1)
+                if target not in board:
+                    for promo in 'qrbn':
+                        moves.append(sq + target + promo)
+    elif ptype == 'N':
+        for dx, dy in [(-2,-1), (-2,1), (-1,-2), (-1,2), (1,-2), (1,2), (2,-1), (2,1)]:
+            nx, ny = x + dx, y + dy
+            if 0 <= nx <= 7 and 0 <= ny <= 7:
+                target = chr(nx + ord('a')) + str(ny + 1)
+                if target not in board or board[target][0] != color:
+                    moves.append(sq + target)
+    elif ptype == 'B':
+        for dx, dy in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+            nx, ny = x + dx, y + dy
+            while 0 <= nx <= 7 and 0 <= ny <= 7:
+                target = chr(nx + ord('a')) + str(ny + 1)
+                if target not in board:
+                    moves.append(sq + target)
+                else:
+                    if board[target][0] != color:
+                        moves.append(sq + target)
+                    break
+                nx += dx
+                ny += dy
+    elif ptype == 'R':
+        for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+            nx, ny = x + dx, y + dy
+            while 0 <= nx <= 7 and 0 <= ny <= 7:
+                target = chr(nx + ord('a')) + str(ny + 1)
+                if target not in board:
+                    moves.append(sq + target)
+                else:
+                    if board[target][0] != color:
+                        moves.append(sq + target)
+                    break
+                nx += dx
+                ny += dy
+    elif ptype == 'Q':
+        # Combine R and B
+        for dx, dy in [(-1,-1), (-1,1), (1,-1), (1,1), (-1,0), (1,0), (0,-1), (0,1)]:
+            nx, ny = x + dx, y + dy
+            while 0 <= nx <= 7 and 0 <= ny <= 7:
+                target = chr(nx + ord('a')) + str(ny + 1)
+                if target not in board:
+                    moves.append(sq + target)
+                else:
+                    if board[target][0] != color:
+                        moves.append(sq + target)
+                    break
+                nx += dx
+                ny += dy
+    elif ptype == 'K':
+        for dx in [-1,0,1]:
+            for dy in [-1,0,1]:
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = x + dx, y + dy
+                if 0 <= nx <= 7 and 0 <= ny <= 7:
+                    target = chr(nx + ord('a')) + str(ny + 1)
+                    if target not in board or board[target][0] != color:
+                        moves.append(sq + target)
+        # Castling (naive: not checking path or if king moved)
+        # But for check detection, we add it
+        if color == 'w':
+            if sq == 'e1' and board.get('h1') == 'wR':
+                if 'f1' not in board and 'g1' not in board:
+                    moves.append('e1g1')
+            if sq == 'e1' and board.get('a1') == 'wR':
+                if 'b1' not in board and 'c1' not in board and 'd1' not in board:
+                    moves.append('e1c1')
+        else:
+            if sq == 'e8' and board.get('h8') == 'bR':
+                if 'f8' not in board and 'g8' not in board:
+                    moves.append('e8g8')
+            if sq == 'e8' and board.get('a8') == 'bR':
+                if 'b8' not in board and 'c8' not in board and 'd8' not in board:
+                    moves.append('e8c8')
+
+    return moves
+
+
+def find_all_legal_moves(pieces: dict, to_play: str) -> list:
+    # Convert to board
+    board = pieces
+    color = 'w' if to_play == 'white' else 'b'
+    return generate_legal_moves(board, color)
+

@@ -1,0 +1,205 @@
+
+import numpy as np
+
+def policy(horizontal: np.ndarray, vertical: np.ndarray, capture: np.ndarray) -> str:
+    # Helper to get adjacent boxes for an edge
+    def get_adjacent(r, c, d):
+        if d == 'H':
+            boxes = []
+            if r > 0:
+                boxes.append((r-1, c))
+            if r < 4:
+                boxes.append((r, c))
+            return boxes
+        else:  # 'V'
+            boxes = []
+            if c > 0:
+                boxes.append((r, c-1))
+            if c < 4:
+                boxes.append((r, c))
+            return boxes
+    
+    # Count filled edges for a box
+    def count_edges(br, bc):
+        cnt = 0
+        if horizontal[br, bc] != 0:
+            cnt += 1
+        if horizontal[br+1, bc] != 0:
+            cnt += 1
+        if vertical[br, bc] != 0:
+            cnt += 1
+        if vertical[br, bc+1] != 0:
+            cnt += 1
+        return cnt
+    
+    # Get all legal moves
+    moves = []
+    # Horizontal: valid columns are 0-3 (connects dot c to c+1)
+    for r in range(5):
+        for c in range(4):
+            if horizontal[r, c] == 0:
+                moves.append((r, c, 'H'))
+    # Vertical: valid rows are 0-3 (connects dot r to r+1)
+    for r in range(4):
+        for c in range(5):
+            if vertical[r, c] == 0:
+                moves.append((r, c, 'V'))
+    
+    if not moves:
+        return "0,0,H"  # Should not happen in valid game
+    
+    # Classify moves
+    capturing_moves = []
+    safe_moves = []
+    sacrifice_moves = []
+    
+    for move in moves:
+        r, c, d = move
+        adj = get_adjacent(r, c, d)
+        counts = [count_edges(br, bc) for br, bc in adj]
+        
+        # Check if capturing (any adjacent box has 3 edges)
+        is_capturing = any(cnt == 3 for cnt in counts)
+        if is_capturing:
+            capturing_moves.append(move)
+            continue
+        
+        # Check if safe (no adjacent box has 2 edges -> won't create 3-sided)
+        is_safe = all(cnt < 2 for cnt in counts)
+        if is_safe:
+            safe_moves.append(move)
+        else:
+            sacrifice_moves.append(move)
+    
+    # Priority 1: Capture
+    if capturing_moves:
+        # Choose move that captures maximum boxes
+        def capture_count(move):
+            r, c, d = move
+            adj = get_adjacent(r, c, d)
+            return sum(1 for br, bc in adj if count_edges(br, bc) == 3)
+        
+        best = max(capturing_moves, key=capture_count)
+        return f"{best[0]},{best[1]},{best[2]}"
+    
+    # Priority 2: Safe moves
+    if safe_moves:
+        # Prefer moves that create fewer boxes with count=2
+        def safe_score(move):
+            r, c, d = move
+            adj = get_adjacent(r, c, d)
+            score = 0
+            for br, bc in adj:
+                if count_edges(br, bc) == 1:
+                    score += 1  # Will become 2
+            return score
+        
+        best = min(safe_moves, key=safe_score)
+        return f"{best[0]},{best[1]},{best[2]}"
+    
+    # Priority 3: Sacrifice - simulate opponent's chain capture
+    def simulate_opp_capture(move):
+        r, c, d = move
+        h = horizontal.copy()
+        v = vertical.copy()
+        cap = capture.copy()
+        
+        # Apply our move
+        if d == 'H':
+            h[r, c] = 1
+        else:
+            v[r, c] = 1
+        
+        opp_score = 0
+        
+        # Opponent greedily captures all available boxes
+        while True:
+            found_capture = False
+            # Find a capturable box (3 edges filled)
+            for br in range(4):
+                for bc in range(4):
+                    if cap[br, bc] == 0:
+                        cnt = 0
+                        edges = []
+                        # Top
+                        if h[br, bc] != 0:
+                            cnt += 1
+                        else:
+                            edges.append(('H', br, bc))
+                        # Bottom
+                        if h[br+1, bc] != 0:
+                            cnt += 1
+                        else:
+                            edges.append(('H', br+1, bc))
+                        # Left
+                        if v[br, bc] != 0:
+                            cnt += 1
+                        else:
+                            edges.append(('V', br, bc))
+                        # Right
+                        if v[br, bc+1] != 0:
+                            cnt += 1
+                        else:
+                            edges.append(('V', br, bc+1))
+                        
+                        if cnt == 3:  # Capturable
+                            # Play the missing edge
+                            ed, er, ec = edges[0]
+                            if ed == 'H':
+                                h[er, ec] = -1
+                            else:
+                                v[er, ec] = -1
+                            
+                            # Count how many boxes this captures (1 or 2)
+                            captured_now = 0
+                            # Check the box we targeted
+                            cap[br, bc] = -1
+                            captured_now += 1
+                            
+                            # Check if the other side of the edge is also completed
+                            # Find the other box sharing this edge
+                            other_box = None
+                            if ed == 'H':
+                                if er == br and ec == bc:  # Top edge
+                                    other_box = (br-1, bc) if br > 0 else None
+                                elif er == br+1 and ec == bc:  # Bottom edge
+                                    other_box = (br+1, bc) if br < 3 else None
+                            else:  # 'V'
+                                if er == br and ec == bc:  # Left edge
+                                    other_box = (br, bc-1) if bc > 0 else None
+                                elif er == br and ec == bc+1:  # Right edge
+                                    other_box = (br, bc+1) if bc < 3 else None
+                            
+                            if other_box is not None:
+                                obr, obc = other_box
+                                if cap[obr, obc] == 0:
+                                    # Check if now complete
+                                    ocnt = 0
+                                    if h[obr, obc] != 0: ocnt += 1
+                                    if h[obr+1, obc] != 0: ocnt += 1
+                                    if v[obr, obc] != 0: ocnt += 1
+                                    if v[obr, obc+1] != 0: ocnt += 1
+                                    if ocnt == 4:
+                                        cap[obr, obc] = -1
+                                        captured_now += 1
+                            
+                            opp_score += captured_now
+                            found_capture = True
+                            break
+                if found_capture:
+                    break
+            
+            if not found_capture:
+                break
+        
+        return opp_score
+    
+    best_move = sacrifice_moves[0]
+    best_cost = float('inf')
+    for move in sacrifice_moves:
+        cost = simulate_opp_capture(move)
+        if cost < best_cost:
+            best_cost = cost
+            best_move = move
+    
+    return f"{best_move[0]},{best_move[1]},{best_move[2]}"

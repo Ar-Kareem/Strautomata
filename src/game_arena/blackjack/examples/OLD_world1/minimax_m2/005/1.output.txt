@@ -1,0 +1,100 @@
+To solve this problem, we need to implement a policy for a simplified Blackjack-like game where the goal is to reach a target score `T` (randomly chosen between 10 and 30) without busting. The player can either "HIT" (draw the next card) or "STAY" (stop drawing cards). The decision should be based on maximizing the player's chance of winning by getting as close to `T` as possible without exceeding it, while considering the possibility of the opponent busting.
+
+### Approach
+1. **Problem Analysis**:
+   - **Card Values**: Cards "2" to "10" have their face value, face cards ("J", "Q", "K") have a value of 10, and "A" (Ace) is 11 if the hand value is ≤ `T`, otherwise 1.
+   - **Game Mechanics**: The player starts with an empty hand and can draw cards from their 13-card deck (one of each rank). The game ends when the player either busts (hand value > `T`) or stays. The opponent's actions are unknown, but the player must maximize their chance of winning.
+   - **Objective**: Decide whether to "HIT" or "STAY" based on the current hand and `T` to maximize the final hand value without busting.
+
+2. **Dynamic Programming (DP)**:
+   - **State Representation**: Each state is represented by a bitmask of the current hand (using a 13-bit integer where each bit corresponds to a card's presence in the hand) and the target `T`.
+   - **DP Initialization**: For each possible hand (bitmask) and target `T`, compute the best achievable hand value without busting. This involves:
+     - **Hand Value Calculation**: Compute the current hand value. If it exceeds `T`, it's a bust (represented as `-10**9`).
+     - **Transition**: For non-bust hands, consider staying or drawing any remaining card. The best value is the maximum of the current hand value or the best value from any valid subsequent state (after drawing a card).
+   - **Memoization**: Use a cache to store computed DP results for each `(hand_bitmask, T)` to avoid redundant calculations.
+
+3. **Policy Decision**:
+   - For the current hand and target `T`:
+     - **Current Hand Value**: Compute using the rules for Ace.
+     - **Best Hand Value**: Retrieve from the DP cache (or compute if not cached).
+     - **Decision**: If the best hand value achievable from the current state exceeds the current hand value, "HIT"; otherwise, "STAY".
+
+### Solution Code
+```python
+def compute_hand_value(hand, T):
+    non_ace_value = 0
+    num_aces = 0
+    for card in hand:
+        if card == "A":
+            num_aces += 1
+        elif card in ['J', 'Q', 'K']:
+            non_ace_value += 10
+        else:
+            non_ace_value += int(card)
+    total = non_ace_value + 11 * num_aces
+    if total <= T:
+        return total
+    else:
+        return non_ace_value + num_aces
+
+def policy(hand: list[str], target: int) -> str:
+    all_cards = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+    card_to_index = {card: i for i, card in enumerate(all_cards)}
+    n = 13
+    global global_dp_cache
+    if 'global_dp_cache' not in globals():
+        global_dp_cache = {}
+    
+    if target not in global_dp_cache:
+        dp = [0] * (1 << n)
+        full_mask = (1 << n) - 1
+        for bitmask in range(full_mask, -1, -1):
+            hand_set = set()
+            for i in range(n):
+                if bitmask & (1 << i):
+                    hand_set.add(all_cards[i])
+            hand_list = list(hand_set)
+            hand_value = compute_hand_value(hand_list, target)
+            if hand_value > target:
+                dp[bitmask] = -10**9
+            else:
+                best = hand_value
+                if bitmask != full_mask:
+                    for i in range(n):
+                        if not (bitmask & (1 << i)):
+                            new_bitmask = bitmask | (1 << i)
+                            best = max(best, dp[new_bitmask])
+                dp[bitmask] = best
+        global_dp_cache[target] = dp
+    
+    dp = global_dp_cache[target]
+    hand_set = set(hand)
+    bitmask = 0
+    for card in hand_set:
+        if card in card_to_index:
+            bitmask |= 1 << card_to_index[card]
+    
+    best_hand_value = dp[bitmask]
+    current_hand_value = compute_hand_value(hand, target)
+    
+    if current_hand_value > target:
+        return "STAY"
+    else:
+        if best_hand_value > current_hand_value:
+            return "HIT"
+        else:
+            return "STAY"
+```
+
+### Explanation
+1. **compute_hand_value**:
+   - Calculates the hand value based on card ranks and the target `T`. Aces are 11 if the total ≤ `T`, otherwise 1.
+   - Non-Ace cards contribute their face value (2-10), and face cards (J, Q, K) contribute 10.
+
+2. **policy**:
+   - **Initialization**: Defines the deck of cards and a mapping from card ranks to bit positions for efficient bitmask operations.
+   - **DP Cache**: Uses a cache to store computed DP results for each target `T` to optimize repeated calculations.
+   - **DP Computation**: For each possible hand (bitmask) and target `T`, computes the best achievable hand value without busting by considering all possible next moves (stay or draw any remaining card).
+   - **Decision Making**: For the current hand, checks if the best achievable hand value exceeds the current hand value. If yes, "HIT"; otherwise, "STAY".
+
+This approach efficiently explores the state space using dynamic programming and memoization to make optimal decisions based on the current hand and target, ensuring the player maximizes their chances of winning.

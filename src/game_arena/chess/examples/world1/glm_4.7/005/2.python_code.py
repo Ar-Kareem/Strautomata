@@ -1,0 +1,149 @@
+
+import random
+
+# Material values
+PIECE_VALUES = {'P': 100, 'N': 320, 'B': 330, 'R': 500, 'Q': 900, 'K': 20000}
+
+# Piece-square tables (8x8 flattened) - values for white
+PAWN_TABLE = [0,0,0,0,0,0,0,0, 50,50,50,50,50,50,50,50, 10,10,20,30,30,20,10,10, 5,5,10,25,25,10,5,5, 0,0,0,20,20,0,0,0, 5,-5,-10,0,0,-10,-5,5, 5,10,10,-20,-20,10,10,5, 0,0,0,0,0,0,0,0]
+KNIGHT_TABLE = [-50,-40,-30,-30,-30,-30,-40,-50, -40,-20,0,0,0,0,-20,-40, -30,0,10,15,15,10,0,-30, -30,5,15,20,20,15,5,-30, -30,0,15,20,20,15,0,-30, -30,5,10,15,15,10,5,-30, -40,-20,0,5,5,0,-20,-40, -50,-40,-30,-30,-30,-30,-40,-50]
+BISHOP_TABLE = [-20,-10,-10,-10,-10,-10,-10,-20, -10,0,0,0,0,0,0,-10, -10,0,5,10,10,5,0,-10, -10,5,5,10,10,5,5,-10, -10,0,10,10,10,10,0,-10, -10,10,10,10,10,10,10,-10, -10,5,0,0,0,0,5,-10, -20,-10,-10,-10,-10,-10,-10,-20]
+ROOK_TABLE = [0,0,0,0,0,0,0,0, 5,10,10,10,10,10,10,5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, -5,0,0,0,0,0,0,-5, 0,0,0,5,5,0,0,0]
+QUEEN_TABLE = [-20,-10,-10,-5,-5,-10,-10,-20, -10,0,0,0,0,0,0,-10, -10,0,5,5,5,5,0,-10, -5,0,5,5,5,5,0,-5, 0,0,5,5,5,5,0,-5, -10,5,5,5,5,5,0,-10, -10,0,5,0,0,0,0,-10, -20,-10,-10,-5,-5,-10,-10,-20]
+KING_MID = [-30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30, -30,-40,-40,-50,-50,-40,-40,-30, -20,-30,-30,-40,-40,-30,-30,-20, -10,-20,-20,-20,-20,-20,-20,-10, 20,20,0,0,0,0,20,20, 20,30,10,0,0,10,30,20]
+KING_END = [-50,-40,-30,-20,-20,-30,-40,-50, -30,-20,-10,0,0,-10,-20,-30, -30,-10,20,30,30,20,-10,-30, -30,-10,30,40,40,30,-10,-30, -30,-10,30,40,40,30,-10,-30, -30,-10,20,30,30,20,-10,-30, -30,-30,0,0,0,0,-30,-30, -50,-30,-30,-30,-30,-30,-30,-50]
+
+def get_pst_idx(square, color):
+    """Get piece-square table index, flipping vertically for black."""
+    row = 8 - int(square[1])
+    col = ord(square[0]) - ord('a')
+    if color == 'b':
+        row = 7 - row
+    return row * 8 + col
+
+def evaluate(pieces, to_play):
+    """Evaluate board position from to_play's perspective."""
+    w_score, b_score = 0, 0
+    endgame = len(pieces) < 12
+    for sq, pc in pieces.items():
+        color, ptype = pc[0], pc[1]
+        tables = {'P': PAWN_TABLE, 'N': KNIGHT_TABLE, 'B': BISHOP_TABLE, 'R': ROOK_TABLE, 'Q': QUEEN_TABLE, 'K': KING_END if endgame else KING_MID}
+        idx = get_pst_idx(sq, color)
+        pst = tables.get(ptype, [0]*64)[idx]
+        val = PIECE_VALUES[ptype] + pst
+        if color == 'w':
+            w_score += val
+        else:
+            b_score += val
+    return w_score - b_score if to_play == 'white' else b_score - w_score
+
+def parse_move(move, pieces, to_play):
+    """Parse move: return (dest, piece_type, captured_piece, promoted_piece)."""
+    if move in ['O-O', 'O-O-O']:
+        return None, 'K', None, None
+    
+    clean = move.replace('+', '').replace('#', '')
+    
+    ptype = 'P'
+    if clean and clean[0] in 'KQRBN':
+        ptype = clean[0]
+        clean = clean[1:]
+    
+    promoted = None
+    if '=' in clean:
+        clean, promoted = clean.split('=')
+        promoted = promoted[0]
+    
+    dest = clean[-2:] if len(clean) >= 2 else None
+    captured = pieces.get(dest) if 'x' in move else None
+    
+    return dest, ptype, captured, promoted
+
+def simulate_move(pieces, move, to_play):
+    """Create new board state after applying move."""
+    dest, ptype, captured, promoted = parse_move(move, pieces, to_play)
+    
+    if move in ['O-O', 'O-O-O']:
+        new = pieces.copy()
+        if to_play == 'white':
+            new.pop('e1', None)
+            if move == 'O-O':
+                new.pop('h1', None)
+                new['g1'], new['f1'] = 'wK', 'wR'
+            else:
+                new.pop('a1', None)
+                new['c1'], new['d1'] = 'wK', 'wR'
+        else:
+            new.pop('e8', None)
+            if move == 'O-O':
+                new.pop('h8', None)
+                new['g8'], new['f8'] = 'bK', 'bR'
+            else:
+                new.pop('a8', None)
+                new['c8'], new['d8'] = 'bK', 'bR'
+        return new
+    
+    if dest is None:
+        return pieces.copy()
+    
+    color = 'w' if to_play == 'white' else 'b'
+    new = pieces.copy()
+    
+    if dest in new:
+        del new[dest]
+    
+    # Find and remove the moving piece
+    for sq, pc in pieces.items():
+        if pc[0] == color and pc[1] == ptype:
+            new.pop(sq, None)
+            break
+    
+    new[dest] = color + (promoted if promoted else ptype)
+    return new
+
+def score_move(move, pieces, to_play):
+    """Score a move based on tactical and positional factors."""
+    if '#' in move:
+        return 100000
+    
+    dest, ptype, captured, promoted = parse_move(move, pieces, to_play)
+    score = 50 if '+' in move else 0
+    
+    if captured:
+        score += PIECE_VALUES.get(captured[1], 0)
+    
+    if promoted:
+        score += PIECE_VALUES.get(promoted, 0) - PIECE_VALUES['P']
+    
+    new_pieces = simulate_move(pieces, move, to_play)
+    new_to_play = 'black' if to_play == 'white' else 'white'
+    eval_score = evaluate(new_pieces, new_to_play)
+    
+    # Subtract evaluation since it's from opponent's perspective
+    score -= eval_score
+    score += random.random() * 3
+    return score
+
+def policy(pieces: dict[str, str], to_play: str, legal_moves: list[str]) -> str:
+    """Select the best move from legal_moves."""
+    if not legal_moves:
+        return ""
+    
+    if len(legal_moves) == 1:
+        return legal_moves[0]
+    
+    # Always take checkmate if available
+    for move in legal_moves:
+        if '#' in move:
+            return move
+    
+    best = legal_moves[0]
+    best_score = -float('inf')
+    
+    for move in legal_moves:
+        s = score_move(move, pieces, to_play)
+        if s > best_score:
+            best_score = s
+            best = move
+    
+    return best

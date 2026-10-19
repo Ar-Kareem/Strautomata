@@ -1,0 +1,341 @@
+The strategy for this policy is a fast tactical Connect 4 solver with strong heuristics:
+
+1. Always return a legal move.
+2. First, check for any immediate winning move.
+3. If none, block any immediate opponent winning move.
+4. Prefer strong positional play, especially center columns.
+5. Use minimax with alpha-beta pruning on a negamax formulation to look ahead several plies within the time budget.
+6. Evaluate positions using:
+   - center-column preference,
+   - 4-cell window scoring,
+   - penalties for allowing opponent threats.
+7. Avoid obviously bad moves when possible, especially moves that give the opponent an immediate win.
+8. Fall back safely to the first legal move if anything unexpected happens.
+
+<code>
+from math import inf
+
+ROWS = 6
+COLS = 7
+WIN_SCORE = 10**9
+
+CENTER_ORDER = [3, 2, 4, 1, 5, 0, 6]
+
+
+def policy(board: list[list[int]]) -> int:
+    try:
+        legal = legal_moves(board)
+        if not legal:
+            return 0
+
+        # 1) Immediate win
+        for c in ordered_moves(legal):
+            r = next_open_row(board, c)
+            board[r][c] = 1
+            won = is_win(board, 1)
+            board[r][c] = 0
+            if won:
+                return c
+
+        # 2) Immediate block
+        opp_wins = []
+        for c in ordered_moves(legal):
+            r = next_open_row(board, c)
+            board[r][c] = -1
+            won = is_win(board, -1)
+            board[r][c] = 0
+            if won:
+                opp_wins.append(c)
+        if opp_wins:
+            for c in ordered_moves(opp_wins):
+                if c in legal:
+                    return c
+            return opp_wins[0]
+
+        # 3) Search
+        empties = sum(1 for r in range(ROWS) for c in range(COLS) if board[r][c] == 0)
+        if empties >= 30:
+            depth = 5
+        elif empties >= 18:
+            depth = 6
+        elif empties >= 10:
+            depth = 7
+        else:
+            depth = 8
+
+        best_score = -inf
+        best_move = None
+        alpha = -inf
+        beta = inf
+
+        for c in ordered_moves(legal):
+            r = next_open_row(board, c)
+            board[r][c] = 1
+
+            # Avoid moves that allow an immediate opponent win if alternatives exist
+            if opponent_has_immediate_win(board):
+                score = -10**7 + center_bias(c)
+            else:
+                score = -negamax(board, depth - 1, -beta, -alpha, -1)
+
+            board[r][c] = 0
+
+            if score > best_score:
+                best_score = score
+                best_move = c
+            if score > alpha:
+                alpha = score
+
+        if best_move is not None and best_move in legal:
+            return best_move
+
+        # Safe fallback: prefer center
+        for c in CENTER_ORDER:
+            if c in legal:
+                return c
+        return legal[0]
+    except Exception:
+        # Guaranteed legal fallback
+        for c in CENTER_ORDER:
+            if 0 <= c < COLS and board[0][c] == 0:
+                return c
+        for c in range(COLS):
+            if board[0][c] == 0:
+                return c
+        return 0
+
+
+def legal_moves(board):
+    return [c for c in range(COLS) if board[0][c] == 0]
+
+
+def ordered_moves(moves):
+    s = set(moves)
+    return [c for c in CENTER_ORDER if c in s]
+
+
+def next_open_row(board, col):
+    for r in range(ROWS - 1, -1, -1):
+        if board[r][col] == 0:
+            return r
+    return None
+
+
+def is_win(board, piece):
+    # Horizontal
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            if (
+                board[r][c] == piece and
+                board[r][c + 1] == piece and
+                board[r][c + 2] == piece and
+                board[r][c + 3] == piece
+            ):
+                return True
+
+    # Vertical
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            if (
+                board[r][c] == piece and
+                board[r + 1][c] == piece and
+                board[r + 2][c] == piece and
+                board[r + 3][c] == piece
+            ):
+                return True
+
+    # Positive diagonal
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            if (
+                board[r][c] == piece and
+                board[r + 1][c + 1] == piece and
+                board[r + 2][c + 2] == piece and
+                board[r + 3][c + 3] == piece
+            ):
+                return True
+
+    # Negative diagonal
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            if (
+                board[r][c] == piece and
+                board[r - 1][c + 1] == piece and
+                board[r - 2][c + 2] == piece and
+                board[r - 3][c + 3] == piece
+            ):
+                return True
+
+    return False
+
+
+def opponent_has_immediate_win(board):
+    for c in legal_moves(board):
+        r = next_open_row(board, c)
+        board[r][c] = -1
+        won = is_win(board, -1)
+        board[r][c] = 0
+        if won:
+            return True
+    return False
+
+
+def negamax(board, depth, alpha, beta, player):
+    legal = legal_moves(board)
+
+    if is_win(board, 1):
+        return WIN_SCORE + depth
+    if is_win(board, -1):
+        return -WIN_SCORE - depth
+    if depth == 0 or not legal:
+        return evaluate(board)
+
+    best = -inf
+
+    for c in ordered_moves(legal):
+        r = next_open_row(board, c)
+        board[r][c] = player
+
+        if player == 1:
+            score = negamax(board, depth - 1, alpha, beta, -1)
+        else:
+            score = -negamax_flip(board, depth - 1, -beta, -alpha)
+
+        board[r][c] = 0
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def negamax_flip(board, depth, alpha, beta):
+    legal = legal_moves(board)
+
+    if is_win(board, 1):
+        return WIN_SCORE + depth
+    if is_win(board, -1):
+        return -WIN_SCORE - depth
+    if depth == 0 or not legal:
+        return evaluate(board)
+
+    best = -inf
+
+    for c in ordered_moves(legal):
+        r = next_open_row(board, c)
+        board[r][c] = -1
+        score = -negamax(board, depth - 1, -beta, -alpha, 1)
+        board[r][c] = 0
+
+        if score > best:
+            best = score
+        if best > alpha:
+            alpha = best
+        if alpha >= beta:
+            break
+
+    return best
+
+
+def evaluate(board):
+    if is_win(board, 1):
+        return WIN_SCORE
+    if is_win(board, -1):
+        return -WIN_SCORE
+
+    score = 0
+
+    # Center preference
+    center_col = COLS // 2
+    center_array = [board[r][center_col] for r in range(ROWS)]
+    score += center_array.count(1) * 6
+    score -= center_array.count(-1) * 6
+
+    # Adjacent center columns
+    for c in [2, 4]:
+        col_array = [board[r][c] for r in range(ROWS)]
+        score += col_array.count(1) * 2
+        score -= col_array.count(-1) * 2
+
+    # Horizontal windows
+    for r in range(ROWS):
+        for c in range(COLS - 3):
+            window = [board[r][c + i] for i in range(4)]
+            score += score_window(window)
+
+    # Vertical windows
+    for c in range(COLS):
+        for r in range(ROWS - 3):
+            window = [board[r + i][c] for i in range(4)]
+            score += score_window(window)
+
+    # Positive diagonals
+    for r in range(ROWS - 3):
+        for c in range(COLS - 3):
+            window = [board[r + i][c + i] for i in range(4)]
+            score += score_window(window)
+
+    # Negative diagonals
+    for r in range(3, ROWS):
+        for c in range(COLS - 3):
+            window = [board[r - i][c + i] for i in range(4)]
+            score += score_window(window)
+
+    # Immediate tactical features
+    my_threats = count_immediate_wins(board, 1)
+    opp_threats = count_immediate_wins(board, -1)
+    score += my_threats * 80
+    score -= opp_threats * 100
+
+    return score
+
+
+def score_window(window):
+    my_count = window.count(1)
+    opp_count = window.count(-1)
+    empty_count = window.count(0)
+
+    if my_count > 0 and opp_count > 0:
+        return 0
+
+    score = 0
+
+    if my_count == 4:
+        score += 100000
+    elif my_count == 3 and empty_count == 1:
+        score += 120
+    elif my_count == 2 and empty_count == 2:
+        score += 12
+    elif my_count == 1 and empty_count == 3:
+        score += 2
+
+    if opp_count == 4:
+        score -= 100000
+    elif opp_count == 3 and empty_count == 1:
+        score -= 140
+    elif opp_count == 2 and empty_count == 2:
+        score -= 15
+    elif opp_count == 1 and empty_count == 3:
+        score -= 2
+
+    return score
+
+
+def count_immediate_wins(board, piece):
+    count = 0
+    for c in legal_moves(board):
+        r = next_open_row(board, c)
+        board[r][c] = piece
+        if is_win(board, piece):
+            count += 1
+        board[r][c] = 0
+    return count
+
+
+def center_bias(c):
+    return 3 - abs(3 - c)
+</code>

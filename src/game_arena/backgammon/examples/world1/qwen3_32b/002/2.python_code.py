@@ -1,0 +1,167 @@
+
+import copy
+
+def policy(state):
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    my_off = state['my_off']
+    dice = state['dice'].copy()
+
+    # No dice rolled, return pass
+    if not dice:
+        return "H:P,P"
+
+    # Handle 1 or 2 dice and determine higher/lower
+    if len(dice) == 1:
+        higher_die, lower_die = dice[0], None
+    else:
+        higher_die, lower_die = sorted(dice, reverse=True)
+
+    possible_moves = []
+
+    def is_valid_move(from_idx, die):
+        if from_idx == 'B':
+            dest = 24 - die
+            return 0 <= dest < 24 and opp_pts[dest] < 2
+        else:
+            from_idx = int(from_idx[1:])
+            dest = from_idx - die
+            if dest < 0:  # Borne off
+                return True
+            return 0 <= dest < 24 and opp_pts[dest] < 2
+
+    def evaluate_move(move):
+        score = 0
+        order, move_parts = move[0], move[2:].split(',')
+        from1, from2 = move_parts
+        from1 = from1 if from1 != 'P' else None
+        from2 = from2 if from2 != 'P' else None
+
+        d1, d2 = (higher_die, lower_die) if move[0] == 'H' else (lower_die, higher_die)
+
+        # Evaluate first move
+        if from1:
+            if from1 == 'B':
+                dest = 24 - d1
+                if opp_pts[dest] == 1:
+                    score += 10  # Prefer hitting blots
+            else:
+                src = int(from1[1:])
+                dest = src - d1
+                if 0 <= dest < 24:
+                    if opp_pts[dest] == 1:
+                        score += 10
+                    if my_pts[src] > 1 and my_pts[dest] == 0:
+                        score += 5  # Favor making points
+        else:
+            d1 = 0  # No move
+
+        # Evaluate second move
+        if from2:
+            if from2 == 'B':
+                dest = 24 - d2
+                if opp_pts[dest] == 1:
+                    score += 5
+            else:
+                src = int(from2[1:])
+                dest = src - d2
+                if 0 <= dest < 24:
+                    if opp_pts[dest] == 1:
+                        score += 5
+                if 0 <= dest < 24 and my_pts[src] > 1 and my_pts[dest] == 0:
+                    score += 5
+
+        # Prioritize bearing off
+        for from_part in [from1, from2]:
+            if from_part and from_part != 'B' and from_part != 'P':
+                src = int(from_part[1:])
+                if src - (d1 if move[0] == 'H' else d2) < 0:
+                    score += 20
+
+        return score
+
+    # Generate moves from bar
+    if my_bar > 0:
+        for d1 in [higher_die, lower_die] if lower_die else [higher_die]:
+            if is_valid_move('B', d1):
+                first_move = 'B'
+                first_dest = 24 - d1
+                new_bar = my_bar - 1
+                new_my_pts = my_pts.copy()
+                new_my_pts[first_dest] += 1
+
+                second_moves = []
+                if len(dice) == 2 and d1 != lower_die:
+                    d2 = lower_die
+                else:
+                    d2 = d1  # Double
+
+                if new_bar > 0:
+                    if is_valid_move('B', d2):
+                        second_moves.append('B')
+                else:
+                    for idx in range(24):
+                        if new_my_pts[idx] > 0:
+                            if is_valid_move(f"A{idx}", d2):
+                                second_moves.append(f"A{idx}")
+
+                if not second_moves:
+                    second_moves = ['P']
+
+                for from2 in second_moves:
+                    if lower_die is None:
+                        order = 'H'
+                    else:
+                        order = 'H' if d1 > d2 else 'L'
+                    possible_moves.append(f"{order}:B,{from2}")
+        if possible_moves:
+            return max(possible_moves, key=evaluate_move)
+
+    # Check if all checkers in home board for bearing off
+    all_in_home = all(p == 0 for p in my_pts[6:24])
+    if all_in_home:
+        for d in dice if len(dice) == 2 else [dice[0]]:
+            for idx in range(6):
+                if my_pts[idx] > 0 and idx - d < 0:
+                    possible_moves.append(f"H:A{idx},P")
+        if len(dice) == 2 and possible_moves:
+            # Prioritize plays that bear off both checkers
+            for m in possible_moves:
+                if m.endswith("P"):
+                    return m
+            return possible_moves[0]
+        if possible_moves:
+            return max(possible_moves, key=evaluate_move)
+
+    # Regular board move
+    if len(dice) == 1:
+        for d in [higher_die]:
+            for idx in range(24):
+                if my_pts[idx] > 0:
+                    if is_valid_move(f"A{idx}", d):
+                        possible_moves.append(f"H:A{idx},P")
+    else:
+        # Two dice - consider both orders
+        for first in [higher_die, lower_die]:
+            d1 = first
+            d2 = lower_die if d1 == higher_die else higher_die
+            for from1 in range(24):
+                if my_pts[from1] > 0:
+                    if is_valid_move(f"A{from1}", d1):
+                        # First move valid, try second move
+                        for from2 in range(24):
+                            if (from2 != from1 or my_pts[from2] > 1) and my_pts[from2] > 0:
+                                if is_valid_move(f"A{from2}", d2):
+                                    order = 'H' if d1 > d2 else 'L'
+                                    possible_moves.append(f"{order}:A{from1},A{from2}")
+        # Add single die plays if both moves not possible
+        for d in [higher_die, lower_die]:
+            for idx in range(24):
+                if my_pts[idx] > 0 and is_valid_move(f"A{idx}", d):
+                    possible_moves.append(f"H:A{idx},P")
+
+    if not possible_moves:
+        return "H:P,P"
+
+    return max(possible_moves, key=evaluate_move)

@@ -1,0 +1,170 @@
+The strategy for this policy is to use a heuristic-based greedy search that prioritizes tactical safety and immediate gains. The AI reconstructs the 19x19 board state from the provided coordinate lists and iterates through all empty intersections to evaluate potential moves.
+
+The evaluation logic focuses on three key aspects:
+1.  **Tactical Survival (Atari Response):** It checks if any friendly group has only one liberty left. If placing a stone fills that liberty (and is legal), it receives a massive score boost to save the group from capture.
+2.  **Capturing Opponent Stones:** It simulates placing a stone to see if it reduces any adjacent opponent group's liberties to zero, resulting in a capture. Capturing moves are given high priority based on the number of stones captured.
+3.  **Positional Heuristics:** To ensure sensible play when no immediate tactical threats exist, the algorithm biases moves towards the center of the board and the 3rd/4th lines, while heavily penalizing moves on the 1st line (the edge) unless necessary.
+
+The policy also strictly enforces the rules of Go:
+*   **Suicide Rule:** Moves that would result in the placed stone having zero liberties (and not capturing anything) are rejected.
+*   **Ko Rule:** Moves that would recreate the board state from the previous turn are rejected by comparing board hashes stored in the `memory` dictionary.
+
+If no legal moves are found (or all moves are terrible), the AI passes. This combination of tactical awareness and positional bias creates a robust agent capable of beating random or naive strategies efficiently within the time constraints.
+
+<code>
+import numpy as np
+import random
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Game Constants
+    BOARD_SIZE = 19
+    EMPTY, ME, OPP = 0, 1, 2
+    
+    # Directions for neighbor checking (Up, Down, Left, Right)
+    DIRECTIONS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    
+    # 1. Reconstruct the board state from coordinate lists
+    # Using 0-indexed internally: row 0-18, col 0-18
+    board = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=int)
+    for r, c in me:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r-1, c-1] = ME
+    for r, c in opponent:
+        if 1 <= r <= BOARD_SIZE and 1 <= c <= BOARD_SIZE:
+            board[r-1, c-1] = OPP
+
+    # Retrieve Ko history from memory
+    prev_hash = memory.get("hash", None)
+    curr_hash = board.tobytes()
+    
+    def get_group_liberties(r, c, current_board):
+        """
+        Performs a flood fill to find the group connected to (r, c) 
+        and count its liberties.
+        """
+        color = current_board[r, c]
+        if color == EMPTY:
+            return set(), set()
+            
+        stack = [(r, c)]
+        group = {(r, c)}
+        liberties = set()
+        
+        while stack:
+            curr_r, curr_c = stack.pop()
+            for dr, dc in DIRECTIONS:
+                nr, nc = curr_r + dr, curr_c + dc
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                    val = current_board[nr, nc]
+                    if val == EMPTY:
+                        liberties.add((nr, nc))
+                    elif val == color and (nr, nc) not in group:
+                        group.add((nr, nc))
+                        stack.append((nr, nc))
+        return group, liberties
+
+    best_score = -float('inf')
+    best_move = (0, 0) # Default to Pass
+    
+    # 2. Iterate over all possible moves
+    for r in range(BOARD_SIZE):
+        for c in range(BOARD_SIZE):
+            if board[r, c] != EMPTY:
+                continue
+            
+            # --- Heuristic: Saving Atari (Pre-move analysis) ---
+            # Check if this move saves a friendly group that is in atari (1 liberty)
+            save_score = 0
+            for dr, dc in DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                    if board[nr, nc] == ME:
+                        # Check liberties of this neighbor group (r,c is currently empty)
+                        grp, libs = get_group_liberties(nr, nc, board)
+                        # If the group has exactly 1 liberty and that liberty is (r,c), we must play here to save it
+                        if len(libs) == 1 and (r, c) in libs:
+                            save_score = 5000  # High priority to save
+                        elif len(libs) == 2 and (r, c) in libs:
+                            save_score = 200   # Connect to extend life
+
+            # --- Legal Move Check (Simulation) ---
+            board[r, c] = ME  # Place stone tentatively
+            
+            captured = set()
+            opp_neighbors = []
+            
+            # Identify opponent neighbors to check for captures
+            for dr, dc in DIRECTIONS:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < BOARD_SIZE and 0 <= nc < BOARD_SIZE:
+                    if board[nr, nc] == OPP:
+                        opp_neighbors.append((nr, nc))
+            
+            # Check if any opponent group is captured (0 liberties)
+            visited_opp = set()
+            is_capture = False
+            
+            for nr, nc in opp_neighbors:
+                if (nr, nc) in visited_opp:
+                    continue
+                grp, libs = get_group_liberties(nr, nc, board)
+                visited_opp.update(grp)
+                if len(libs) == 0:
+                    is_capture = True
+                    captured.update(grp)
+            
+            # Check Suicide (Self liberties)
+            suicide = False
+            if not is_capture:
+                my_grp, my_libs = get_group_liberties(r, c, board)
+                if len(my_libs) == 0:
+                    suicide = True
+            
+            # Check Ko Rule
+            # Simulate the full board state after captures
+            temp_board = board.copy()
+            for cr, cc in captured:
+                temp_board[cr, cc] = EMPTY
+            
+            next_hash = temp_board.tobytes()
+            
+            is_ko_violation = (next_hash == prev_hash)
+            
+            # Revert board
+            board[r, c] = EMPTY
+            
+            if suicide or is_ko_violation:
+                continue
+            
+            # --- Scoring ---
+            score = 0
+            
+            # Capture Score
+            if is_capture:
+                score += 100 * len(captured)
+            
+            # Save Score (Calculated earlier)
+            score += save_score
+            
+            # Positional Heuristics
+            # Avoid 1st line (bad shape usually)
+            if r == 0 or r == 18 or c == 0 or c == 18:
+                score -= 50
+            
+            # Encourage playing near center/3rd-4th line (General influence)
+            # Calculate distance from center
+            dist = abs(r - 9) + abs(c - 9)
+            score -= dist * 2
+            
+            # Small random noise to prevent deterministic loops and add variety
+            score += random.random() * 5
+            
+            if score > best_score:
+                best_score = score
+                best_move = (r + 1, c + 1) # Convert back to 1-based indexing
+                
+    # Update memory for next turn
+    memory["hash"] = curr_hash
+    
+    return best_move, memory
+</code>

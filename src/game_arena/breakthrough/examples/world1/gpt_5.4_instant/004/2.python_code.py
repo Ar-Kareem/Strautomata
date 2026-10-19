@@ -1,0 +1,372 @@
+
+from __future__ import annotations
+
+from typing import List, Tuple
+
+Move = Tuple[Tuple[int, int], Tuple[int, int]]
+
+
+def policy(me: list[tuple[int, int]], opp: list[tuple[int, int]], color: str) -> tuple[tuple[int, int], tuple[int, int]]:
+    """
+    Breakthrough policy.
+    Always returns a legal move.
+    """
+    me_t = tuple(me)
+    opp_t = tuple(opp)
+    try:
+        moves = generate_moves(me_t, opp_t, color)
+        if not moves:
+            # Should not happen in normal Breakthrough states, but keep a safe fallback.
+            return ((0, 0), (0, 0))
+
+        # Immediate win if available.
+        goal = 7 if color == 'w' else 0
+        for mv in moves:
+            if mv[1][0] == goal:
+                return mv
+
+        # Search depth tuned for speed and strength.
+        n_pieces = len(me_t) + len(opp_t)
+        if n_pieces >= 22:
+            depth = 2
+        elif n_pieces >= 12:
+            depth = 3
+        else:
+            depth = 4
+
+        best_move = ordered_root_best_move(me_t, opp_t, color, depth)
+        if best_move is not None:
+            return best_move
+
+        return moves[0]
+    except Exception:
+        # Guaranteed legal fallback.
+        moves = generate_moves(tuple(me), tuple(opp), color)
+        return moves[0] if moves else ((0, 0), (0, 0))
+
+
+def ordered_root_best_move(me, opp, color, depth):
+    moves = generate_moves(me, opp, color)
+    if not moves:
+        return None
+
+    ordered = sorted(
+        moves,
+        key=lambda mv: move_order_score(me, opp, color, mv),
+        reverse=True
+    )
+
+    alpha = -10**18
+    beta = 10**18
+    best_score = -10**18
+    best_move = ordered[0]
+
+    opp_color = opponent(color)
+
+    for mv in ordered:
+        nme, nopp = apply_move(me, opp, mv)
+        if is_win_state(nme, nopp, color):
+            return mv
+        score = -alphabeta(nopp, nme, opp_color, depth - 1, -beta, -alpha)
+        if score > best_score:
+            best_score = score
+            best_move = mv
+        if score > alpha:
+            alpha = score
+
+    return best_move
+
+
+def alphabeta(me, opp, color, depth, alpha, beta):
+    # me is side to move
+    if is_win_state(opp, me, opponent(color)):
+        return -10**12
+
+    moves = generate_moves(me, opp, color)
+    if not moves:
+        return -10**12
+
+    if depth <= 0:
+        return evaluate(me, opp, color)
+
+    ordered = sorted(
+        moves,
+        key=lambda mv: move_order_score(me, opp, color, mv),
+        reverse=True
+    )
+
+    opp_color = opponent(color)
+
+    for mv in ordered:
+        nme, nopp = apply_move(me, opp, mv)
+        if is_win_state(nme, nopp, color):
+            return 10**12 + depth
+        score = -alphabeta(nopp, nme, opp_color, depth - 1, -beta, -alpha)
+        if score > alpha:
+            alpha = score
+            if alpha >= beta:
+                break
+
+    return alpha
+
+
+def opponent(color: str) -> str:
+    return 'b' if color == 'w' else 'w'
+
+
+def forward_dir(color: str) -> int:
+    return 1 if color == 'w' else -1
+
+
+def generate_moves(me, opp, color) -> List[Move]:
+    me_set = set(me)
+    opp_set = set(opp)
+    occ = me_set | opp_set
+    d = forward_dir(color)
+    moves: List[Move] = []
+
+    # Move ordering starts here by considering advanced pieces first.
+    if color == 'w':
+        pieces = sorted(me, reverse=True)
+    else:
+        pieces = sorted(me)
+
+    for r, c in pieces:
+        nr = r + d
+        if not (0 <= nr < 8):
+            continue
+
+        # Forward
+        if (nr, c) not in occ:
+            moves.append(((r, c), (nr, c)))
+
+        # Diagonals: empty move or capture
+        nc = c - 1
+        if 0 <= nc < 8 and (nr, nc) not in me_set:
+            if (nr, nc) in opp_set or (nr, nc) not in occ:
+                moves.append(((r, c), (nr, nc)))
+
+        nc = c + 1
+        if 0 <= nc < 8 and (nr, nc) not in me_set:
+            if (nr, nc) in opp_set or (nr, nc) not in occ:
+                moves.append(((r, c), (nr, nc)))
+
+    return moves
+
+
+def apply_move(me, opp, mv):
+    frm, to = mv
+    me_list = list(me)
+    idx = me_list.index(frm)
+    me_list[idx] = to
+
+    opp_list = list(opp)
+    if to in opp_list:
+        opp_list.remove(to)
+
+    me_list.sort()
+    opp_list.sort()
+    return tuple(me_list), tuple(opp_list)
+
+
+def is_win_state(me, opp, color):
+    if not opp:
+        return True
+    goal = 7 if color == 'w' else 0
+    for r, _ in me:
+        if r == goal:
+            return True
+    return False
+
+
+def move_order_score(me, opp, color, mv):
+    frm, to = mv
+    fr, fc = frm
+    tr, tc = to
+    score = 0
+
+    # Immediate win first.
+    goal = 7 if color == 'w' else 0
+    if tr == goal:
+        score += 10**9
+
+    # Captures first.
+    if to in set(opp):
+        score += 50000 + advancement_value_square(to[0], color) * 100
+
+    # Prefer advancing advanced pieces.
+    score += advancement_value_square(tr, color) * 200
+    score += advancement_value_square(fr, color) * 30
+
+    # Centrality.
+    score += (3 - abs(3.5 - tc)) * 20
+
+    # Safety / support.
+    score += support_score_after_move(me, opp, color, mv) * 500
+
+    # Passed-pawn tendency.
+    score += passed_lane_bonus_after_move(me, opp, color, mv) * 200
+
+    # Discourage moving into immediate capture if unsupported.
+    score -= immediate_danger_after_move(me, opp, color, mv) * 700
+
+    return score
+
+
+def advancement_value_square(r, color):
+    return r if color == 'w' else (7 - r)
+
+
+def evaluate(me, opp, color):
+    # Perspective: side to move "me"
+    my_set = set(me)
+    opp_set = set(opp)
+
+    # Terminal checks.
+    if is_win_state(me, opp, color):
+        return 10**12
+    if is_win_state(opp, me, opponent(color)):
+        return -10**12
+
+    score = 0
+
+    # Material
+    score += (len(me) - len(opp)) * 15000
+
+    # Advancement and promotion threats
+    my_goal = 7 if color == 'w' else 0
+    opp_goal = 0 if color == 'w' else 7
+
+    my_best = -1
+    for r, c in me:
+        adv = advancement_value_square(r, color)
+        score += adv * adv * 180
+        score += (3 - abs(3.5 - c)) * 25
+        score += support_at_square(my_set, color, r, c) * 180
+        score -= attackers_on_square(opp_set, opponent(color), r, c) * 160
+        score += passed_bonus_for_piece(me, opp, color, r, c) * 220
+        if adv > my_best:
+            my_best = adv
+        # One-step win threat
+        if abs(r - my_goal) == 1:
+            score += 2200
+
+    opp_best = -1
+    for r, c in opp:
+        adv = advancement_value_square(r, opponent(color))
+        score -= adv * adv * 180
+        score -= (3 - abs(3.5 - c)) * 25
+        score -= support_at_square(opp_set, opponent(color), r, c) * 180
+        score += attackers_on_square(my_set, color, r, c) * 160
+        score -= passed_bonus_for_piece(opp, me, opponent(color), r, c) * 220
+        if adv > opp_best:
+            opp_best = adv
+        if abs(r - opp_goal) == 1:
+            score -= 2600
+
+    score += (my_best - opp_best) * 1000
+
+    # Mobility
+    my_moves = len(generate_moves(me, opp, color))
+    opp_moves = len(generate_moves(opp, me, opponent(color)))
+    score += (my_moves - opp_moves) * 35
+
+    # Block imminent enemy promotions.
+    score += stop_promotion_potential(me, opp, color) * 500
+    score -= stop_promotion_potential(opp, me, opponent(color)) * 700
+
+    return int(score)
+
+
+def support_at_square(piece_set, color, r, c):
+    # Friendly pieces that could recapture onto (r,c)
+    d = forward_dir(color)
+    back_r = r - d
+    cnt = 0
+    if 0 <= back_r < 8:
+        if c - 1 >= 0 and (back_r, c - 1) in piece_set:
+            cnt += 1
+        if c + 1 < 8 and (back_r, c + 1) in piece_set:
+            cnt += 1
+    return cnt
+
+
+def attackers_on_square(piece_set, color, r, c):
+    # Pieces of "color" that could move diagonally forward to (r,c)
+    d = forward_dir(color)
+    from_r = r - d
+    cnt = 0
+    if 0 <= from_r < 8:
+        if c - 1 >= 0 and (from_r, c - 1) in piece_set:
+            cnt += 1
+        if c + 1 < 8 and (from_r, c + 1) in piece_set:
+            cnt += 1
+    return cnt
+
+
+def support_score_after_move(me, opp, color, mv):
+    nme, nopp = apply_move(me, opp, mv)
+    piece_set = set(nme)
+    r, c = mv[1]
+    return support_at_square(piece_set, color, r, c)
+
+
+def immediate_danger_after_move(me, opp, color, mv):
+    nme, nopp = apply_move(me, opp, mv)
+    r, c = mv[1]
+    opp_set = set(nopp)
+    my_set = set(nme)
+    attacks = attackers_on_square(opp_set, opponent(color), r, c)
+    support = support_at_square(my_set, color, r, c)
+    return max(0, attacks - support)
+
+
+def passed_bonus_for_piece(me, opp, color, r, c):
+    # Bonus if no opposing piece is ahead in same/adjacent files.
+    opp_set = set(opp)
+    d = forward_dir(color)
+    rr = r + d
+    bonus = 1
+    while 0 <= rr < 8:
+        for cc in (c - 1, c, c + 1):
+            if 0 <= cc < 8 and (rr, cc) in opp_set:
+                return 0
+        rr += d
+    return bonus
+
+
+def passed_lane_bonus_after_move(me, opp, color, mv):
+    nme, nopp = apply_move(me, opp, mv)
+    r, c = mv[1]
+    return passed_bonus_for_piece(nme, nopp, color, r, c)
+
+
+def stop_promotion_potential(me, opp, color):
+    # Count our ability to occupy/capture squares stopping enemy immediate promotion lines.
+    # Heuristic only.
+    score = 0
+    goal = 7 if color == 'w' else 0
+    enemy_color = opponent(color)
+    enemy_dir = forward_dir(enemy_color)
+    my_set = set(me)
+    opp_set = set(opp)
+    occ = my_set | opp_set
+
+    for r, c in opp:
+        nr = r + enemy_dir
+        if nr == goal and 0 <= nr < 8:
+            # If enemy can move to goal next turn, penalize unless we contest.
+            threatened = False
+            if (nr, c) not in occ:
+                threatened = True
+            if c - 1 >= 0 and (nr, c - 1) not in my_set:
+                threatened = True
+            if c + 1 < 8 and (nr, c + 1) not in my_set:
+                threatened = True
+            if threatened:
+                # Can we capture that enemy now or block lane?
+                if attackers_on_square(my_set, color, r, c) > 0:
+                    score += 2
+                else:
+                    score -= 2
+    return score

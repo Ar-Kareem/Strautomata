@@ -1,0 +1,169 @@
+
+def policy(state: dict) -> str:
+    import random
+    
+    my_pts = state['my_pts']
+    opp_pts = state['opp_pts']
+    my_bar = state['my_bar']
+    opp_bar = state['opp_bar']
+    my_off = state['my_off']
+    opp_off = state['opp_off']
+    dice = state['dice']
+    
+    if not dice:
+        return "H:P,P"
+    
+    # Determine dice order
+    if len(dice) == 1:
+        dice_vals = [dice[0]]
+        use_both = False
+    elif len(dice) == 2 and dice[0] == dice[1]:
+        # Doubles - we can use up to 4 moves
+        dice_vals = [dice[0]] * 4
+        use_both = True
+    else:
+        dice_vals = sorted(dice, reverse=True)  # [high, low]
+        use_both = True
+    
+    # Generate all legal moves
+    legal_moves = generate_legal_moves(state, dice_vals)
+    
+    if not legal_moves:
+        return "H:P,P"
+    
+    # Evaluate and select best move
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in legal_moves:
+        score = evaluate_move(state, move)
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def generate_legal_moves(state, dice_vals):
+    """Generate legal move strings"""
+    moves = []
+    
+    if not dice_vals:
+        return ["H:P,P"]
+    
+    # Try different move combinations
+    if len(dice_vals) == 1:
+        # Single die
+        for from1 in get_possible_froms(state):
+            if can_use_die(state, from1, dice_vals[0]):
+                moves.append(f"H:{format_from(from1)},P")
+        if not moves:
+            moves.append("H:P,P")
+    elif len(dice_vals) == 2 and dice_vals[0] == dice_vals[1]:
+        # Doubles - simplified: try to use as many as possible
+        for from1 in get_possible_froms(state):
+            moves.append(f"H:{format_from(from1)},{format_from(from1)}")
+            for from2 in get_possible_froms(state):
+                if from1 != from2 or state['my_pts'][from1] >= 2:
+                    moves.append(f"H:{format_from(from1)},{format_from(from2)}")
+    else:
+        # Two different dice
+        high_die = dice_vals[0]
+        low_die = dice_vals[1]
+        
+        # Try H:from1,from2 (high first, then low)
+        for from1 in get_possible_froms(state):
+            for from2 in get_possible_froms(state):
+                moves.append(f"H:{format_from(from1)},{format_from(from2)}")
+        
+        # Try L:from1,from2 (low first, then high)
+        for from1 in get_possible_froms(state):
+            for from2 in get_possible_froms(state):
+                moves.append(f"L:{format_from(from1)},{format_from(from2)}")
+        
+        # Single moves
+        for from1 in get_possible_froms(state):
+            moves.append(f"H:{format_from(from1)},P")
+            moves.append(f"L:{format_from(from1)},P")
+    
+    if not moves:
+        moves.append("H:P,P")
+    
+    return moves
+
+def get_possible_froms(state):
+    """Get list of possible starting positions"""
+    froms = []
+    
+    if state['my_bar'] > 0:
+        return [-1]  # Must move from bar
+    
+    for i in range(24):
+        if state['my_pts'][i] > 0:
+            froms.append(i)
+    
+    return froms
+
+def format_from(from_pos):
+    """Format position as string"""
+    if from_pos == -1:
+        return "B"
+    return f"A{from_pos}"
+
+def can_use_die(state, from_pos, die_val):
+    """Check if a die can be used from position"""
+    if from_pos == -1:  # Bar
+        return True
+    if from_pos < 0 or from_pos >= 24:
+        return False
+    return state['my_pts'][from_pos] > 0
+
+def evaluate_move(state, move_str):
+    """Evaluate a move string"""
+    # Simple heuristic evaluation
+    score = 0
+    
+    # Parse move
+    parts = move_str.split(':')
+    if len(parts) != 2:
+        return -1000
+    
+    order = parts[0]
+    froms = parts[1].split(',')
+    
+    # Penalize passes
+    if 'P' in froms:
+        score -= 50 * froms.count('P')
+    
+    # Reward moving from bar
+    if 'B' in froms:
+        score += 100
+    
+    # Reward forward progress
+    for f in froms:
+        if f.startswith('A'):
+            try:
+                pos = int(f[1:])
+                # Higher positions = further along (assuming standard direction)
+                score += pos
+                
+                # Avoid leaving blots in dangerous zones
+                if state['my_pts'][pos] == 1:
+                    score -= 30
+                
+                # Reward making points
+                if state['my_pts'][pos] >= 2:
+                    score += 20
+                    
+            except:
+                pass
+    
+    # Reward bearing off
+    score += state['my_off'] * 100
+    
+    # Penalize checkers on bar
+    score -= state['my_bar'] * 200
+    
+    # Add some randomness for variety
+    score += random.random() * 5
+    
+    return score

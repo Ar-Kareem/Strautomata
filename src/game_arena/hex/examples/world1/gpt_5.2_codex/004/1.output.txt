@@ -1,0 +1,84 @@
+The strategy for this policy is to evaluate every legal move by estimating how quickly it allows me to connect my target sides versus how much it delays the opponent. For each empty cell, I simulate placing my stone there and compute the shortest-path cost to victory using a 0-1 BFS (stones cost 0, empty cells cost 1, opponent stones are blocked). I then select the move that minimizes my cost, breaking ties by maximizing the opponent’s cost. This creates a strong, fast connection while also blocking the opponent.
+
+<code>
+from collections import deque
+
+N = 11
+DIRS = [(0, -1), (0, 1), (-1, 0), (-1, 1), (1, 0), (1, -1)]
+
+def neighbors(r, c):
+    for dr, dc in DIRS:
+        nr, nc = r + dr, c + dc
+        if 0 <= nr < N and 0 <= nc < N:
+            yield nr, nc
+
+def shortest_path(my_set, opp_set, color):
+    INF = 10**9
+    dist = [[INF] * N for _ in range(N)]
+    dq = deque()
+
+    if color == 'b':  # top to bottom
+        sources = [(0, c) for c in range(N)]
+        targets = set((N - 1, c) for c in range(N))
+    else:  # left to right
+        sources = [(r, 0) for r in range(N)]
+        targets = set((r, N - 1) for r in range(N))
+
+    for r, c in sources:
+        if (r, c) in opp_set:
+            continue
+        cost = 0 if (r, c) in my_set else 1
+        if cost < dist[r][c]:
+            dist[r][c] = cost
+            if cost == 0:
+                dq.appendleft((r, c))
+            else:
+                dq.append((r, c))
+
+    while dq:
+        r, c = dq.popleft()
+        if (r, c) in targets:
+            return dist[r][c]
+        for nr, nc in neighbors(r, c):
+            if (nr, nc) in opp_set:
+                continue
+            w = 0 if (nr, nc) in my_set else 1
+            nd = dist[r][c] + w
+            if nd < dist[nr][nc]:
+                dist[nr][nc] = nd
+                if w == 0:
+                    dq.appendleft((nr, nc))
+                else:
+                    dq.append((nr, nc))
+    return INF
+
+def policy(me, opp, color):
+    me_set = set(me)
+    opp_set = set(opp)
+    occupied = me_set | opp_set
+
+    best_move = None
+    best_score = (10**9, -10**9)
+
+    # Evaluate all empty cells
+    for r in range(N):
+        for c in range(N):
+            if (r, c) in occupied:
+                continue
+            new_my = me_set | {(r, c)}
+            my_cost = shortest_path(new_my, opp_set, color)
+            opp_cost = shortest_path(opp_set, new_my, 'w' if color == 'b' else 'b')
+
+            score = (my_cost, -opp_cost)
+            if score < best_score:
+                best_score = score
+                best_move = (r, c)
+
+    # Fallback: if for some reason no move found (shouldn't happen)
+    if best_move is None:
+        for r in range(N):
+            for c in range(N):
+                if (r, c) not in occupied:
+                    return (r, c)
+    return best_move
+</code>

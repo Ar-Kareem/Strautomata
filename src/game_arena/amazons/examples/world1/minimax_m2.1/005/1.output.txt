@@ -1,0 +1,115 @@
+The strategy for this policy is to minimize the opponent's mobility by blocking their possible moves while also controlling the center of the board. The policy evaluates all legal moves by simulating each move and its corresponding arrow shot, then computes the opponent's mobility in the resulting board state. Moves that reduce the opponent's mobility and land in the center of the board are prioritized.
+
+The key components of the policy are:
+1. **Move Generation**: Enumerate all legal amazon moves (queen-like movement) and corresponding arrow shots from each amazon position
+2. **Simulation**: For each move, simulate the board state after the move and arrow shot
+3. **Evaluation**: Score each move based on opponent's mobility and center control
+4. **Selection**: Choose the move with the highest score
+
+This greedy approach with one-step lookahead provides a balance between computational efficiency and strategic depth, suitable for the 6x6 board size and time constraints.
+
+```python
+import numpy as np
+
+def count_mobility(board, player):
+    """
+    Count the number of moves available to a player (1 or 2).
+    Each move is defined by moving one amazon to an empty square.
+    """
+    mobility = 0
+    directions = [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == player:
+                for d_r, d_c in directions:
+                    step = 1
+                    while True:
+                        nr = r + d_r * step
+                        nc = c + d_c * step
+                        if nr < 0 or nr >= 6 or nc < 0 or nc >= 6:
+                            break
+                        if board[nr, nc] != 0:
+                            break
+                        mobility += 1
+                        step += 1
+    return mobility
+
+def policy(board):
+    """
+    Determine the next move for player 1 (our amazons).
+    Returns a move string in the format: "from_row,from_col:to_row,to_col:arrow_row,arrow_col"
+    """
+    moves = []
+    directions = [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]
+
+    # Generate all legal moves
+    for r in range(6):
+        for c in range(6):
+            if board[r, c] == 1:  # Our amazon
+                for d_r, d_c in directions:
+                    step = 1
+                    while True:
+                        nr = r + d_r * step
+                        nc = c + d_c * step
+                        if nr < 0 or nr >= 6 or nc < 0 or nc >= 6:
+                            break
+                        if board[nr, nc] != 0:  # Blocked
+                            break
+                        
+                        # Move amazon to (nr, nc) and prepare for arrow shot
+                        temp_board = board.copy()
+                        temp_board[r, c] = 0
+                        temp_board[nr, nc] = 1
+                        
+                        # Generate arrow shots from (nr, nc)
+                        for ad_r, ad_c in directions:
+                            step_a = 1
+                            while True:
+                                arrow_r = nr + ad_r * step_a
+                                arrow_c = nc + ad_c * step_a
+                                if arrow_r < 0 or arrow_r >= 6 or arrow_c < 0 or arrow_c >= 6:
+                                    break
+                                if temp_board[arrow_r, arrow_c] != 0:
+                                    break
+                                
+                                # Valid move: from (r,c) to (nr,nc) with arrow at (arrow_r, arrow_c)
+                                moves.append((r, c, nr, nc, arrow_r, arrow_c))
+                                step_a += 1
+                        
+                        step += 1
+    
+    # If no legal moves available, return empty string (shouldn't happen per problem statement)
+    if not moves:
+        return ""
+    
+    # Evaluate each move
+    best_score = -10**9
+    best_move = None
+    for move in moves:
+        from_r, from_c, to_r, to_c, arrow_r, arrow_c = move
+        
+        # Simulate the move
+        new_board = board.copy()
+        new_board[from_r, from_c] = 0
+        new_board[to_r, to_c] = 1
+        new_board[arrow_r, arrow_c] = -1
+        
+        # Calculate opponent's mobility
+        opp_mobility = count_mobility(new_board, 2)
+        
+        # Center control bonus
+        center_bonus = 3 if (2 <= to_r <= 3 and 2 <= to_c <= 3) else 0
+        
+        # Score: minimize opponent mobility, maximize center control
+        score = -opp_mobility + center_bonus
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    # Select best move (fallback to first move if needed)
+    if best_move is None:
+        best_move = moves[0]
+    
+    return f"{best_move[0]},{best_move[1]}:{best_move[2]},{best_move[3]}:{best_move[4]},{best_move[5]}"
+```

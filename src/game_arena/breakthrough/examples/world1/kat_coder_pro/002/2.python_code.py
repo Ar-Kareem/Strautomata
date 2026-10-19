@@ -1,0 +1,112 @@
+
+import random
+from typing import Tuple, List, Set
+
+def policy(me: List[Tuple[int, int]], opp: List[Tuple[int, int]], color: str) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+    # Convert lists to sets for faster lookup
+    me_set = set(me)
+    opp_set = set(opp)
+    
+    # Define movement directions based on color
+    if color == 'w':  # White moves upward (to higher row values)
+        forward_dir = 1
+        home_row = 0
+        opp_home_row = 7
+    else:  # Black moves downward (to lower row values)
+        forward_dir = -1
+        home_row = 7
+        opp_home_row = 0
+    
+    # Find all possible moves
+    possible_moves = []
+    
+    for piece in me:
+        row, col = piece
+        
+        # Check straight forward move
+        forward_row = row + forward_dir
+        if 0 <= forward_row <= 7 and (forward_row, col) not in me_set and (forward_row, col) not in opp_set:
+            possible_moves.append((piece, (forward_row, col)))
+        
+        # Check diagonal captures
+        for col_offset in [-1, 1]:
+            diag_col = col + col_offset
+            diag_row = row + forward_dir
+            if (0 <= diag_row <= 7 and 0 <= diag_col <= 7 and 
+                (diag_row, diag_col) not in me_set and 
+                (diag_row, diag_col) in opp_set):
+                possible_moves.append((piece, (diag_row, diag_col)))
+    
+    if not possible_moves:
+        # Fallback: just move any piece forward if possible
+        for piece in me:
+            row, col = piece
+            forward_row = row + forward_dir
+            if 0 <= forward_row <= 7 and (forward_row, col) not in me_set and (forward_row, col) not in opp_set:
+                return (piece, (forward_row, col))
+        
+        # If no moves available, return a random valid move
+        return random.choice([(p, p) for p in me])
+    
+    # Evaluate moves and select the best one
+    best_move = None
+    best_score = float('-inf')
+    
+    for move in possible_moves:
+        from_pos, to_pos = move
+        score = evaluate_move(from_pos, to_pos, me_set, opp_set, color, forward_dir, opp_home_row)
+        
+        if score > best_score:
+            best_score = score
+            best_move = move
+    
+    return best_move
+
+def evaluate_move(from_pos: Tuple[int, int], to_pos: Tuple[int, int], 
+                 me_set: Set[Tuple[int, int]], opp_set: Set[Tuple[int, int]], 
+                 color: str, forward_dir: int, opp_home_row: int) -> float:
+    """Evaluate a move based on piece advancement and captures."""
+    score = 0.0
+    
+    # Check if this move captures an opponent piece
+    if to_pos in opp_set:
+        score += 10.0  # High value for captures
+    
+    # Evaluate piece advancement
+    from_row, _ = from_pos
+    to_row, _ = to_pos
+    
+    # Distance to opponent's home row before and after move
+    dist_from_home_before = abs(from_row - opp_home_row)
+    dist_from_home_after = abs(to_row - opp_home_row)
+    
+    # Prefer moving closer to opponent's home row
+    advancement_score = dist_from_home_before - dist_from_home_after
+    score += advancement_score
+    
+    # Small bonus for reaching opponent's home row
+    if to_row == opp_home_row:
+        score += 5.0
+    
+    # Penalize moving into danger (if opponent can capture next turn)
+    danger_penalty = check_danger(to_pos, me_set, opp_set, color, forward_dir)
+    score -= danger_penalty
+    
+    return score
+
+def check_danger(pos: Tuple[int, int], me_set: Set[Tuple[int, int]], 
+                opp_set: Set[Tuple[int, int]], color: str, forward_dir: int) -> float:
+    """Check if moving to this position puts the piece in danger."""
+    row, col = pos
+    danger_score = 0.0
+    
+    # Check if opponent pieces can capture this position next turn
+    for col_offset in [-1, 1]:
+        diag_col = col + col_offset
+        diag_row = row - forward_dir  # Opponent moves in opposite direction
+        
+        if (0 <= diag_row <= 7 and 0 <= diag_col <= 7 and 
+            (diag_row, diag_col) in opp_set):
+            danger_score += 2.0  # Penalty for being in danger
+    
+    return danger_score

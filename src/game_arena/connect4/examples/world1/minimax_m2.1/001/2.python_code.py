@@ -1,0 +1,174 @@
+
+def policy(board: list[list[int]]) -> int:
+    # Helper function to get valid column locations (not full)
+    def get_valid_locations(board):
+        return [col for col in range(7) if board[0][col] == 0]
+    
+    # Helper function to get the next open row in a column
+    def get_next_open_row(board, col):
+        for row in range(5, -1, -1):
+            if board[row][col] == 0:
+                return row
+        return None
+    
+    # Helper function to check for a winner
+    def check_winner(board):
+        # Check horizontal
+        for r in range(6):
+            for c in range(4):
+                if board[r][c] != 0 and board[r][c] == board[r][c+1] == board[r][c+2] == board[r][c+3]:
+                    return board[r][c]
+        
+        # Check vertical
+        for r in range(3):
+            for c in range(7):
+                if board[r][c] != 0 and board[r][c] == board[r+1][c] == board[r+2][c] == board[r+3][c]:
+                    return board[r][c]
+        
+        # Check diagonal (positive slope)
+        for r in range(3):
+            for c in range(4):
+                if board[r][c] != 0 and board[r][c] == board[r+1][c+1] == board[r+2][c+2] == board[r+3][c+3]:
+                    return board[r][c]
+        
+        # Check diagonal (negative slope)
+        for r in range(3, 6):
+            for c in range(4):
+                if board[r][c] != 0 and board[r][c] == board[r-1][c+1] == board[r-2][c+2] == board[r-3][c+3]:
+                    return board[r][c]
+        
+        # Check for draw (no empty cells)
+        if all(board[r][c] != 0 for r in range(6) for c in range(7)):
+            return 0
+        
+        return None
+    
+    # Evaluate a window of 4 cells
+    def evaluate_window(window):
+        score = 0
+        count_1 = window.count(1)
+        count_minus1 = window.count(-1)
+        count_0 = window.count(0)
+        
+        if count_1 == 4:
+            score += 100
+        elif count_1 == 3 and count_0 == 1:
+            score += 5
+        elif count_1 == 2 and count_0 == 2:
+            score += 2
+            
+        if count_minus1 == 4:
+            score -= 100
+        elif count_minus1 == 3 and count_0 == 1:
+            score -= 5
+        elif count_minus1 == 2 and count_0 == 2:
+            score -= 2
+            
+        return score
+    
+    # Score the entire board
+    def score_position(board):
+        score = 0
+        
+        # Center column preference
+        center_array = [board[r][3] for r in range(6)]
+        center_count = center_array.count(1)
+        score += center_count * 3
+        
+        # Horizontal windows
+        for r in range(6):
+            for c in range(4):
+                window = [board[r][c], board[r][c+1], board[r][c+2], board[r][c+3]]
+                score += evaluate_window(window)
+        
+        # Vertical windows
+        for r in range(3):
+            for c in range(7):
+                window = [board[r][c], board[r+1][c], board[r+2][c], board[r+3][c]]
+                score += evaluate_window(window)
+        
+        # Diagonal positive slope windows
+        for r in range(3):
+            for c in range(4):
+                window = [board[r][c], board[r+1][c+1], board[r+2][c+2], board[r+3][c+3]]
+                score += evaluate_window(window)
+        
+        # Diagonal negative slope windows
+        for r in range(3, 6):
+            for c in range(4):
+                window = [board[r][c], board[r-1][c+1], board[r-2][c+2], board[r-3][c+3]]
+                score += evaluate_window(window)
+        
+        return score
+    
+    # Minimax algorithm with alpha-beta pruning
+    def minimax(board, depth, alpha, beta, maximizingPlayer):
+        valid_locations = get_valid_locations(board)
+        is_terminal = check_winner(board) is not None
+        
+        if depth == 0 or is_terminal:
+            if is_terminal:
+                winner = check_winner(board)
+                if winner == 1:
+                    return 100000000000000
+                elif winner == -1:
+                    return -100000000000000
+                else:
+                    return 0
+            else:
+                return score_position(board)
+        
+        if maximizingPlayer:
+            best_score = -10**18
+            best_col = None
+            for col in valid_locations:
+                row = get_next_open_row(board, col)
+                board_copy = [r[:] for r in board]
+                board_copy[row][col] = 1
+                score = minimax(board_copy, depth-1, alpha, beta, False)
+                if score > best_score:
+                    best_score = score
+                    best_col = col
+                alpha = max(alpha, best_score)
+                if alpha >= beta:
+                    break
+            return best_score, best_col
+        else:
+            best_score = 10**18
+            best_col = None
+            for col in valid_locations:
+                row = get_next_open_row(board, col)
+                board_copy = [r[:] for r in board]
+                board_copy[row][col] = -1
+                score = minimax(board_copy, depth-1, alpha, beta, True)
+                if score < best_score:
+                    best_score = score
+                    best_col = col
+                beta = min(beta, best_score)
+                if alpha >= beta:
+                    break
+            return best_score, best_col
+    
+    # Get valid locations
+    valid_locations = get_valid_locations(board)
+    
+    # Check for winning move
+    for col in valid_locations:
+        row = get_next_open_row(board, col)
+        board_copy = [r[:] for r in board]
+        board_copy[row][col] = 1
+        if check_winner(board_copy) == 1:
+            return col
+    
+    # Check for opponent winning move and block
+    for col in valid_locations:
+        row = get_next_open_row(board, col)
+        board_copy = [r[:] for r in board]
+        board_copy[row][col] = -1
+        if check_winner(board_copy) == -1:
+            return col
+    
+    # Use minimax to find best move
+    depth = 4
+    _, best_col = minimax(board, depth, -10**18, 10**18, True)
+    return best_col

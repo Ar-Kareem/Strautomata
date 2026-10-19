@@ -1,0 +1,168 @@
+
+def policy(my_men, my_kings, opp_men, opp_kings, color):
+    my_men = set(my_men)
+    my_kings = set(my_kings)
+    opp_men = set(opp_men)
+    opp_kings = set(opp_kings)
+    
+    def get_jumps(pos, is_king, men, kings, opp_m, opp_k, direction):
+        jumps = []
+        r, c = pos
+        dirs = [(-1, -1), (-1, 1), (1, -1), (1, 1)] if is_king else [(direction, -1), (direction, 1)]
+        
+        for dr, dc in dirs:
+            mid_r, mid_c = r + dr, c + dc
+            end_r, end_c = r + 2*dr, c + 2*dc
+            if 0 <= end_r < 8 and 0 <= end_c < 8:
+                mid = (mid_r, mid_c)
+                end = (end_r, end_c)
+                if (mid in opp_m or mid in opp_k) and end not in men and end not in kings and end not in opp_m and end not in opp_k:
+                    jumps.append((end, mid))
+        return jumps
+    
+    def get_all_jumps(pos, is_king, men, kings, opp_m, opp_k, direction):
+        result = []
+        stack = [(pos, is_king, men.copy(), kings.copy(), opp_m.copy(), opp_k.copy(), [pos])]
+        
+        while stack:
+            curr, curr_king, m, k, om, ok, path = stack.pop()
+            jumps = get_jumps(curr, curr_king, m, k, om, ok, direction)
+            if not jumps:
+                if len(path) > 1:
+                    result.append(path)
+            else:
+                for end, captured in jumps:
+                    new_m, new_k = m.copy(), k.copy()
+                    new_om, new_ok = om.copy(), ok.copy()
+                    if curr in new_m: new_m.remove(curr)
+                    if curr in new_k: new_k.remove(curr)
+                    promoted = (not curr_king and ((direction == 1 and end[0] == 7) or (direction == -1 and end[0] == 0)))
+                    if promoted or curr_king:
+                        new_k.add(end)
+                    else:
+                        new_m.add(end)
+                    if captured in new_om: new_om.remove(captured)
+                    if captured in new_ok: new_ok.remove(captured)
+                    stack.append((end, curr_king or promoted, new_m, new_k, new_om, new_ok, path + [end]))
+        return result
+    
+    def get_moves(men, kings, opp_m, opp_k, direction):
+        moves = []
+        # Check jumps first
+        for pos in men:
+            for path in get_all_jumps(pos, False, men, kings, opp_m, opp_k, direction):
+                moves.append((pos, path[-1], len(path)-1, True))
+        for pos in kings:
+            for path in get_all_jumps(pos, True, men, kings, opp_m, opp_k, direction):
+                moves.append((pos, path[-1], len(path)-1, True))
+        
+        if moves:
+            return [(m[0], m[1]) for m in moves]
+        
+        # Regular moves
+        for pos in men:
+            r, c = pos
+            for dc in [-1, 1]:
+                nr, nc = r + direction, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    dest = (nr, nc)
+                    if dest not in men and dest not in kings and dest not in opp_m and dest not in opp_k:
+                        moves.append((pos, dest))
+        
+        for pos in kings:
+            r, c = pos
+            for dr, dc in [(-1,-1),(-1,1),(1,-1),(1,1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 8 and 0 <= nc < 8:
+                    dest = (nr, nc)
+                    if dest not in men and dest not in kings and dest not in opp_m and dest not in opp_k:
+                        moves.append((pos, dest))
+        return moves
+    
+    def evaluate(men, kings, opp_m, opp_k, direction):
+        if not men and not kings:
+            return -1000
+        if not opp_m and not opp_k:
+            return 1000
+        
+        score = len(men) * 100 + len(kings) * 150
+        score -= len(opp_m) * 100 + len(opp_k) * 150
+        
+        for r, c in men:
+            if direction == 1:
+                score += r * 5
+            else:
+                score += (7 - r) * 5
+            score += (3.5 - abs(c - 3.5)) * 2
+        
+        for r, c in kings:
+            score += (3.5 - abs(c - 3.5)) * 3
+            score += (3.5 - abs(r - 3.5)) * 2
+        
+        return score
+    
+    def minimax(men, kings, opp_m, opp_k, direction, depth, alpha, beta, maximizing):
+        if depth == 0:
+            return evaluate(men, kings, opp_m, opp_k, direction), None
+        
+        if maximizing:
+            moves = get_moves(men, kings, opp_m, opp_k, direction)
+        else:
+            moves = get_moves(opp_m, opp_k, men, kings, -direction)
+        
+        if not moves:
+            return (-1000 if maximizing else 1000), None
+        
+        best_move = moves[0]
+        if maximizing:
+            max_eval = -10000
+            for move in moves:
+                nm, nk, nom, nok = apply_move(men, kings, opp_m, opp_k, move, direction, True)
+                eval_score, _ = minimax(nm, nk, nom, nok, direction, depth-1, alpha, beta, False)
+                if eval_score > max_eval:
+                    max_eval = eval_score
+                    best_move = move
+                alpha = max(alpha, eval_score)
+                if beta <= alpha:
+                    break
+            return max_eval, best_move
+        else:
+            min_eval = 10000
+            for move in moves:
+                nom, nok, nm, nk = apply_move(opp_m, opp_k, men, kings, move, -direction, True)
+                eval_score, _ = minimax(nm, nk, nom, nok, direction, depth-1, alpha, beta, True)
+                if eval_score < min_eval:
+                    min_eval = eval_score
+                    best_move = move
+                beta = min(beta, eval_score)
+                if beta <= alpha:
+                    break
+            return min_eval, best_move
+    
+    def apply_move(men, kings, opp_m, opp_k, move, direction, is_my_move):
+        frm, to = move
+        nm, nk, nom, nok = men.copy(), kings.copy(), opp_m.copy(), opp_k.copy()
+        is_king = frm in nk
+        if frm in nm: nm.remove(frm)
+        if frm in nk: nk.remove(frm)
+        
+        if abs(to[0] - frm[0]) == 2:
+            mid = ((frm[0]+to[0])//2, (frm[1]+to[1])//2)
+            if mid in nom: nom.remove(mid)
+            if mid in nok: nok.remove(mid)
+        
+        promoted = (not is_king and ((direction == 1 and to[0] == 7) or (direction == -1 and to[0] == 0)))
+        if is_king or promoted:
+            nk.add(to)
+        else:
+            nm.add(to)
+        return nm, nk, nom, nok
+    
+    direction = -1 if color == 'b' else 1
+    moves = get_moves(my_men, my_kings, opp_men, opp_kings, direction)
+    
+    if len(moves) == 1:
+        return moves[0]
+    
+    _, best_move = minimax(my_men, my_kings, opp_men, opp_kings, direction, 4, -10000, 10000, True)
+    return best_move

@@ -1,0 +1,238 @@
+The strategy for this policy is a hybrid of:
+
+1. **Target mode** for existing hits:
+   - If there is a line of connected hits, strongly prefer extending that line at its open ends.
+   - If there is a single isolated hit, strongly prefer its orthogonal neighbors.
+
+2. **Probability heatmap** over all legal ship placements:
+   - Enumerate every horizontal and vertical placement for ships of lengths `5, 4, 3, 3, 2`.
+   - Discard placements that conflict with known misses.
+   - Strongly reward placements that explain known hits, especially full connected hit groups with consistent orientation.
+   - Add score to the unknown cells inside those plausible placements.
+
+3. **Parity search** when no strong target exists:
+   - Slightly prefer checkerboard-like cells, since ships of length at least 2 are more efficiently found that way.
+
+4. **Safety fallback**:
+   - If anything unexpected happens, return the first legal unknown cell, guaranteeing a valid move.
+
+<code>
+from collections import deque
+
+SHIP_LENGTHS = [5, 4, 3, 3, 2]
+N = 10
+
+
+def policy(board: list[list[int]]) -> tuple[int, int]:
+    # Defensive fallback: always return a legal move if possible.
+    unknowns = [(r, c) for r in range(N) for c in range(N) if board[r][c] == 0]
+    if not unknowns:
+        return (0, 0)
+
+    scores = [[0.0 for _ in range(N)] for _ in range(N)]
+
+    # Build connected components of hits.
+    components = _hit_components(board)
+
+    # Strong local targeting around hit components.
+    _add_target_scores(board, components, scores)
+
+    # Global placement-based scoring.
+    _add_placement_scores(board, components, scores)
+
+    # Mild parity preference when hunting.
+    hit_count = sum(1 for r in range(N) for c in range(N) if board[r][c] == 1)
+    if hit_count == 0:
+        for r in range(N):
+            for c in range(N):
+                if board[r][c] == 0 and (r + c) % 2 == 0:
+                    scores[r][c] += 0.25
+
+    # Prefer highest score among legal unknown cells.
+    best = None
+    best_score = -1e100
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 0:
+                s = scores[r][c]
+                # Tiny centrality tiebreaker.
+                s += 1e-6 * (4.5 - abs(r - 4.5) + 4.5 - abs(c - 4.5))
+                if s > best_score:
+                    best_score = s
+                    best = (r, c)
+
+    if best is not None:
+        return best
+
+    # Guaranteed legal fallback.
+    return unknowns[0]
+
+
+def _hit_components(board):
+    seen = [[False] * N for _ in range(N)]
+    comps = []
+
+    for r in range(N):
+        for c in range(N):
+            if board[r][c] == 1 and not seen[r][c]:
+                q = deque([(r, c)])
+                seen[r][c] = True
+                cells = []
+                while q:
+                    x, y = q.popleft()
+                    cells.append((x, y))
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < N and 0 <= ny < N and not seen[nx][ny] and board[nx][ny] == 1:
+                            seen[nx][ny] = True
+                            q.append((nx, ny))
+
+                rows = {x for x, _ in cells}
+                cols = {y for _, y in cells}
+                if len(cells) <= 1:
+                    orient = "single"
+                elif len(rows) == 1:
+                    orient = "H"
+                elif len(cols) == 1:
+                    orient = "V"
+                else:
+                    orient = "mixed"  # Rare/invalid-looking, but handle safely.
+
+                comps.append({
+                    "cells": cells,
+                    "set": set(cells),
+                    "orient": orient,
+                    "size": len(cells),
+                })
+    return comps
+
+
+def _add_target_scores(board, components, scores):
+    # Very strong scores to finish ships once hits are found.
+    for comp in components:
+        cells = comp["cells"]
+        orient = comp["orient"]
+
+        if orient == "single":
+            r, c = cells[0]
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < N and 0 <= nc < N and board[nr][nc] == 0:
+                    scores[nr][nc] += 5000.0
+
+        elif orient == "H":
+            row = cells[0][0]
+            cols = sorted(c for _, c in cells)
+            left = (row, cols[0] - 1)
+            right = (row, cols[-1] + 1)
+            if 0 <= left[1] < N and board[left[0]][left[1]] == 0:
+                scores[left[0]][left[1]] += 12000.0
+            if 0 <= right[1] < N and board[right[0]][right[1]] == 0:
+                scores[right[0]][right[1]] += 12000.0
+
+            # Slight preference to nearby unknowns in same row.
+            for c in range(max(0, cols[0] - 2), min(N, cols[-1] + 3)):
+                if board[row][c] == 0:
+                    scores[row][c] += 200.0
+
+        elif orient == "V":
+            col = cells[0][1]
+            rows = sorted(r for r, _ in cells)
+            up = (rows[0] - 1, col)
+            down = (rows[-1] + 1, col)
+            if 0 <= up[0] < N and board[up[0]][up[1]] == 0:
+                scores[up[0]][up[1]] += 12000.0
+            if 0 <= down[0] < N and board[down[0]][down[1]] == 0:
+                scores[down[0]][down[1]] += 12000.0
+
+            # Slight preference to nearby unknowns in same column.
+            for r in range(max(0, rows[0] - 2), min(N, rows[-1] + 3)):
+                if board[r][col] == 0:
+                    scores[r][col] += 200.0
+
+        else:
+            # Mixed shape: just target neighbors of all hit cells.
+            for r, c in cells:
+                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < N and 0 <= nc < N and board[nr][nc] == 0:
+                        scores[nr][nc] += 3000.0
+
+
+def _add_placement_scores(board, components, scores):
+    # Enumerate all placements for each ship length and score them.
+    for L in SHIP_LENGTHS:
+        # Horizontal
+        for r in range(N):
+            for c in range(N - L + 1):
+                seg = [(r, c + k) for k in range(L)]
+                w = _placement_weight(board, components, seg, "H", L)
+                if w > 0:
+                    for x, y in seg:
+                        if board[x][y] == 0:
+                            scores[x][y] += w
+
+        # Vertical
+        for r in range(N - L + 1):
+            for c in range(N):
+                seg = [(r + k, c) for k in range(L)]
+                w = _placement_weight(board, components, seg, "V", L)
+                if w > 0:
+                    for x, y in seg:
+                        if board[x][y] == 0:
+                            scores[x][y] += w
+
+
+def _placement_weight(board, components, seg, orient, L):
+    seg_set = set(seg)
+
+    # Cannot go through known misses.
+    for x, y in seg:
+        if board[x][y] == -1:
+            return 0.0
+
+    hits_in_seg = sum(1 for x, y in seg if board[x][y] == 1)
+
+    # Base value prefers placements with more room and that explain hits.
+    weight = 1.0 + 0.15 * L
+
+    if hits_in_seg > 0:
+        weight *= (9.0 ** hits_in_seg)
+
+    # Check compatibility with hit components.
+    for comp in components:
+        comp_set = comp["set"]
+        inter = len(seg_set & comp_set)
+        if inter == 0:
+            continue
+
+        # If a placement touches a component, ideally it should explain all of it.
+        if inter < comp["size"]:
+            return 0.0
+
+        # Orientation consistency for line components.
+        if comp["orient"] == "H" and orient != "H":
+            return 0.0
+        if comp["orient"] == "V" and orient != "V":
+            return 0.0
+        if comp["size"] > L:
+            return 0.0
+
+        # Strong reward for fully covering a known hit component.
+        weight *= (6.0 + 2.0 * comp["size"])
+
+    # Small structural preference: cells with more unknown neighbors are a bit better.
+    open_bonus = 0
+    for x, y in seg:
+        if board[x][y] != 0:
+            continue
+        cnt = 0
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < N and 0 <= ny < N and board[nx][ny] == 0:
+                cnt += 1
+        open_bonus += cnt
+    weight *= (1.0 + 0.02 * open_bonus)
+
+    return weight
+</code>

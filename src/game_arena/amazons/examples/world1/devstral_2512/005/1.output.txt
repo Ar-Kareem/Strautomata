@@ -1,0 +1,196 @@
+The strategy for this policy is to use a combination of minimax with alpha-beta pruning and a heuristic evaluation function to determine the best move. The heuristic will consider factors such as mobility (number of legal moves), control of the center, and the number of arrows shot. The policy will also prioritize moves that restrict the opponent's mobility and create opportunities for future moves.
+
+<code>
+import numpy as np
+from typing import List, Tuple
+
+def policy(board) -> str:
+    # Directions for queen-like movement (8 directions)
+    directions = [(-1, -1), (-1, 0), (-1, 1),
+                  (0, -1),          (0, 1),
+                  (1, -1),  (1, 0), (1, 1)]
+
+    def is_valid_move(board, from_pos, to_pos, arrow_pos):
+        # Check if from_pos is your amazon
+        if board[from_pos] != 1:
+            return False
+
+        # Check if to_pos is empty
+        if board[to_pos] != 0:
+            return False
+
+        # Check if the path from from_pos to to_pos is clear
+        if not is_path_clear(board, from_pos, to_pos):
+            return False
+
+        # Simulate the move
+        new_board = board.copy()
+        new_board[from_pos] = 0
+        new_board[to_pos] = 1
+
+        # Check if arrow_pos is empty after the move
+        if new_board[arrow_pos] != 0:
+            return False
+
+        # Check if the path from to_pos to arrow_pos is clear
+        if not is_path_clear(new_board, to_pos, arrow_pos):
+            return False
+
+        return True
+
+    def is_path_clear(board, start, end):
+        # Check if the path between start and end is clear
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+
+        if dx == 0 and dy == 0:
+            return True
+
+        # Determine the direction
+        direction = (0, 0)
+        if dx != 0:
+            direction = (1 if dx > 0 else -1, 0)
+        if dy != 0:
+            direction = (0, 1 if dy > 0 else -1)
+        if dx != 0 and dy != 0:
+            direction = (1 if dx > 0 else -1, 1 if dy > 0 else -1)
+
+        # Check each square in the path
+        current = (start[0] + direction[0], start[1] + direction[1])
+        while current != end:
+            if board[current] != 0:
+                return False
+            current = (current[0] + direction[0], current[1] + direction[1])
+
+        return True
+
+    def get_legal_moves(board):
+        legal_moves = []
+        for i in range(6):
+            for j in range(6):
+                if board[i, j] == 1:
+                    for di, dj in directions:
+                        for step in range(1, 6):
+                            ni, nj = i + di * step, j + dj * step
+                            if 0 <= ni < 6 and 0 <= nj < 6:
+                                if board[ni, nj] == 0:
+                                    # Check if the path is clear
+                                    if is_path_clear(board, (i, j), (ni, nj)):
+                                        # Now check all possible arrow shots from (ni, nj)
+                                        for adi, adj in directions:
+                                            for astep in range(1, 6):
+                                                ani, anj = ni + adi * astep, nj + adj * astep
+                                                if 0 <= ani < 6 and 0 <= anj < 6:
+                                                    if is_valid_move(board, (i, j), (ni, nj), (ani, anj)):
+                                                        legal_moves.append(f"{i},{j}:{ni},{nj}:{ani},{anj}")
+                                else:
+                                    break
+                            else:
+                                break
+        return legal_moves
+
+    def evaluate_board(board):
+        # Simple heuristic: count the number of legal moves for each player
+        your_moves = 0
+        opponent_moves = 0
+
+        for i in range(6):
+            for j in range(6):
+                if board[i, j] == 1:
+                    for di, dj in directions:
+                        for step in range(1, 6):
+                            ni, nj = i + di * step, j + dj * step
+                            if 0 <= ni < 6 and 0 <= nj < 6:
+                                if board[ni, nj] == 0:
+                                    if is_path_clear(board, (i, j), (ni, nj)):
+                                        your_moves += 1
+                                    break
+                                else:
+                                    break
+                            else:
+                                break
+                elif board[i, j] == 2:
+                    for di, dj in directions:
+                        for step in range(1, 6):
+                            ni, nj = i + di * step, j + dj * step
+                            if 0 <= ni < 6 and 0 <= nj < 6:
+                                if board[ni, nj] == 0:
+                                    if is_path_clear(board, (i, j), (ni, nj)):
+                                        opponent_moves += 1
+                                    break
+                                else:
+                                    break
+                            else:
+                                break
+
+        return your_moves - opponent_moves
+
+    def minimax(board, depth, alpha, beta, maximizing_player):
+        if depth == 0:
+            return evaluate_board(board)
+
+        legal_moves = get_legal_moves(board)
+        if not legal_moves:
+            return -float('inf') if maximizing_player else float('inf')
+
+        if maximizing_player:
+            max_eval = -float('inf')
+            for move in legal_moves:
+                # Apply the move
+                from_pos, to_pos, arrow_pos = parse_move(move)
+                new_board = board.copy()
+                new_board[from_pos] = 0
+                new_board[to_pos] = 1
+                new_board[arrow_pos] = -1
+
+                eval = minimax(new_board, depth - 1, alpha, beta, False)
+                max_eval = max(max_eval, eval)
+                alpha = max(alpha, eval)
+                if beta <= alpha:
+                    break
+            return max_eval
+        else:
+            min_eval = float('inf')
+            for move in legal_moves:
+                # Apply the move
+                from_pos, to_pos, arrow_pos = parse_move(move)
+                new_board = board.copy()
+                new_board[from_pos] = 0
+                new_board[to_pos] = 1
+                new_board[arrow_pos] = -1
+
+                eval = minimax(new_board, depth - 1, alpha, beta, True)
+                min_eval = min(min_eval, eval)
+                beta = min(beta, eval)
+                if beta <= alpha:
+                    break
+            return min_eval
+
+    def parse_move(move_str):
+        parts = move_str.split(':')
+        from_pos = tuple(map(int, parts[0].split(',')))
+        to_pos = tuple(map(int, parts[1].split(',')))
+        arrow_pos = tuple(map(int, parts[2].split(',')))
+        return from_pos, to_pos, arrow_pos
+
+    legal_moves = get_legal_moves(board)
+    if not legal_moves:
+        return "0,0:0,0:0,0"  # Should not happen as per problem statement
+
+    best_move = None
+    best_eval = -float('inf')
+
+    for move in legal_moves:
+        from_pos, to_pos, arrow_pos = parse_move(move)
+        new_board = board.copy()
+        new_board[from_pos] = 0
+        new_board[to_pos] = 1
+        new_board[arrow_pos] = -1
+
+        eval = minimax(new_board, depth=2, alpha=-float('inf'), beta=float('inf'), maximizing_player=False)
+        if eval > best_eval:
+            best_eval = eval
+            best_move = move
+
+    return best_move
+</code>

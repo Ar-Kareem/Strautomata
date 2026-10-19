@@ -1,0 +1,187 @@
+# Strategy
+
+This policy implements a smart Go AI that combines several key strategies:
+
+1. **Eye Detection**: Prioritizes moves that create or defend eyes (vital for group survival)
+2. **Atari Defense**: Defends groups that are in atari (single liberty)
+3. **Atari Attack**: Attacks opponent groups in atari
+4. **Connection**: Connects own stones when beneficial
+5. **Cutting**: Cuts opponent connections when advantageous
+6. **Territory Expansion**: Expands into open areas near own stones
+7. **Influence**: Plays near opponent stones to reduce their potential
+8. **Randomness**: Adds slight randomness to avoid predictability
+
+The policy uses a scoring system to evaluate potential moves, with higher priority given to defensive moves and eye creation. It maintains memory of previous moves to avoid immediate ko violations.
+
+# Python Implementation
+
+```python
+import random
+from collections import defaultdict
+
+def policy(me: list[tuple[int, int]], opponent: list[tuple[int, int]], memory: dict) -> tuple[tuple[int, int], dict]:
+    # Initialize memory if empty
+    if not memory:
+        memory = {'last_move': None, 'board_history': set()}
+
+    # Convert to sets for faster lookups
+    my_stones = set(me)
+    opp_stones = set(opponent)
+    all_stones = my_stones | opp_stones
+
+    # Board dimensions
+    size = 19
+    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+
+    # Helper functions
+    def is_on_board(r, c):
+        return 1 <= r <= size and 1 <= c <= size
+
+    def get_liberties(stones):
+        liberties = set()
+        for r, c in stones:
+            for dr, dc in directions:
+                nr, nc = r + dr, c + dc
+                if is_on_board(nr, nc) and (nr, nc) not in all_stones:
+                    liberties.add((nr, nc))
+        return liberties
+
+    def get_group(r, c, stones_set):
+        group = set()
+        stack = [(r, c)]
+        visited = set()
+        while stack:
+            curr = stack.pop()
+            if curr in visited or curr not in stones_set:
+                continue
+            visited.add(curr)
+            group.add(curr)
+            for dr, dc in directions:
+                nr, nc = curr[0] + dr, curr[1] + dc
+                if is_on_board(nr, nc):
+                    stack.append((nr, nc))
+        return group
+
+    def is_eye(r, c, stones_set):
+        # Check if position is surrounded by our stones
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if not is_on_board(nr, nc) or (nr, nc) not in stones_set:
+                return False
+        return True
+
+    def evaluate_move(r, c):
+        if (r, c) in all_stones:
+            return -1000  # Illegal move
+
+        # Check for ko violation
+        if (r, c) == memory['last_move']:
+            return -1000
+
+        score = 0
+
+        # Eye detection - high priority
+        if is_eye(r, c, my_stones):
+            score += 100
+
+        # Defend atari groups
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in my_stones:
+                group = get_group(nr, nc, my_stones)
+                liberties = get_liberties(group)
+                if len(liberties) == 1:
+                    score += 50
+
+        # Attack opponent atari groups
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in opp_stones:
+                group = get_group(nr, nc, opp_stones)
+                liberties = get_liberties(group)
+                if len(liberties) == 1:
+                    score += 40
+
+        # Connect own stones
+        my_adjacent = 0
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in my_stones:
+                my_adjacent += 1
+        if my_adjacent >= 2:
+            score += 30
+
+        # Cut opponent connections
+        opp_adjacent = 0
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in opp_stones:
+                opp_adjacent += 1
+        if opp_adjacent >= 2:
+            score += 25
+
+        # Territory expansion
+        my_nearby = 0
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if is_on_board(nr, nc) and (nr, nc) in my_stones:
+                my_nearby += 1
+        score += my_nearby * 5
+
+        # Influence - play near opponent stones
+        opp_nearby = 0
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if is_on_board(nr, nc) and (nr, nc) in opp_stones:
+                opp_nearby += 1
+        score += opp_nearby * 3
+
+        # Small random factor to avoid predictability
+        score += random.random() * 0.1
+
+        return score
+
+    # Generate candidate moves
+    candidates = []
+
+    # Check around my stones
+    for r, c in my_stones:
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if is_on_board(nr, nc) and (nr, nc) not in all_stones:
+                candidates.append((nr, nc))
+
+    # Check around opponent stones
+    for r, c in opp_stones:
+        for dr, dc in directions:
+            nr, nc = r + dr, c + dc
+            if is_on_board(nr, nc) and (nr, nc) not in all_stones:
+                candidates.append((nr, nc))
+
+    # Add some random positions
+    for _ in range(5):
+        r, c = random.randint(1, size), random.randint(1, size)
+        if (r, c) not in all_stones:
+            candidates.append((r, c))
+
+    # Evaluate all candidates
+    scored_moves = []
+    for move in candidates:
+        score = evaluate_move(move[0], move[1])
+        if score > -1000:  # Only consider legal moves
+            scored_moves.append((score, move))
+
+    # If no legal moves found, pass
+    if not scored_moves:
+        return (0, 0), memory
+
+    # Sort by score and pick the best
+    scored_moves.sort(reverse=True, key=lambda x: x[0])
+    best_move = scored_moves[0][1]
+
+    # Update memory
+    memory['last_move'] = best_move
+    memory['board_history'].add((frozenset(my_stones), frozenset(opp_stones)))
+
+    return best_move, memory
+```
